@@ -10,68 +10,74 @@ export const prioritySchema = z.union([
   z.literal(3),
   z.literal(4),
   z.literal(5),
-]);
+], 'Выберите приоритет от P1 до P5.');
 
-const optionalTextSchema = z.string().trim().max(10_000).optional();
-const nullableIdSchema = z.string().trim().min(1).max(200).nullable().optional();
+const idSchema = (label: string) => z
+  .string({ error: `${label} должно быть текстом.` })
+  .trim()
+  .min(1, `${label} не может быть пустым.`)
+  .max(200, `${label} слишком длинное.`);
+
+const nullableIdSchema = idSchema('Значение').nullable().optional();
+const optionalTextSchema = z.string({ error: 'Заметка должна быть текстом.' }).trim().max(10_000, 'Заметка слишком длинная.').optional();
 
 export const attachmentInputSchema = z
   .object({
-    id: z.string().trim().min(1).max(200),
-    name: z.string().trim().min(1).max(255),
-    mimeType: z.string().trim().min(1).max(200),
-    size: z.number().int().nonnegative().max(MAX_ATTACHMENT_BYTES),
-    storagePath: z.string().trim().min(1).max(1_000).optional(),
+    id: idSchema('Идентификатор файла'),
+    name: z.string({ error: 'Название файла должно быть текстом.' }).trim().min(1, 'Введите название файла.').max(255, 'Название файла слишком длинное.'),
+    mimeType: z.string({ error: 'Тип файла должен быть текстом.' }).trim().min(1, 'Укажите тип файла.').max(200, 'Тип файла слишком длинный.'),
+    size: z.number({ error: 'Размер файла должен быть числом.' }).int('Размер файла должен быть целым числом.').nonnegative('Размер файла не может быть отрицательным.').max(MAX_ATTACHMENT_BYTES, 'Размер файла не должен превышать 25 МиБ.'),
+    storagePath: z.string({ error: 'Путь к файлу должен быть текстом.' }).trim().min(1, 'Путь к файлу не может быть пустым.').max(1_000, 'Путь к файлу слишком длинный.').optional(),
   })
   .strict();
 
 export const taskInputSchema = z
   .object({
-    title: z.string().trim().min(1).max(280),
-    description: z.string().trim().max(20_000).default(''),
+    title: z.string({ error: 'Название задачи должно быть текстом.' }).trim().min(1, 'Введите название задачи.').max(280, 'Название задачи слишком длинное.'),
+    description: z.string({ error: 'Описание задачи должно быть текстом.' }).trim().max(20_000, 'Описание задачи слишком длинное.').default(''),
     priority: prioritySchema.default(3),
-    statusId: z.string().trim().min(1).max(200).optional(),
+    statusId: idSchema('Статус').optional(),
     sectionId: nullableIdSchema.default(null),
     assigneeId: nullableIdSchema.default(null),
-    dueAt: z.string().datetime({ offset: true }).nullable().optional().default(null),
-    attachments: z.array(attachmentInputSchema).max(20).default([]),
+    dueAt: z.string({ error: 'Укажите дату в формате ISO 8601.' }).datetime({ offset: true, error: 'Укажите дату в формате ISO 8601.' }).nullable().optional().default(null),
+    attachments: z.array(attachmentInputSchema, { error: 'Вложения должны быть списком.' }).max(20, 'Можно добавить не более 20 вложений.').default([]),
   })
   .strict();
 
 export const commentInputSchema = z
   .object({
-    taskId: z.string().trim().min(1).max(200),
-    authorId: z.string().trim().min(1).max(200),
-    body: z.string().trim().min(1).max(10_000),
+    taskId: idSchema('Идентификатор задачи'),
+    authorId: idSchema('Идентификатор автора'),
+    body: z.string({ error: 'Комментарий должен быть текстом.' }).trim().min(1, 'Введите комментарий.').max(10_000, 'Комментарий слишком длинный.'),
   })
   .strict();
 
 export const knowledgeInputSchema = z
   .object({
-    title: z.string().trim().min(1).max(280),
-    body: z.string().trim().max(30_000).default(''),
-    kind: z.enum(['note', 'instruction', 'document', 'link'] satisfies [KnowledgeKind, ...KnowledgeKind[]]),
+    title: z.string({ error: 'Название материала должно быть текстом.' }).trim().min(1, 'Введите название материала.').max(280, 'Название материала слишком длинное.'),
+    body: z.string({ error: 'Содержание должно быть текстом.' }).trim().max(30_000, 'Содержание слишком длинное.').default(''),
+    kind: z.enum(['note', 'instruction', 'document', 'link'] satisfies [KnowledgeKind, ...KnowledgeKind[]], { error: 'Выберите тип материала.' }),
     sectionId: nullableIdSchema.default(null),
-    attachments: z.array(attachmentInputSchema).max(20).default([]),
+    attachments: z.array(attachmentInputSchema, { error: 'Вложения должны быть списком.' }).max(20, 'Можно добавить не более 20 вложений.').default([]),
   })
   .strict();
 
 export const contactMethodSchema = z
   .object({
-    kind: z.enum(['phone', 'telegram', 'whatsapp'] satisfies [ContactMethodKind, ...ContactMethodKind[]]),
-    value: z.string().trim().min(1).max(300),
+    kind: z.enum(['phone', 'telegram', 'whatsapp'] satisfies [ContactMethodKind, ...ContactMethodKind[]], { error: 'Выберите способ связи.' }),
+    value: z.string({ error: 'Контакт должен быть текстом.' }).trim().min(1, 'Введите контакт.').max(300, 'Контакт слишком длинный.'),
   })
   .strict();
 
 export const contactInputSchema = z
   .object({
-    name: z.string().trim().min(1).max(280),
+    name: z.string({ error: 'Имя контакта должно быть текстом.' }).trim().min(1, 'Введите имя контакта.').max(280, 'Имя контакта слишком длинное.'),
     category: z.enum(['supplier', 'contractor', 'partner', 'other'] satisfies [
       ContactCategory,
       ...ContactCategory[],
-    ]).default('other'),
+    ], { error: 'Выберите категорию контакта.' }).default('other'),
     notes: optionalTextSchema.default(''),
-    methods: z.array(contactMethodSchema).min(1).max(10),
+    methods: z.array(contactMethodSchema, { error: 'Способы связи должны быть списком.' }).min(1, 'Добавьте хотя бы один способ связи.').max(10, 'Можно добавить не более 10 способов связи.'),
   })
   .strict();
 
@@ -83,6 +89,7 @@ const safeMetadataValueSchema = z.union([
 ]);
 
 const sensitiveMetadataKey = /(?:password|пароль|passphrase|secret|секрет|token|токен|pin|пин|cvv|cvc|otp|(?:код\s*)?подтвержден\p{L}*|confirmation\s*(?:code)?|card(?:number)?|pan)/iu;
+const explicitCredentialValue = /(?:\b(?:password|passphrase|secret|token|pin|cvv|cvc|otp)\b|пароль|секрет|токен|пин|(?:код\s*)?подтвержден\p{L}*)\s*(?:[:=]|[-–—])\s*\S+/iu;
 
 function containsPanLikeSequence(value: string | number) {
   const compact = String(value).replace(/\D/g, '');
@@ -109,12 +116,15 @@ export const safeMetadataSchema = z
       if ((typeof value === 'string' || typeof value === 'number') && containsPanLikeSequence(value)) {
         context.addIssue({ code: 'custom', message: 'Полный номер карты хранить нельзя.', path: [key] });
       }
+      if (typeof value === 'string' && explicitCredentialValue.test(value)) {
+        context.addIssue({ code: 'custom', message: 'Секретные данные и реквизиты карт хранить нельзя.', path: [key] });
+      }
     }
   });
 
 export const secureItemInputSchema = z
   .object({
-    title: z.string().trim().min(1).max(280),
+    title: z.string({ error: 'Название безопасной записи должно быть текстом.' }).trim().min(1, 'Введите название безопасной записи.').max(280, 'Название безопасной записи слишком длинное.'),
     externalUrl: z
       .string({ error: 'Укажите корректную HTTPS-ссылку Bitwarden.' })
       .trim()

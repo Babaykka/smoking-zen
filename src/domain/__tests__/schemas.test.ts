@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest';
 
 import {
   MAX_ATTACHMENT_BYTES,
+  attachmentInputSchema,
   contactInputSchema,
   prioritySchema,
   safeMetadataSchema,
@@ -54,6 +55,27 @@ describe('workspace schemas', () => {
     expect(safeMetadataSchema.parse({ last4: '4242' })).toEqual({ last4: '4242' });
   });
 
+  it.each([
+    'password: hunter2',
+    'пароль: hunter2',
+    'token=abc.def.ghi',
+    'OTP: 123456',
+    'one-time password: 123456',
+    'пин: 1234',
+    'код подтверждения: 123456',
+  ])('rejects an explicit credential in a metadata value: %s', (note) => {
+    expect(safeMetadataSchema.safeParse({ note }).success).toBe(false);
+  });
+
+  it('allows harmless metadata prose about security policies', () => {
+    expect(
+      safeMetadataSchema.parse({
+        note: 'Пароль хранится в Bitwarden; не отправляйте токены в чат.',
+        policy: 'Подтверждение входа выполняется только в приложении.',
+      }),
+    ).toMatchObject({ note: expect.any(String), policy: expect.any(String) });
+  });
+
   it('returns a Russian validation error instead of throwing for malformed safe URLs', () => {
     const result = secureItemInputSchema.safeParse({
       title: 'Касса',
@@ -65,6 +87,75 @@ describe('workspace schemas', () => {
     if (!result.success) {
       expect(result.error.issues[0]?.message).toBe('Укажите корректную HTTPS-ссылку Bitwarden.');
     }
+  });
+
+  it('returns concise Russian messages for task validation errors', () => {
+    const emptyTitle = taskInputSchema.safeParse({ title: '' });
+    const invalidDate = taskInputSchema.safeParse({ title: 'Смена', dueAt: 'tomorrow' });
+
+    expect(emptyTitle.success).toBe(false);
+    expect(invalidDate.success).toBe(false);
+    if (!emptyTitle.success) expect(emptyTitle.error.issues[0]?.message).toBe('Введите название задачи.');
+    if (!invalidDate.success) expect(invalidDate.error.issues[0]?.message).toBe('Укажите дату в формате ISO 8601.');
+  });
+
+  it('returns concise Russian messages for contact validation errors', () => {
+    const emptyName = contactInputSchema.safeParse({ name: '', methods: [{ kind: 'phone', value: '+79990000000' }] });
+    const noMethods = contactInputSchema.safeParse({ name: 'Илья', methods: [] });
+
+    expect(emptyName.success).toBe(false);
+    expect(noMethods.success).toBe(false);
+    if (!emptyName.success) expect(emptyName.error.issues[0]?.message).toBe('Введите имя контакта.');
+    if (!noMethods.success) expect(noMethods.error.issues[0]?.message).toBe('Добавьте хотя бы один способ связи.');
+  });
+
+  it('returns concise Russian messages for attachment validation errors', () => {
+    const missingName = attachmentInputSchema.safeParse({ id: 'attachment-1', name: '', mimeType: 'application/pdf', size: 1 });
+    const oversized = attachmentInputSchema.safeParse({ id: 'attachment-1', name: 'menu.pdf', mimeType: 'application/pdf', size: MAX_ATTACHMENT_BYTES + 1 });
+
+    expect(missingName.success).toBe(false);
+    expect(oversized.success).toBe(false);
+    if (!missingName.success) expect(missingName.error.issues[0]?.message).toBe('Введите название файла.');
+    if (!oversized.success) expect(oversized.error.issues[0]?.message).toBe('Размер файла не должен превышать 25 МиБ.');
+  });
+
+  it('returns a concise Russian message for a missing secure item title', () => {
+    const result = secureItemInputSchema.safeParse({
+      title: '',
+      externalUrl: 'https://vault.bitwarden.com/#/items/123',
+      metadata: {},
+    });
+
+    expect(result.success).toBe(false);
+    if (!result.success) expect(result.error.issues[0]?.message).toBe('Введите название безопасной записи.');
+  });
+
+  it('returns Russian type and maximum-length messages for user-entered fields', () => {
+    const taskType = taskInputSchema.safeParse({ title: 42 });
+    const contactMaximum = contactInputSchema.safeParse({
+      name: 'И'.repeat(281),
+      methods: [{ kind: 'phone', value: '+79990000000' }],
+    });
+    const attachmentType = attachmentInputSchema.safeParse({
+      id: 'attachment-1',
+      name: 'menu.pdf',
+      mimeType: 'application/pdf',
+      size: '1',
+    });
+    const secureItemType = secureItemInputSchema.safeParse({
+      title: 42,
+      externalUrl: 'https://vault.bitwarden.com/#/items/123',
+      metadata: {},
+    });
+
+    expect(taskType.success).toBe(false);
+    expect(contactMaximum.success).toBe(false);
+    expect(attachmentType.success).toBe(false);
+    expect(secureItemType.success).toBe(false);
+    if (!taskType.success) expect(taskType.error.issues[0]?.message).toBe('Название задачи должно быть текстом.');
+    if (!contactMaximum.success) expect(contactMaximum.error.issues[0]?.message).toBe('Имя контакта слишком длинное.');
+    if (!attachmentType.success) expect(attachmentType.error.issues[0]?.message).toBe('Размер файла должен быть числом.');
+    if (!secureItemType.success) expect(secureItemType.error.issues[0]?.message).toBe('Название безопасной записи должно быть текстом.');
   });
 
   it('accepts a contact with phone, Telegram, and WhatsApp methods', () => {
