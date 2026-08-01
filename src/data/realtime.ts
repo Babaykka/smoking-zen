@@ -30,29 +30,39 @@ export function subscribeWorkspaceRealtime(
   let timer: ReturnType<typeof setTimeout> | number | null = null;
   let stopped = false;
   let attempts = 0;
+  let generation = 0;
 
   const connect = () => {
     if (stopped) return;
-    channel = client.channel(`workspace:${workspaceId}`, { config: { private: true } });
-    channel.on('broadcast', { event: 'workspace_changed' }, listener).subscribe((status) => {
+    const connectionGeneration = ++generation;
+    const attemptChannel = client.channel(`workspace:${workspaceId}`, { config: { private: true } });
+    channel = attemptChannel;
+    attemptChannel.on('broadcast', { event: 'workspace_changed' }, listener).subscribe((status) => {
+      if (stopped || connectionGeneration !== generation || channel !== attemptChannel) return;
       if (status === 'SUBSCRIBED') {
         attempts = 0;
         return;
       }
-      if (!['CHANNEL_ERROR', 'TIMED_OUT', 'CLOSED'].includes(status) || stopped) return;
-      const failedChannel = channel;
+      if (!['CHANNEL_ERROR', 'TIMED_OUT', 'CLOSED'].includes(status)) return;
+      generation += 1;
       channel = null;
-      if (failedChannel) void client.removeChannel(failedChannel);
+      void client.removeChannel(attemptChannel);
+      if (timer !== null) return;
       const delay = Math.min(30_000, 1_000 * (2 ** attempts));
       attempts += 1;
-      timer = schedule(connect, delay);
+      timer = schedule(() => {
+        timer = null;
+        connect();
+      }, delay);
     });
   };
 
   connect();
   return () => {
     stopped = true;
+    generation += 1;
     if (timer !== null) cancel(timer);
+    timer = null;
     if (channel) void client.removeChannel(channel);
     channel = null;
   };

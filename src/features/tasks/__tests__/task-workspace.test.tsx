@@ -1,7 +1,8 @@
-import { fireEvent, render, screen, within } from '@testing-library/react';
+import { fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import { createDemoRepository } from '@/data/demo-repository';
+import { createDemoGateway } from '@/data/workspace-gateway';
 import { demoSeed } from '@/data/demo-seed';
 import { ConflictError, type WorkspaceRepository } from '@/data/workspace-repository';
 import type { Task } from '@/domain/types';
@@ -12,43 +13,43 @@ afterEach(() => window.localStorage.clear());
 
 function renderWorkspace(repository: WorkspaceRepository, props: Partial<React.ComponentProps<typeof TaskWorkspace>> = {}) {
   return render(
-    <WorkspaceProvider repository={repository}>
+    <WorkspaceProvider gateway={createDemoGateway(repository)}>
       <TaskWorkspace activeView="tasks" createRequest={0} {...props} />
     </WorkspaceProvider>,
   );
 }
 
 describe('TaskWorkspace', () => {
-  it('creates a task from only a title with P3 and rejects an empty title', () => {
+  it('creates a task from only a title with P3 and rejects an empty title', async () => {
     const repository = createDemoRepository({ seed: { ...demoSeed, tasks: [] }, loadPersisted: false });
     const { rerender } = renderWorkspace(repository);
 
     fireEvent.click(screen.getByRole('button', { name: 'Быстрая задача' }));
     fireEvent.submit(screen.getByRole('form', { name: 'Быстрое создание задачи' }));
-    expect(screen.getByRole('alert')).toHaveTextContent('Введите название задачи.');
+    expect(await screen.findByRole('alert')).toHaveTextContent('Введите название задачи.');
 
     fireEvent.change(screen.getByLabelText('Название задачи'), { target: { value: 'Заказать мяту' } });
     fireEvent.submit(screen.getByRole('form', { name: 'Быстрое создание задачи' }));
 
-    expect(screen.getByText('Заказать мяту')).toBeInTheDocument();
+    expect(await screen.findByText('Заказать мяту')).toBeInTheDocument();
     expect(repository.snapshot().tasks[0]).toMatchObject({ title: 'Заказать мяту', priority: 3, assigneeId: null, dueAt: null });
 
     rerender(
-      <WorkspaceProvider repository={repository}>
+      <WorkspaceProvider gateway={createDemoGateway(repository)}>
         <TaskWorkspace activeView="tasks" createRequest={1} />
       </WorkspaceProvider>,
     );
     expect(screen.getByLabelText('Название задачи')).toHaveFocus();
   });
 
-  it('does not persist secret-like text from fast creation', () => {
+  it('does not persist secret-like text from fast creation', async () => {
     const repository = createDemoRepository({ seed: { ...demoSeed, tasks: [] }, loadPersisted: false });
     renderWorkspace(repository);
     fireEvent.click(screen.getByRole('button', { name: 'Быстрая задача' }));
     fireEvent.change(screen.getByLabelText('Название задачи'), { target: { value: 'password: hunter2' } });
     fireEvent.submit(screen.getByRole('form', { name: 'Быстрое создание задачи' }));
 
-    expect(screen.getByRole('alert')).toHaveTextContent('Секретные данные');
+    expect(await screen.findByRole('alert')).toHaveTextContent('Секретные данные');
     expect(repository.snapshot().tasks).toEqual([]);
   });
 
@@ -102,7 +103,7 @@ describe('TaskWorkspace', () => {
     expect(screen.queryByText('Высокая')).not.toBeInTheDocument();
   });
 
-  it('edits one assignee, optional deadline, priority, status, and sanitized Markdown checklist', () => {
+  it('edits one assignee, optional deadline, priority, status, and sanitized Markdown checklist', async () => {
     const repository = createDemoRepository({ loadPersisted: false });
     renderWorkspace(repository);
     fireEvent.click(screen.getByRole('button', { name: /Открыть задачу Проверить запас/ }));
@@ -114,7 +115,7 @@ describe('TaskWorkspace', () => {
     fireEvent.change(screen.getByLabelText('Срок'), { target: { value: '2026-08-05T15:30' } });
     fireEvent.click(screen.getByRole('button', { name: 'Сохранить задачу' }));
 
-    expect(repository.snapshot().tasks[0]).toMatchObject({ priority: 1, statusId: 'status-in-progress', assigneeId: 'member-owner' });
+    await waitFor(() => expect(repository.snapshot().tasks[0]).toMatchObject({ priority: 1, statusId: 'status-in-progress', assigneeId: 'member-owner' }));
     expect(repository.snapshot().tasks[0]?.dueAt).toContain('2026-08-05T15:30');
     const preview = screen.getByRole('region', { name: 'Предпросмотр описания' });
     expect(within(preview).getByRole('checkbox')).toBeChecked();
@@ -122,18 +123,18 @@ describe('TaskWorkspace', () => {
     expect(preview.querySelector('script')).toBeNull();
   });
 
-  it('adds comments to the selected task', () => {
+  it('adds comments to the selected task', async () => {
     const repository = createDemoRepository({ loadPersisted: false });
     renderWorkspace(repository);
     fireEvent.click(screen.getByRole('button', { name: /Открыть задачу Проверить запас/ }));
     fireEvent.change(screen.getByLabelText('Новый комментарий'), { target: { value: 'Поставщик подтвердил' } });
     fireEvent.click(screen.getByRole('button', { name: 'Добавить комментарий' }));
 
-    expect(screen.getByText('Поставщик подтвердил')).toBeInTheDocument();
+    expect(await screen.findByText('Поставщик подтвердил')).toBeInTheDocument();
     expect(repository.snapshot().comments[0]).toMatchObject({ taskId: 'task-check-coals', authorId: 'member-owner' });
   });
 
-  it('preserves the draft on a version conflict and offers reload or retry', () => {
+  it('preserves the draft on a version conflict and offers reload or retry', async () => {
     const repository = createDemoRepository({ loadPersisted: false });
     const originalUpdate = repository.updateTask.bind(repository);
     repository.updateTask = vi.fn(() => { throw new ConflictError(1, 2); });
@@ -142,11 +143,23 @@ describe('TaskWorkspace', () => {
     fireEvent.change(screen.getByLabelText('Название'), { target: { value: 'Мой несохранённый текст' } });
     fireEvent.click(screen.getByRole('button', { name: 'Сохранить задачу' }));
 
-    expect(screen.getByRole('alert')).toHaveTextContent('изменена другим пользователем');
+    expect(await screen.findByRole('alert')).toHaveTextContent('изменена другим пользователем');
     expect(screen.getByLabelText('Название')).toHaveValue('Мой несохранённый текст');
     expect(screen.getByRole('button', { name: 'Загрузить актуальную версию' })).toBeInTheDocument();
     expect(screen.getByRole('button', { name: 'Повторить с моими данными' })).toBeInTheDocument();
 
     repository.updateTask = originalUpdate;
+  });
+
+  it('shows an accessible validation error and preserves a blank editor draft', async () => {
+    const repository = createDemoRepository({ loadPersisted: false });
+    renderWorkspace(repository);
+    fireEvent.click(screen.getByRole('button', { name: /Открыть задачу Проверить запас/ }));
+    fireEvent.change(screen.getByLabelText('Название'), { target: { value: '   ' } });
+    fireEvent.click(screen.getByRole('button', { name: 'Сохранить задачу' }));
+
+    expect(await screen.findByRole('alert')).toHaveTextContent('Введите название задачи.');
+    expect(screen.getByLabelText('Название')).toHaveValue('   ');
+    expect(repository.snapshot().tasks[0]?.title).toBe('Проверить запас кокосового угля');
   });
 });

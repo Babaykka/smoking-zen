@@ -3,6 +3,7 @@ import { describe, expect, it } from 'vitest';
 import {
   MAX_ATTACHMENT_BYTES,
   attachmentInputSchema,
+  commentInputSchema,
   contactInputSchema,
   prioritySchema,
   safeMetadataSchema,
@@ -78,6 +79,17 @@ describe('workspace schemas', () => {
         russianPolicy: 'Политика смены пароля описана в регламенте команды.',
       }),
     ).toMatchObject({ note: expect.any(String), policy: expect.any(String) });
+  });
+
+  it('rejects explicit secrets and complete card numbers in task descriptions and comments', () => {
+    expect(taskInputSchema.safeParse({ title: 'Смена', description: 'token=abc.def.ghi' }).success).toBe(false);
+    expect(taskInputSchema.safeParse({ title: 'Касса', description: 'Карта 4242 4242 4242 4242' }).success).toBe(false);
+    expect(commentInputSchema.safeParse({ taskId: 'task-1', authorId: 'member-1', body: 'пароль: hunter2' }).success).toBe(false);
+  });
+
+  it('allows harmless task and comment prose about credential policy', () => {
+    expect(taskInputSchema.safeParse({ title: 'Регламент', description: 'Пароль хранится в Bitwarden; токены в чат не отправляем.' }).success).toBe(true);
+    expect(commentInputSchema.safeParse({ taskId: 'task-1', authorId: 'member-1', body: 'Политика смены пароля обновлена.' }).success).toBe(true);
   });
 
   it('returns a Russian validation error instead of throwing for malformed safe URLs', () => {

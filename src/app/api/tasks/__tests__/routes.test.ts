@@ -50,7 +50,7 @@ describe('task routes', () => {
 
     const createResponse = await handler(jsonRequest('https://app.example/api/tasks', 'POST', { title: 'Новая задача' }));
     expect(createResponse.status).toBe(201);
-    expect(taskStore.createTask).toHaveBeenCalledWith(actor.workspaceId, expect.objectContaining({ title: 'Новая задача', priority: 3 }));
+    expect(taskStore.createTask).toHaveBeenCalledWith(actor.workspaceId, expect.objectContaining({ title: 'Новая задача', priority: 3 }), actor.userId);
 
     const injected = await handler(jsonRequest('https://app.example/api/tasks', 'POST', { title: 'Чужая', workspaceId: 'another-workspace' }));
     expect(injected.status).toBe(400);
@@ -66,15 +66,27 @@ describe('task routes', () => {
     expect(await response.json()).toMatchObject({ data: { expectedVersion: 1, actualVersion: 2 }, error: { code: 'version_conflict' } });
   });
 
+  it('passes a title-only patch without materializing create defaults', async () => {
+    const taskStore = store();
+    const handler = createTaskItemHandler({ appOrigin: 'https://app.example', store: taskStore, authenticate: async () => actor, requestId: () => 'request-patch' });
+
+    const response = await handler(jsonRequest('https://app.example/api/tasks/task-1', 'PATCH', {
+      input: { title: 'Только новое название' }, expectedVersion: 1,
+    }), { params: Promise.resolve({ id: 'task-1' }) });
+
+    expect(response.status).toBe(200);
+    expect(taskStore.updateTask).toHaveBeenCalledWith(actor.workspaceId, 'task-1', { title: 'Только новое название' }, 1, actor.userId);
+  });
+
   it('soft deletes and restores a task with an expected version', async () => {
     const taskStore = store();
     const handler = createTaskItemHandler({ appOrigin: 'https://app.example', store: taskStore, authenticate: async () => actor, requestId: () => 'request-4' });
 
     expect((await handler(jsonRequest('https://app.example/api/tasks/task-1', 'DELETE', { expectedVersion: 2 }), { params: Promise.resolve({ id: 'task-1' }) })).status).toBe(200);
-    expect(taskStore.deleteTask).toHaveBeenCalledWith(actor.workspaceId, 'task-1', 2);
+    expect(taskStore.deleteTask).toHaveBeenCalledWith(actor.workspaceId, 'task-1', 2, actor.userId);
 
     expect((await handler(jsonRequest('https://app.example/api/tasks/task-1', 'PATCH', { action: 'restore', expectedVersion: 3 }), { params: Promise.resolve({ id: 'task-1' }) })).status).toBe(200);
-    expect(taskStore.restoreTask).toHaveBeenCalledWith(actor.workspaceId, 'task-1', 3);
+    expect(taskStore.restoreTask).toHaveBeenCalledWith(actor.workspaceId, 'task-1', 3, actor.userId);
   });
 
   it('creates comments with the authenticated membership as author', async () => {
@@ -83,6 +95,6 @@ describe('task routes', () => {
     const response = await handler(jsonRequest('https://app.example/api/comments', 'POST', { taskId: 'task-1', authorId: 'attacker', body: 'Готово' }));
 
     expect(response.status).toBe(201);
-    expect(taskStore.createComment).toHaveBeenCalledWith(actor.workspaceId, { taskId: 'task-1', authorId: actor.membershipId, body: 'Готово' });
+    expect(taskStore.createComment).toHaveBeenCalledWith(actor.workspaceId, { taskId: 'task-1', authorId: actor.membershipId, body: 'Готово' }, actor.userId);
   });
 });

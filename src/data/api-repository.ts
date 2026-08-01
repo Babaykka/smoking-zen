@@ -1,5 +1,6 @@
 import { ConflictError, type WorkspaceListener } from '@/data/workspace-repository';
-import type { CommentInput, TaskInput } from '@/domain/schemas';
+import type { CommentInput, TaskInput, TaskPatchInput } from '@/domain/schemas';
+import type { WorkspaceGateway } from '@/data/workspace-gateway';
 import type { Comment, Task, WorkspaceSnapshot } from '@/domain/types';
 
 type ApiEnvelope<T> = { data: T | null; error: { code: string; message: string } | null; requestId: string };
@@ -26,28 +27,36 @@ async function envelope<T>(response: Response): Promise<ApiEnvelope<T>> {
   return parsed as ApiEnvelope<T>;
 }
 
-export function createApiRepository(options: ApiRepositoryOptions) {
+export function createApiRepository(options: ApiRepositoryOptions): WorkspaceGateway & { pendingTaskInput(id: string): TaskPatchInput | undefined } {
   const fetcher = options.fetcher ?? fetch;
   let state = clone(options.initialSnapshot);
   const listeners = new Set<WorkspaceListener>();
-  const pendingTasks = new Map<string, Partial<TaskInput>>();
+  const pendingTasks = new Map<string, TaskPatchInput>();
   let disposed = false;
+  let hydrated = false;
+  let hydration: Promise<void> | null = null;
 
   const notify = () => {
     const snapshot = clone(state);
     for (const listener of listeners) listener(snapshot);
   };
 
-  const hydrate = async () => {
-    const response = await fetcher('/api/tasks', { credentials: 'same-origin', headers: { accept: 'application/json' } });
-    const result = await envelope<WorkspaceSnapshot>(response);
-    if (!response.ok || !result.data) throw new Error(result.error?.message ?? 'Не удалось загрузить задачи.');
-    state = clone(result.data);
-    notify();
+  const hydrate = async (force = false) => {
+    if (hydrated && !force) return;
+    if (hydration) return hydration;
+    hydration = (async () => {
+      const response = await fetcher('/api/tasks', { credentials: 'same-origin', headers: { accept: 'application/json' } });
+      const result = await envelope<WorkspaceSnapshot>(response);
+      if (!response.ok || !result.data) throw new Error(result.error?.message ?? 'Не удалось загрузить задачи.');
+      state = clone(result.data);
+      hydrated = true;
+      notify();
+    })().finally(() => { hydration = null; });
+    return hydration;
   };
 
   const unsubscribeRealtime = options.realtime(state.workspaceId, () => {
-    if (!disposed) void hydrate().catch(() => { /* Keep the last known safe snapshot and retry on the next event. */ });
+    if (!disposed) void hydrate(true).catch(() => { /* Keep the last known safe snapshot and retry on the next event. */ });
   });
 
   const request = async <T>(url: string, method: string, body: unknown): Promise<T> => {
@@ -79,7 +88,7 @@ export function createApiRepository(options: ApiRepositoryOptions) {
       notify();
       return clone(created);
     },
-    async updateTask(id: string, input: Partial<TaskInput>, expectedVersion: number): Promise<Task> {
+    async updateTask(id: string, input: TaskPatchInput, expectedVersion: number): Promise<Task> {
       pendingTasks.set(id, clone(input));
       try {
         const updated = await request<Task>(`/api/tasks/${encodeURIComponent(id)}`, 'PATCH', { input, expectedVersion });

@@ -19,7 +19,7 @@ export function createTasksHandler(dependencies: TaskRouteDependencies) {
       const body = await readJsonObject(request);
       const parsed = taskInputSchema.safeParse(body);
       if (!parsed.success) return apiResponse(requestId, 400, null, { code: 'invalid_request', message: parsed.error.issues[0]?.message ?? 'Некорректный запрос.' });
-      const task = await dependencies.store.createTask(actor.workspaceId, parsed.data);
+      const task = await dependencies.store.createTask(actor.workspaceId, parsed.data, actor.userId);
       return apiResponse(requestId, 201, task, null);
     } catch (error) {
       if (error instanceof ConflictError) return apiResponse(requestId, 409, { expectedVersion: error.expectedVersion, actualVersion: error.actualVersion }, { code: 'version_conflict', message: error.message });

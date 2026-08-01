@@ -26,6 +26,11 @@ export function containsSecretLikeText(value: string): boolean {
   return secretLikeText.test(value) || /\d(?:[ -]*\d){12,18}/.test(value);
 }
 
+const safeFreeText = (schema: z.ZodString) => schema.refine(
+  (value) => !containsSecretLikeText(value),
+  'Секретные данные и реквизиты карт хранить нельзя.',
+);
+
 export const attachmentInputSchema = z
   .object({
     id: idSchema('Идентификатор файла'),
@@ -39,7 +44,7 @@ export const attachmentInputSchema = z
 export const taskInputSchema = z
   .object({
     title: z.string({ error: 'Название задачи должно быть текстом.' }).trim().min(1, 'Введите название задачи.').max(280, 'Название задачи слишком длинное.').refine((value) => !containsSecretLikeText(value), 'Секретные данные и реквизиты карт хранить нельзя.'),
-    description: z.string({ error: 'Описание задачи должно быть текстом.' }).trim().max(20_000, 'Описание задачи слишком длинное.').default(''),
+    description: safeFreeText(z.string({ error: 'Описание задачи должно быть текстом.' }).trim().max(20_000, 'Описание задачи слишком длинное.')).default(''),
     priority: prioritySchema.default(3),
     statusId: idSchema('Статус').optional(),
     sectionId: nullableIdSchema.default(null),
@@ -49,11 +54,24 @@ export const taskInputSchema = z
   }, { error: 'Данные задачи должны быть объектом.' })
   .strict();
 
+export const taskPatchSchema = z
+  .object({
+    title: z.string({ error: 'Название задачи должно быть текстом.' }).trim().min(1, 'Введите название задачи.').max(280, 'Название задачи слишком длинное.').refine((value) => !containsSecretLikeText(value), 'Секретные данные и реквизиты карт хранить нельзя.').optional(),
+    description: safeFreeText(z.string({ error: 'Описание задачи должно быть текстом.' }).trim().max(20_000, 'Описание задачи слишком длинное.')).optional(),
+    priority: prioritySchema.optional(),
+    statusId: idSchema('Статус').optional(),
+    sectionId: nullableIdSchema,
+    assigneeId: nullableIdSchema,
+    dueAt: z.string({ error: 'Укажите дату в формате ISO 8601.' }).datetime({ offset: true, error: 'Укажите дату в формате ISO 8601.' }).nullable().optional(),
+    attachments: z.array(attachmentInputSchema, { error: 'Вложения должны быть списком.' }).max(20, 'Можно добавить не более 20 вложений.').optional(),
+  }, { error: 'Изменения задачи должны быть объектом.' })
+  .strict();
+
 export const commentInputSchema = z
   .object({
     taskId: idSchema('Идентификатор задачи'),
     authorId: idSchema('Идентификатор автора'),
-    body: z.string({ error: 'Комментарий должен быть текстом.' }).trim().min(1, 'Введите комментарий.').max(10_000, 'Комментарий слишком длинный.'),
+    body: safeFreeText(z.string({ error: 'Комментарий должен быть текстом.' }).trim().min(1, 'Введите комментарий.').max(10_000, 'Комментарий слишком длинный.')),
   }, { error: 'Комментарий должен быть объектом.' })
   .strict();
 
@@ -140,11 +158,13 @@ export const secureItemInputSchema = z
   .strict();
 
 export type TaskInput = z.input<typeof taskInputSchema>;
+export type TaskPatchInput = z.input<typeof taskPatchSchema>;
 export type CommentInput = z.input<typeof commentInputSchema>;
 export type KnowledgeInput = z.input<typeof knowledgeInputSchema>;
 export type ContactInput = z.input<typeof contactInputSchema>;
 export type SecureItemInput = z.input<typeof secureItemInputSchema>;
 export type ParsedTaskInput = z.output<typeof taskInputSchema>;
+export type ParsedTaskPatchInput = z.output<typeof taskPatchSchema>;
 export type ParsedCommentInput = z.output<typeof commentInputSchema>;
 export type ParsedKnowledgeInput = z.output<typeof knowledgeInputSchema>;
 export type ParsedContactInput = z.output<typeof contactInputSchema>;

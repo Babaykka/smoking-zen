@@ -13,7 +13,10 @@ const productionEnvironmentSchema = z.object({
   SESSION_SECRET: z.string().min(32),
   SUPABASE_URL: z.string().url(),
   SUPABASE_ANON_KEY: z.string().min(1),
+  SUPABASE_PUBLISHABLE_KEY: z.string().min(1),
   SUPABASE_SERVICE_ROLE_KEY: z.string().min(1),
+  SUPABASE_JWT_ES256_PRIVATE_KEY: z.string().min(1),
+  SUPABASE_JWT_KID: z.string().trim().min(1).max(200),
   OWNER_TELEGRAM_ID: telegramIdSchema,
   WORKSPACE_NAME: z.string().trim().min(1).max(120).default('Smoking Zen'),
   NODE_ENV: z.string().optional(),
@@ -33,7 +36,10 @@ export type ProductionServerEnvironment = {
   sessionSecret: string;
   supabaseUrl: string;
   supabaseAnonKey: string;
+  supabasePublishableKey: string;
   supabaseServiceRoleKey: string;
+  supabaseJwtEs256PrivateKey: string;
+  supabaseJwtKid: string;
   ownerTelegramId: string;
   workspaceName: string;
 };
@@ -64,7 +70,10 @@ export function parseServerEnvironment(source: Record<string, string | undefined
     sessionSecret: parsed.data.SESSION_SECRET,
     supabaseUrl: parsed.data.SUPABASE_URL,
     supabaseAnonKey: parsed.data.SUPABASE_ANON_KEY,
+    supabasePublishableKey: parsed.data.SUPABASE_PUBLISHABLE_KEY,
     supabaseServiceRoleKey: parsed.data.SUPABASE_SERVICE_ROLE_KEY,
+    supabaseJwtEs256PrivateKey: parsed.data.SUPABASE_JWT_ES256_PRIVATE_KEY,
+    supabaseJwtKid: parsed.data.SUPABASE_JWT_KID,
     ownerTelegramId: parsed.data.OWNER_TELEGRAM_ID,
     workspaceName: parsed.data.WORKSPACE_NAME,
   };

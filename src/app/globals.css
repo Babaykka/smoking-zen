@@ -176,6 +176,15 @@ a:focus-visible {
   color: var(--muted);
 }
 
+.bootstrap-state {
+  display: grid;
+  min-height: 100dvh;
+  place-items: center;
+  padding: 1.5rem;
+  color: var(--muted);
+  text-align: center;
+}
+
 .tasks-workspace {
   display: grid;
   grid-template-columns: minmax(0, 1fr);

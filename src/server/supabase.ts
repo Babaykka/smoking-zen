@@ -91,10 +91,13 @@ function invitationError(message: string): AccessStoreError {
   return new AccessStoreError('database_error');
 }
 
-export function createServiceSupabaseClient(environment: ProductionServerEnvironment): SupabaseClient {
+export function createServiceSupabaseClient(
+  environment: ProductionServerEnvironment,
+  requestHeaders: Readonly<Record<string, string>> = {},
+): SupabaseClient {
   return createClient(environment.supabaseUrl, environment.supabaseServiceRoleKey, {
     auth: { autoRefreshToken: false, detectSessionInUrl: false, persistSession: false },
-    global: { headers: { 'X-Client-Info': 'smoking-zen-server' } },
+    global: { headers: { 'X-Client-Info': 'smoking-zen-server', ...requestHeaders } },
   });
 }
 

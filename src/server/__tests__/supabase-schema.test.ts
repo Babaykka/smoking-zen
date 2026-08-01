@@ -8,6 +8,7 @@ import { afterEach, describe, expect, it } from 'vitest';
 const MIGRATIONS = [
   'supabase/migrations/0001_workspace_schema.sql',
   'supabase/migrations/0002_rls_storage_realtime.sql',
+  'supabase/migrations/0003_task_realtime_actor.sql',
 ];
 const OWNER_TELEGRAM_ID = '4503599627370495';
 const REQUIRED_SECTIONS = [
@@ -240,5 +241,33 @@ describe('Supabase schema runtime security', () => {
       event: 'workspace_changed',
       payload: { entity: 'task', action: 'created' },
     }]);
+  });
+
+  it('attributes service-role audit events only to an active member of the same live workspace', async () => {
+    const database = await createDatabase({ seedRounds: 1 });
+    const workspaceOne = '10000000-0000-4000-8000-000000000001';
+    const workspaceTwo = '10000000-0000-4000-8000-000000000002';
+    const actorOne = '20000000-0000-4000-8000-000000000001';
+    const statusOne = '40000000-0000-4000-8000-000000000001';
+    const statusTwo = '40000000-0000-4000-8000-000000000099';
+    await database.exec(`
+      insert into public.workspaces (id, name) values ('${workspaceTwo}', 'Other workspace');
+      insert into public.task_statuses (id, workspace_id, name, position)
+      values ('${statusTwo}', '${workspaceTwo}', 'Новая', 1);
+    `);
+
+    await database.query("select set_config('request.headers', $1, false)", [JSON.stringify({ 'x-smoking-zen-actor': actorOne })]);
+    await database.query('insert into public.tasks (workspace_id, title, status_id) values ($1, $2, $3)', [workspaceOne, 'Attributed', statusOne]);
+    await database.query('insert into public.tasks (workspace_id, title, status_id) values ($1, $2, $3)', [workspaceTwo, 'Forged cross-workspace', statusTwo]);
+    const events = await database.query<{ workspace_id: string; actor_user_id: string | null }>(
+      `select ae.workspace_id, ae.actor_user_id
+       from public.audit_events ae join public.tasks t on t.id = ae.entity_id
+       where t.title in ('Attributed', 'Forged cross-workspace') order by ae.workspace_id`,
+    );
+
+    expect(events.rows).toEqual([
+      { workspace_id: workspaceOne, actor_user_id: actorOne },
+      { workspace_id: workspaceTwo, actor_user_id: null },
+    ]);
   });
 });

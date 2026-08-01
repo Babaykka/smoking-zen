@@ -3,7 +3,7 @@ import 'server-only';
 import type { SupabaseClient } from '@supabase/supabase-js';
 
 import { ConflictError } from '@/data/workspace-repository';
-import type { CommentInput, TaskInput } from '@/domain/schemas';
+import type { CommentInput, TaskInput, TaskPatchInput } from '@/domain/schemas';
 import type { Comment, Priority, Section, Task, TaskStatus, WorkspaceMember, WorkspaceSnapshot } from '@/domain/types';
 import { requireProductionEnvironment } from '@/server/env';
 import { readSessionCookie } from '@/server/http';
@@ -14,11 +14,11 @@ export type TaskSessionActor = { userId: string; workspaceId: string; membership
 
 export interface TaskApiStore {
   getWorkspaceData(workspaceId: string): Promise<WorkspaceSnapshot>;
-  createTask(workspaceId: string, input: TaskInput): Promise<Task>;
-  updateTask(workspaceId: string, id: string, input: Partial<TaskInput>, expectedVersion: number): Promise<Task>;
-  deleteTask(workspaceId: string, id: string, expectedVersion: number): Promise<Task>;
-  restoreTask(workspaceId: string, id: string, expectedVersion: number): Promise<Task>;
-  createComment(workspaceId: string, input: CommentInput): Promise<Comment>;
+  createTask(workspaceId: string, input: TaskInput, actorUserId: string): Promise<Task>;
+  updateTask(workspaceId: string, id: string, input: TaskPatchInput, expectedVersion: number, actorUserId: string): Promise<Task>;
+  deleteTask(workspaceId: string, id: string, expectedVersion: number, actorUserId: string): Promise<Task>;
+  restoreTask(workspaceId: string, id: string, expectedVersion: number, actorUserId: string): Promise<Task>;
+  createComment(workspaceId: string, input: CommentInput, actorUserId: string): Promise<Comment>;
 }
 
 export type TaskRouteDependencies = {
@@ -71,7 +71,7 @@ function memberFromRow(value: unknown): WorkspaceMember {
   return { ...metadata(row), name: String(row.display_name), role: row.role === 'owner' ? 'owner' : 'member', active: Boolean(row.active) };
 }
 
-function taskPatch(input: Partial<TaskInput>): Record<string, unknown> {
+function taskPatch(input: TaskPatchInput): Record<string, unknown> {
   const patch: Record<string, unknown> = {};
   if ('title' in input) patch.title = input.title;
   if ('description' in input) patch.description = input.description;
@@ -83,7 +83,10 @@ function taskPatch(input: Partial<TaskInput>): Record<string, unknown> {
   return patch;
 }
 
-export function createSupabaseTaskStore(client: SupabaseClient): TaskApiStore {
+export function createSupabaseTaskStore(
+  client: SupabaseClient,
+  createActorClient: (actorUserId: string) => SupabaseClient = () => client,
+): TaskApiStore {
   const currentTask = async (workspaceId: string, id: string): Promise<Record<string, unknown> | null> => {
     const result = await client.from('tasks').select('*').eq('workspace_id', workspaceId).eq('id', id).maybeSingle() as DataResult;
     return assertResult(result) as Record<string, unknown> | null;
@@ -114,7 +117,8 @@ export function createSupabaseTaskStore(client: SupabaseClient): TaskApiStore {
       };
     },
 
-    async createTask(workspaceId, input) {
+    async createTask(workspaceId, input, actorUserId) {
+      const actorClient = createActorClient(actorUserId);
       let statusId = input.statusId;
       if (!statusId) {
         const statusResult = await client.from('task_statuses').select('id').eq('workspace_id', workspaceId).is('deleted_at', null).order('position').limit(1).maybeSingle() as DataResult;
@@ -122,42 +126,42 @@ export function createSupabaseTaskStore(client: SupabaseClient): TaskApiStore {
         if (!status || typeof status.id !== 'string') throw new Error('Статус по умолчанию не найден');
         statusId = status.id;
       }
-      const result = await client.from('tasks').insert({
+      const result = await actorClient.from('tasks').insert({
         workspace_id: workspaceId, title: input.title, description: input.description ?? '', priority: input.priority ?? 3,
         status_id: statusId, section_id: input.sectionId ?? null, assignee_id: input.assigneeId ?? null, due_at: input.dueAt ?? null,
       }).select('*').single() as DataResult;
       return taskFromRow(assertResult(result));
     },
 
-    async updateTask(workspaceId, id, input, expectedVersion) {
-      const result = await client.from('tasks').update({ ...taskPatch(input), version: expectedVersion + 1, updated_at: new Date().toISOString() })
+    async updateTask(workspaceId, id, input, expectedVersion, actorUserId) {
+      const result = await createActorClient(actorUserId).from('tasks').update({ ...taskPatch(input), version: expectedVersion + 1, updated_at: new Date().toISOString() })
         .eq('workspace_id', workspaceId).eq('id', id).eq('version', expectedVersion).is('deleted_at', null).select('*').maybeSingle() as DataResult;
       const data = assertResult(result);
       return data ? taskFromRow(data) : conflictOrMissing(workspaceId, id, expectedVersion);
     },
 
-    async deleteTask(workspaceId, id, expectedVersion) {
+    async deleteTask(workspaceId, id, expectedVersion, actorUserId) {
       const timestamp = new Date().toISOString();
-      const result = await client.from('tasks').update({ deleted_at: timestamp, updated_at: timestamp, version: expectedVersion + 1 })
+      const result = await createActorClient(actorUserId).from('tasks').update({ deleted_at: timestamp, updated_at: timestamp, version: expectedVersion + 1 })
         .eq('workspace_id', workspaceId).eq('id', id).eq('version', expectedVersion).is('deleted_at', null).select('*').maybeSingle() as DataResult;
       const data = assertResult(result);
       return data ? taskFromRow(data) : conflictOrMissing(workspaceId, id, expectedVersion);
     },
 
-    async restoreTask(workspaceId, id, expectedVersion) {
+    async restoreTask(workspaceId, id, expectedVersion, actorUserId) {
       const current = await currentTask(workspaceId, id);
       if (!current) throw new Error('Запись не найдена');
       if (Number(current.version) !== expectedVersion) throw new ConflictError(expectedVersion, Number(current.version));
       const deletedAt = Date.parse(String(current.deleted_at));
       if (!Number.isFinite(deletedAt) || Date.now() >= deletedAt + 30 * 24 * 60 * 60 * 1_000) throw new Error('Срок восстановления истёк');
-      const result = await client.from('tasks').update({ deleted_at: null, updated_at: new Date().toISOString(), version: expectedVersion + 1 })
+      const result = await createActorClient(actorUserId).from('tasks').update({ deleted_at: null, updated_at: new Date().toISOString(), version: expectedVersion + 1 })
         .eq('workspace_id', workspaceId).eq('id', id).eq('version', expectedVersion).select('*').maybeSingle() as DataResult;
       const data = assertResult(result);
       return data ? taskFromRow(data) : conflictOrMissing(workspaceId, id, expectedVersion);
     },
 
-    async createComment(workspaceId, input) {
-      const result = await client.from('comments').insert({ workspace_id: workspaceId, task_id: input.taskId, author_id: input.authorId, body: input.body }).select('*').single() as DataResult;
+    async createComment(workspaceId, input, actorUserId) {
+      const result = await createActorClient(actorUserId).from('comments').insert({ workspace_id: workspaceId, task_id: input.taskId, author_id: input.authorId, body: input.body }).select('*').single() as DataResult;
       return commentFromRow(assertResult(result));
     },
   };
@@ -169,7 +173,10 @@ export function createDefaultTaskRouteDependencies(): TaskRouteDependencies {
   const accessStore = createSupabaseAccessStore(client);
   return {
     appOrigin: environment.appOrigin,
-    store: createSupabaseTaskStore(client),
+    store: createSupabaseTaskStore(
+      client,
+      (actorUserId) => createServiceSupabaseClient(environment, { 'x-smoking-zen-actor': actorUserId }),
+    ),
     requestId: () => crypto.randomUUID(),
     async authenticate(request) {
       const identity = await readSession(readSessionCookie(request), { secret: environment.sessionSecret });

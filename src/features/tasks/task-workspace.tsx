@@ -88,7 +88,9 @@ export function TaskWorkspace({ activeView, createRequest, now = new Date() }: T
   const [draft, setDraft] = useState<TaskDraft | null>(null);
   const [draftVersion, setDraftVersion] = useState(0);
   const [conflictVersion, setConflictVersion] = useState<number | null>(null);
+  const [draftError, setDraftError] = useState('');
   const [comment, setComment] = useState('');
+  const [commentError, setCommentError] = useState('');
   const [priorityFilters, setPriorityFilters] = useState<Priority[]>([]);
   const [statusFilters, setStatusFilters] = useState<string[]>([]);
 
@@ -113,12 +115,13 @@ export function TaskWorkspace({ activeView, createRequest, now = new Date() }: T
     setDraft(draftFrom(task));
     setDraftVersion(task.version);
     setConflictVersion(null);
+    setDraftError('');
   };
 
-  const createTask = (event: FormEvent) => {
+  const createTask = async (event: FormEvent) => {
     event.preventDefault();
     try {
-      repository.createTask({ title: quickTitle });
+      await repository.createTask({ title: quickTitle });
       setQuickTitle('');
       setQuickError('');
       setQuickOpen(false);
@@ -128,19 +131,20 @@ export function TaskWorkspace({ activeView, createRequest, now = new Date() }: T
     }
   };
 
-  const saveDraft = (version = draftVersion) => {
+  const saveDraft = async (version = draftVersion) => {
     if (!selectedId || !draft) return;
     try {
-      const updated = repository.updateTask(selectedId, draft, version);
+      const updated = await repository.updateTask(selectedId, draft, version);
       setDraft(draftFrom(updated));
       setDraftVersion(updated.version);
       setConflictVersion(null);
+      setDraftError('');
     } catch (error) {
       if (error instanceof ConflictError) {
         setConflictVersion(error.actualVersion);
         return;
       }
-      throw error;
+      setDraftError(error instanceof Error ? error.message : 'Не удалось сохранить задачу.');
     }
   };
 
@@ -152,13 +156,18 @@ export function TaskWorkspace({ activeView, createRequest, now = new Date() }: T
     setConflictVersion(null);
   };
 
-  const addComment = (event: FormEvent) => {
+  const addComment = async (event: FormEvent) => {
     event.preventDefault();
     if (!selectedId || !comment.trim()) return;
     const author = snapshot.members.find((member) => member.active);
     if (!author) return;
-    repository.createComment({ taskId: selectedId, authorId: author.id, body: comment });
-    setComment('');
+    try {
+      await repository.createComment({ taskId: selectedId, authorId: author.id, body: comment });
+      setComment('');
+      setCommentError('');
+    } catch (error) {
+      setCommentError(error instanceof Error ? error.message : 'Не удалось добавить комментарий.');
+    }
   };
 
   const togglePriority = (priority: Priority) => setPriorityFilters((current) =>
@@ -230,6 +239,7 @@ export function TaskWorkspace({ activeView, createRequest, now = new Date() }: T
             <label>Срок<input onChange={(event) => setDraft({ ...draft, dueAt: event.target.value ? `${event.target.value}:00.000Z` : null })} type="datetime-local" value={draft.dueAt?.slice(0, 16) ?? ''} /></label>
           </div>
           <button className="task-primary-button" onClick={() => saveDraft()} type="button">Сохранить задачу</button>
+          {draftError && <p className="task-validation-error" role="alert">{draftError}</p>}
           {conflictVersion !== null && (
             <div className="task-conflict" role="alert">
               <p>Задача изменена другим пользователем. Ваши данные сохранены в форме.</p>
@@ -243,6 +253,7 @@ export function TaskWorkspace({ activeView, createRequest, now = new Date() }: T
             <form onSubmit={addComment}>
               <label>Новый комментарий<textarea onChange={(event) => setComment(event.target.value)} value={comment} /></label>
               <button type="submit">Добавить комментарий</button>
+              {commentError && <p role="alert">{commentError}</p>}
             </form>
           </section>
         </aside>

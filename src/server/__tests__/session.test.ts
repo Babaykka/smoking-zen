@@ -88,4 +88,18 @@ describe('server environment', () => {
     expect(() => parseServerEnvironment({ APP_MODE: 'production', NODE_ENV: 'production' }))
       .toThrow('Production server configuration is incomplete.');
   });
+
+  it('parses the trusted ES256 signing key and publishable browser configuration in production', () => {
+    const environment = parseServerEnvironment({
+      APP_MODE: 'production', APP_ORIGIN: 'https://app.example', TELEGRAM_BOT_TOKEN: 'bot-token',
+      SESSION_SECRET: 's'.repeat(32), SUPABASE_URL: 'https://project.supabase.co', SUPABASE_ANON_KEY: 'anon',
+      SUPABASE_PUBLISHABLE_KEY: 'sb_publishable_test', SUPABASE_SERVICE_ROLE_KEY: 'service',
+      SUPABASE_JWT_ES256_PRIVATE_KEY: '-----BEGIN PRIVATE KEY-----\ntest\n-----END PRIVATE KEY-----',
+      SUPABASE_JWT_KID: 'trusted-es256-key', OWNER_TELEGRAM_ID: '123456789',
+    });
+
+    expect(environment).toMatchObject({
+      mode: 'production', supabasePublishableKey: 'sb_publishable_test', supabaseJwtEs256PrivateKey: expect.stringContaining('PRIVATE KEY'), supabaseJwtKid: 'trusted-es256-key',
+    });
+  });
 });

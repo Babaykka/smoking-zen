@@ -19,6 +19,8 @@ describe('API task repository', () => {
     await repository.hydrate();
     expect(repository.snapshot().tasks).toHaveLength(1);
     expect(fetcher).toHaveBeenCalledWith('/api/tasks', { credentials: 'same-origin', headers: { accept: 'application/json' } });
+    await repository.hydrate();
+    expect(fetcher).toHaveBeenCalledTimes(1);
 
     invalidate?.();
     await vi.waitFor(() => expect(fetcher).toHaveBeenCalledTimes(2));
@@ -73,5 +75,38 @@ describe('workspace Realtime', () => {
     statuses[0]?.('CHANNEL_ERROR');
     expect(delays[0]).toBe(1_000);
     expect(client.channel).toHaveBeenCalledTimes(2);
+  });
+
+  it('keeps one reconnect timer and ignores stale channel callbacks after cleanup', () => {
+    const statuses: Array<(status: string) => void> = [];
+    const channels = Array.from({ length: 3 }, (_, index) => ({
+      id: index,
+      on: vi.fn().mockReturnThis(),
+      subscribe: vi.fn((callback: (status: string) => void) => { statuses.push(callback); return channels[index]!; }),
+    }));
+    const client = { channel: vi.fn(() => channels[client.channel.mock.calls.length - 1]!), removeChannel: vi.fn() };
+    const scheduled: Array<() => void> = [];
+    const cancelled: number[] = [];
+    const unsubscribe = subscribeWorkspaceRealtime(client, '33333333-3333-4333-8333-333333333333', () => {}, {
+      schedule: (callback) => { scheduled.push(callback); return scheduled.length; },
+      cancel: (timer) => { cancelled.push(Number(timer)); },
+    });
+
+    statuses[0]?.('CHANNEL_ERROR');
+    statuses[0]?.('CHANNEL_ERROR');
+    expect(scheduled).toHaveLength(1);
+    scheduled[0]?.();
+    statuses[0]?.('CLOSED');
+    expect(scheduled).toHaveLength(1);
+
+    statuses[1]?.('TIMED_OUT');
+    expect(scheduled).toHaveLength(2);
+    unsubscribe();
+    scheduled[1]?.();
+
+    expect(client.channel).toHaveBeenCalledTimes(2);
+    expect(client.removeChannel).toHaveBeenCalledWith(channels[0]);
+    expect(client.removeChannel).toHaveBeenCalledWith(channels[1]);
+    expect(cancelled).toContain(2);
   });
 });

@@ -3,6 +3,7 @@ import { describe, expect, it } from 'vitest';
 
 import { createDemoRepository } from '@/data/demo-repository';
 import { demoSeed } from '@/data/demo-seed';
+import { createDemoGateway } from '@/data/workspace-gateway';
 import { WorkspaceProvider, useWorkspace } from '@/providers/workspace-provider';
 
 function TaskCount() {
@@ -20,7 +21,7 @@ describe('WorkspaceProvider', () => {
     const repository = createDemoRepository({ persistence: { load: () => null, save: () => {} } });
 
     render(
-      <WorkspaceProvider repository={repository}>
+      <WorkspaceProvider gateway={createDemoGateway(repository)}>
         <TaskCount />
       </WorkspaceProvider>,
     );
@@ -40,7 +41,7 @@ describe('WorkspaceProvider', () => {
     expect(repository.snapshot().tasks[0]?.title).toBe(demoSeed.tasks[0]?.title);
 
     render(
-      <WorkspaceProvider>
+      <WorkspaceProvider gateway={createDemoGateway(repository)}>
         <FirstTaskTitle />
       </WorkspaceProvider>,
     );

@@ -14,7 +14,7 @@ export function createCommentsHandler(dependencies: TaskRouteDependencies) {
     const parsed = commentInputSchema.safeParse(body && { ...body, authorId: actor.membershipId });
     if (!parsed.success) return apiResponse(requestId, 400, null, { code: 'invalid_request', message: parsed.error.issues[0]?.message ?? 'Некорректный запрос.' });
     try {
-      return apiResponse(requestId, 201, await dependencies.store.createComment(actor.workspaceId, parsed.data), null);
+      return apiResponse(requestId, 201, await dependencies.store.createComment(actor.workspaceId, parsed.data, actor.userId), null);
     } catch {
       return apiResponse(requestId, 500, null, { code: 'internal_error', message: 'Не удалось выполнить запрос.' });
     }

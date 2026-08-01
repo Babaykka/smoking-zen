@@ -1,14 +1,14 @@
 import { z } from 'zod';
 
 import { ConflictError } from '@/data/workspace-repository';
-import { taskInputSchema } from '@/domain/schemas';
+import { taskPatchSchema } from '@/domain/schemas';
 import { ServerConfigurationError } from '@/server/env';
 import { apiResponse, hasSameOrigin, readJsonObject } from '@/server/http';
 import { createDefaultTaskRouteDependencies, type TaskRouteDependencies } from '@/server/task-api';
 
 type RouteContext = { params: Promise<{ id: string }> };
 const expectedVersionSchema = z.number().int().positive();
-const updateSchema = z.object({ input: taskInputSchema.partial(), expectedVersion: expectedVersionSchema }).strict();
+const updateSchema = z.object({ input: taskPatchSchema, expectedVersion: expectedVersionSchema }).strict();
 const restoreSchema = z.object({ action: z.literal('restore'), expectedVersion: expectedVersionSchema }).strict();
 const deleteSchema = z.object({ expectedVersion: expectedVersionSchema }).strict();
 
@@ -25,15 +25,15 @@ export function createTaskItemHandler(dependencies: TaskRouteDependencies) {
       const body = await readJsonObject(request);
       if (request.method === 'PATCH') {
         const restore = restoreSchema.safeParse(body);
-        if (restore.success) return apiResponse(requestId, 200, await dependencies.store.restoreTask(actor.workspaceId, id, restore.data.expectedVersion), null);
+        if (restore.success) return apiResponse(requestId, 200, await dependencies.store.restoreTask(actor.workspaceId, id, restore.data.expectedVersion, actor.userId), null);
         const update = updateSchema.safeParse(body);
         if (!update.success || Object.keys(update.data.input).length === 0) return apiResponse(requestId, 400, null, { code: 'invalid_request', message: 'Некорректный запрос.' });
-        return apiResponse(requestId, 200, await dependencies.store.updateTask(actor.workspaceId, id, update.data.input, update.data.expectedVersion), null);
+        return apiResponse(requestId, 200, await dependencies.store.updateTask(actor.workspaceId, id, update.data.input, update.data.expectedVersion, actor.userId), null);
       }
       if (request.method === 'DELETE') {
         const parsed = deleteSchema.safeParse(body);
         if (!parsed.success) return apiResponse(requestId, 400, null, { code: 'invalid_request', message: 'Некорректный запрос.' });
-        return apiResponse(requestId, 200, await dependencies.store.deleteTask(actor.workspaceId, id, parsed.data.expectedVersion), null);
+        return apiResponse(requestId, 200, await dependencies.store.deleteTask(actor.workspaceId, id, parsed.data.expectedVersion, actor.userId), null);
       }
       return apiResponse(requestId, 405, null, { code: 'method_not_allowed', message: 'Метод не поддерживается.' });
     } catch (error) {
