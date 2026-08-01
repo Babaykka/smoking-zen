@@ -10,7 +10,7 @@
 - Normalized PostgreSQL tables for workspaces, Telegram-backed users, memberships, statuses, sections, tasks, comments, knowledge, contacts and methods, secure-item links, attachments, reminders, invitations, audit events, notification outbox, and delivery state.
 - Version/deletion metadata, cross-workspace foreign keys, visible-row indexes, append-only audit protection, safe audit/outbox payloads, and `(event_id, channel)` delivery uniqueness.
 - Non-recursive `SECURITY DEFINER` membership/owner helpers with locked search paths; workspace RLS, private Storage policies, and `workspace:<uuid>` Broadcast authorization.
-- Deterministic non-secret seed data with sections `Операции` / `База знаний` and statuses `Новая` / `В работе` / `Ждёт` / `Готово`.
+- Deterministic non-secret seed data with eight operational sections and statuses `Новая` / `В работе` / `Ждёт` / `Готово`.
 
 ## RED evidence
 
@@ -42,3 +42,38 @@
 ## Remaining integration note
 
 No live Supabase credentials were available. The PostgreSQL execution harness supplied minimal local stand-ins for Supabase-owned `auth`, `storage`, and `realtime` objects and for `extensions.gen_random_uuid()`; production should still apply these migrations in a staging Supabase project before release.
+
+## Fix round 1 — identity authorization and workspace integrity
+
+### RED evidence
+
+1. `pnpm vitest run src/server/__tests__/supabase-schema.test.ts src/server/__tests__/supabase.test.ts` produced `7` expected failures across `8` probes:
+   - `update_own_profile` did not exist and authenticated access to the private authorization helper was unavailable;
+   - deleted users/workspaces still retained owner authorization, and a deleted membership allowed owner bootstrap to create a duplicate workspace;
+   - the seed returned only `Операции` and `База знаний` instead of the required eight sections;
+   - the adapter sent the nonexistent `p_redeemed_at` argument.
+2. The first cross-workspace fixture reached the old global outbox uniqueness check before its intended relationship check. After assigning it an unused event, the targeted rerun failed with `promise resolved instead of rejecting`, proving that a cross-workspace event/outbox insert was accepted.
+
+### GREEN evidence
+
+- PostgreSQL runtime and adapter regressions: `2` files, `8` tests passed.
+- Focused Telegram/session/route/Supabase suite: `5` files, `26` tests passed.
+- Full suite: `10` files, `78` tests passed.
+- `pnpm lint`: exit `0`.
+- `pnpm typecheck`: exit `0`.
+- `pnpm build`: optimized production build and all four API routes completed successfully.
+- SQLFluff and PostgreSQL AST parsing passed for both migrations and the seed.
+- The checked-in PGlite suite executed both migrations twice and the seed twice. It verified direct RLS denial of an `OWNER_TELEGRAM_ID` preclaim, successful scoped profile updates, revoked owner access for deleted user/membership/workspace records, no duplicate workspace bootstrap, exact eight-section/four-status seed state, exact redemption RPC signature, and cross-workspace foreign-key rejection.
+- `git diff --check`: exit `0`.
+
+### Corrections
+
+- Removed the direct `app_users` update policy. Added a locked-search-path `SECURITY DEFINER` profile RPC limited to `display_name`, `username`, and HTTPS `avatar_url`; identity, Telegram ID, deletion state, and record IDs cannot be changed through it.
+- Strengthened owner authorization, invitation creation, active membership lookup, and bootstrap/redeem paths to require live users, memberships, and workspaces. Revoked historical owners now fail closed and bootstrap never silently replaces them with a duplicate workspace.
+- Removed client-controlled redemption time from the TypeScript contract and Supabase RPC payload; PostgreSQL remains authoritative for redemption time.
+- Replaced the seed hierarchy with exactly: `Открытие`, `Ремонт и техника`, `Закупки и склад`, `Зал и сервис`, `Персонал`, `Маркетинг`, `Документы и финансы`, `Безопасность и санитария`.
+- Added composite workspace/event/outbox uniqueness and foreign keys so notification rows cannot reference audit/outbox records from another workspace.
+
+### Remaining scope
+
+The two ledgered minor findings were intentionally left unchanged for their assigned review round.

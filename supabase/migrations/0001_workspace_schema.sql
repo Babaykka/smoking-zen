@@ -8,6 +8,8 @@ create table if not exists public.app_users (
   first_name text not null check (char_length(first_name) between 1 and 256),
   last_name text check (last_name is null or char_length(last_name) between 1 and 256),
   username text check (username is null or char_length(username) between 1 and 64),
+  display_name text check (display_name is null or char_length(display_name) between 1 and 280),
+  avatar_url text check (avatar_url is null or (char_length(avatar_url) <= 2000 and avatar_url ~ '^https://')),
   language_code text check (language_code is null or char_length(language_code) between 1 and 35),
   version integer not null default 1 check (version > 0),
   created_at timestamptz not null default clock_timestamp(),
@@ -270,7 +272,8 @@ create table if not exists public.audit_events (
   action text not null check (action in ('created', 'updated', 'deleted', 'restored')),
   actor_user_id uuid references public.app_users(id),
   entity_version integer not null check (entity_version > 0),
-  occurred_at timestamptz not null default clock_timestamp()
+  occurred_at timestamptz not null default clock_timestamp(),
+  unique (workspace_id, id)
 );
 
 create index if not exists audit_events_workspace_timeline_idx
@@ -281,7 +284,7 @@ create index if not exists audit_events_entity_idx
 create table if not exists public.notification_outbox (
   id uuid primary key default extensions.gen_random_uuid(),
   workspace_id uuid not null references public.workspaces(id),
-  event_id uuid not null references public.audit_events(id),
+  event_id uuid not null,
   channel text not null check (channel = 'telegram'),
   payload jsonb not null default '{}'::jsonb check (jsonb_typeof(payload) = 'object'),
   available_at timestamptz not null default clock_timestamp(),
@@ -292,7 +295,9 @@ create table if not exists public.notification_outbox (
   created_at timestamptz not null default clock_timestamp(),
   updated_at timestamptz not null default clock_timestamp(),
   deleted_at timestamptz,
-  unique (event_id, channel)
+  unique (event_id, channel),
+  unique (workspace_id, id, event_id),
+  foreign key (workspace_id, event_id) references public.audit_events(workspace_id, id)
 );
 
 create index if not exists notification_outbox_pending_idx
@@ -302,8 +307,8 @@ create index if not exists notification_outbox_pending_idx
 create table if not exists public.notification_deliveries (
   id uuid primary key default extensions.gen_random_uuid(),
   workspace_id uuid not null references public.workspaces(id),
-  event_id uuid not null references public.audit_events(id),
-  outbox_id uuid not null references public.notification_outbox(id),
+  event_id uuid not null,
+  outbox_id uuid not null,
   channel text not null check (channel = 'telegram'),
   delivered_at timestamptz,
   version integer not null default 1 check (version > 0),
@@ -311,7 +316,10 @@ create table if not exists public.notification_deliveries (
   updated_at timestamptz not null default clock_timestamp(),
   deleted_at timestamptz,
   unique (event_id, channel),
-  unique (outbox_id)
+  unique (outbox_id),
+  foreign key (workspace_id, event_id) references public.audit_events(workspace_id, id),
+  foreign key (workspace_id, outbox_id, event_id)
+    references public.notification_outbox(workspace_id, id, event_id)
 );
 
 create or replace function private.set_record_metadata()
@@ -441,8 +449,12 @@ set search_path = ''
 as $$
 declare
   selected_user_id uuid;
+  selected_user_deleted_at timestamptz;
   selected_workspace_id uuid;
   selected_membership_id uuid;
+  selected_membership_active boolean;
+  selected_membership_deleted_at timestamptz;
+  selected_workspace_deleted_at timestamptz;
 begin
   if p_telegram_id !~ '^[0-9]{1,16}$'
     or p_telegram_id::numeric not between 1 and 4503599627370495
@@ -460,13 +472,24 @@ begin
     last_name = excluded.last_name,
     username = excluded.username,
     language_code = excluded.language_code
-  returning id into selected_user_id;
+  where public.app_users.deleted_at is null
+  returning id, deleted_at into selected_user_id, selected_user_deleted_at;
+
+  if selected_user_id is null then
+    select au.id, au.deleted_at into selected_user_id, selected_user_deleted_at
+    from public.app_users au where au.telegram_id = p_telegram_id;
+  end if;
+  if selected_user_deleted_at is not null then
+    return;
+  end if;
 
   if p_telegram_id = p_owner_telegram_id then
-    select wm.workspace_id, wm.id
-      into selected_workspace_id, selected_membership_id
+    select wm.workspace_id, wm.id, wm.active, wm.deleted_at, w.deleted_at
+      into selected_workspace_id, selected_membership_id, selected_membership_active,
+        selected_membership_deleted_at, selected_workspace_deleted_at
     from public.workspace_members wm
-    where wm.user_id = selected_user_id and wm.role = 'owner' and wm.deleted_at is null
+    join public.workspaces w on w.id = wm.workspace_id
+    where wm.user_id = selected_user_id and wm.role = 'owner'
     order by wm.created_at
     limit 1;
 
@@ -477,6 +500,10 @@ begin
       insert into public.workspace_members (workspace_id, user_id, display_name, role, active)
       values (selected_workspace_id, selected_user_id, trim(concat_ws(' ', p_first_name, p_last_name)), 'owner', true)
       returning id into selected_membership_id;
+    elsif not selected_membership_active
+      or selected_membership_deleted_at is not null
+      or selected_workspace_deleted_at is not null then
+      return;
     end if;
   end if;
 
@@ -484,7 +511,12 @@ begin
   select au.id, wm.id, wm.workspace_id, wm.role, wm.active and wm.deleted_at is null, wm.display_name
   from public.app_users au
   join public.workspace_members wm on wm.user_id = au.id
-  where au.id = selected_user_id and wm.deleted_at is null
+  join public.workspaces w on w.id = wm.workspace_id
+  where au.id = selected_user_id
+    and au.deleted_at is null
+    and wm.active
+    and wm.deleted_at is null
+    and w.deleted_at is null
   order by (wm.role = 'owner') desc, wm.created_at
   limit 1;
 end;
@@ -541,11 +573,15 @@ begin
 
   select wm.id into creator_membership_id
   from public.workspace_members wm
+  join public.app_users au on au.id = wm.user_id
+  join public.workspaces w on w.id = wm.workspace_id
   where wm.workspace_id = p_workspace_id
     and wm.user_id = p_creator_user_id
     and wm.role = 'owner'
     and wm.active
     and wm.deleted_at is null
+    and au.deleted_at is null
+    and w.deleted_at is null
   for share;
   if creator_membership_id is null then
     raise exception 'owner_required' using errcode = '42501';
@@ -608,7 +644,11 @@ begin
     last_name = excluded.last_name,
     username = excluded.username,
     language_code = excluded.language_code
+  where public.app_users.deleted_at is null
   returning id into selected_user_id;
+  if selected_user_id is null then
+    raise exception 'invitation_invalid' using errcode = 'P0001';
+  end if;
 
   insert into public.workspace_members (workspace_id, user_id, display_name, role, active, deleted_at)
   values (

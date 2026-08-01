@@ -36,7 +36,6 @@ export type CreateInvitationInput = {
 export type RedeemInvitationInput = {
   tokenHash: string;
   telegramUser: VerifiedTelegramUser;
-  redeemedAt: string;
 };
 
 export interface AccessStore {
@@ -150,7 +149,6 @@ export function createSupabaseAccessStore(client: SupabaseClient): AccessStore {
         p_last_name: input.telegramUser.lastName ?? null,
         p_username: input.telegramUser.username ?? null,
         p_language_code: input.telegramUser.languageCode ?? null,
-        p_redeemed_at: input.redeemedAt,
       });
       if (error) throw invitationError(error.message);
       const membership = parseMembership(data);

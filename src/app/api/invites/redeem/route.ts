@@ -69,7 +69,6 @@ export function createRedeemInvitationHandler(dependencies: RedeemInvitationDepe
       const membership = await dependencies.store.redeemInvitation({
         tokenHash,
         telegramUser,
-        redeemedAt: now.toISOString(),
       });
       if (!membership.active) {
         return apiResponse(requestId, 403, null, {

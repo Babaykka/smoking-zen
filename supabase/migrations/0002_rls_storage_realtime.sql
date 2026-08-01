@@ -31,11 +31,15 @@ as $$
   select exists (
     select 1
     from public.workspace_members wm
+    join public.app_users au on au.id = wm.user_id
+    join public.workspaces w on w.id = wm.workspace_id
     where wm.workspace_id = target_workspace_id
       and wm.user_id = auth.uid()
       and wm.role = 'owner'
       and wm.active
       and wm.deleted_at is null
+      and au.deleted_at is null
+      and w.deleted_at is null
   )
 $$;
 
@@ -78,6 +82,7 @@ revoke all on function private.is_workspace_member(uuid) from public;
 revoke all on function private.is_workspace_owner(uuid) from public;
 revoke all on function private.storage_workspace_id(text) from public;
 revoke all on function private.broadcast_workspace_id(text) from public;
+grant usage on schema private to authenticated, service_role;
 grant execute on function private.is_workspace_member(uuid) to authenticated, service_role;
 grant execute on function private.is_workspace_owner(uuid) to authenticated, service_role;
 grant execute on function private.storage_workspace_id(text) to authenticated, service_role;
@@ -105,9 +110,38 @@ drop policy if exists app_users_self_select on public.app_users;
 create policy app_users_self_select on public.app_users for select to authenticated
 using (id = auth.uid() and deleted_at is null);
 drop policy if exists app_users_self_update on public.app_users;
-create policy app_users_self_update on public.app_users for update to authenticated
-using (id = auth.uid() and deleted_at is null)
-with check (id = auth.uid() and deleted_at is null);
+
+create or replace function public.update_own_profile(
+  p_display_name text,
+  p_username text default null,
+  p_avatar_url text default null
+)
+returns table (display_name text, username text, avatar_url text)
+language plpgsql
+security definer
+set search_path = ''
+as $$
+begin
+  if p_display_name is null or char_length(trim(p_display_name)) not between 1 and 280
+    or (p_username is not null and p_username !~ '^[A-Za-z0-9_]{5,64}$')
+    or (p_avatar_url is not null and (char_length(p_avatar_url) > 2000 or p_avatar_url !~ '^https://')) then
+    raise exception 'invalid_profile' using errcode = '22023';
+  end if;
+
+  return query
+  update public.app_users au
+  set display_name = trim(p_display_name), username = p_username, avatar_url = p_avatar_url
+  where au.id = auth.uid() and au.deleted_at is null
+  returning au.display_name, au.username, au.avatar_url;
+
+  if not found then
+    raise exception 'profile_not_found' using errcode = 'P0002';
+  end if;
+end;
+$$;
+
+revoke all on function public.update_own_profile(text, text, text) from public, anon, authenticated;
+grant execute on function public.update_own_profile(text, text, text) to authenticated;
 
 drop policy if exists workspaces_member_select on public.workspaces;
 create policy workspaces_member_select on public.workspaces for select to authenticated
