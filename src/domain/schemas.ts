@@ -28,7 +28,7 @@ export const attachmentInputSchema = z
     mimeType: z.string({ error: 'Тип файла должен быть текстом.' }).trim().min(1, 'Укажите тип файла.').max(200, 'Тип файла слишком длинный.'),
     size: z.number({ error: 'Размер файла должен быть числом.' }).int('Размер файла должен быть целым числом.').nonnegative('Размер файла не может быть отрицательным.').max(MAX_ATTACHMENT_BYTES, 'Размер файла не должен превышать 25 МиБ.'),
     storagePath: z.string({ error: 'Путь к файлу должен быть текстом.' }).trim().min(1, 'Путь к файлу не может быть пустым.').max(1_000, 'Путь к файлу слишком длинный.').optional(),
-  })
+  }, { error: 'Вложение должно быть объектом.' })
   .strict();
 
 export const taskInputSchema = z
@@ -41,7 +41,7 @@ export const taskInputSchema = z
     assigneeId: nullableIdSchema.default(null),
     dueAt: z.string({ error: 'Укажите дату в формате ISO 8601.' }).datetime({ offset: true, error: 'Укажите дату в формате ISO 8601.' }).nullable().optional().default(null),
     attachments: z.array(attachmentInputSchema, { error: 'Вложения должны быть списком.' }).max(20, 'Можно добавить не более 20 вложений.').default([]),
-  })
+  }, { error: 'Данные задачи должны быть объектом.' })
   .strict();
 
 export const commentInputSchema = z
@@ -49,7 +49,7 @@ export const commentInputSchema = z
     taskId: idSchema('Идентификатор задачи'),
     authorId: idSchema('Идентификатор автора'),
     body: z.string({ error: 'Комментарий должен быть текстом.' }).trim().min(1, 'Введите комментарий.').max(10_000, 'Комментарий слишком длинный.'),
-  })
+  }, { error: 'Комментарий должен быть объектом.' })
   .strict();
 
 export const knowledgeInputSchema = z
@@ -59,14 +59,14 @@ export const knowledgeInputSchema = z
     kind: z.enum(['note', 'instruction', 'document', 'link'] satisfies [KnowledgeKind, ...KnowledgeKind[]], { error: 'Выберите тип материала.' }),
     sectionId: nullableIdSchema.default(null),
     attachments: z.array(attachmentInputSchema, { error: 'Вложения должны быть списком.' }).max(20, 'Можно добавить не более 20 вложений.').default([]),
-  })
+  }, { error: 'Материал должен быть объектом.' })
   .strict();
 
 export const contactMethodSchema = z
   .object({
     kind: z.enum(['phone', 'telegram', 'whatsapp'] satisfies [ContactMethodKind, ...ContactMethodKind[]], { error: 'Выберите способ связи.' }),
     value: z.string({ error: 'Контакт должен быть текстом.' }).trim().min(1, 'Введите контакт.').max(300, 'Контакт слишком длинный.'),
-  })
+  }, { error: 'Способ связи должен быть объектом.' })
   .strict();
 
 export const contactInputSchema = z
@@ -78,7 +78,7 @@ export const contactInputSchema = z
     ], { error: 'Выберите категорию контакта.' }).default('other'),
     notes: optionalTextSchema.default(''),
     methods: z.array(contactMethodSchema, { error: 'Способы связи должны быть списком.' }).min(1, 'Добавьте хотя бы один способ связи.').max(10, 'Можно добавить не более 10 способов связи.'),
-  })
+  }, { error: 'Контакт должен быть объектом.' })
   .strict();
 
 const safeMetadataValueSchema = z.union([
@@ -89,7 +89,7 @@ const safeMetadataValueSchema = z.union([
 ]);
 
 const sensitiveMetadataKey = /(?:password|пароль|passphrase|secret|секрет|token|токен|pin|пин|cvv|cvc|otp|(?:код\s*)?подтвержден\p{L}*|confirmation\s*(?:code)?|card(?:number)?|pan)/iu;
-const explicitCredentialValue = /(?:\b(?:password|passphrase|secret|token|pin|cvv|cvc|otp)\b|пароль|секрет|токен|пин|(?:код\s*)?подтвержден\p{L}*)\s*(?:[:=]|[-–—])\s*\S+/iu;
+const explicitCredentialValue = /(?:\b(?:password|passphrase|secret|token|pin|cvv|cvc|otp)\b|пароль|секрет|токен|пин|(?:код\s*)?подтвержден\p{L}*)(?:\s*(?:[:=]|[-–—])\s*|\s+(?=\S*(?:\d|[._~+/=-])))\S+/iu;
 
 function containsPanLikeSequence(value: string | number) {
   const compact = String(value).replace(/\D/g, '');
@@ -107,7 +107,7 @@ function isBitwardenUrl(value: string) {
 }
 
 export const safeMetadataSchema = z
-  .record(z.string().trim().min(1, 'Название поля метаданных не может быть пустым.').max(100, 'Название поля метаданных слишком длинное.'), safeMetadataValueSchema)
+  .record(z.string().trim().min(1, 'Название поля метаданных не может быть пустым.').max(100, 'Название поля метаданных слишком длинное.'), safeMetadataValueSchema, { error: 'Метаданные должны быть объектом.' })
   .superRefine((metadata, context) => {
     for (const [key, value] of Object.entries(metadata)) {
       if (sensitiveMetadataKey.test(key)) {
@@ -131,7 +131,7 @@ export const secureItemInputSchema = z
       .min(1, 'Укажите корректную HTTPS-ссылку Bitwarden.')
       .refine(isBitwardenUrl, 'Укажите корректную HTTPS-ссылку Bitwarden.'),
     metadata: safeMetadataSchema.default({}),
-  })
+  }, { error: 'Безопасная запись должна быть объектом.' })
   .strict();
 
 export type TaskInput = z.input<typeof taskInputSchema>;

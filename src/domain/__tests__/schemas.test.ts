@@ -60,8 +60,10 @@ describe('workspace schemas', () => {
     'пароль: hunter2',
     'token=abc.def.ghi',
     'OTP: 123456',
+    'OTP 123456',
     'one-time password: 123456',
     'пин: 1234',
+    'пароль hunter2',
     'код подтверждения: 123456',
   ])('rejects an explicit credential in a metadata value: %s', (note) => {
     expect(safeMetadataSchema.safeParse({ note }).success).toBe(false);
@@ -72,6 +74,8 @@ describe('workspace schemas', () => {
       safeMetadataSchema.parse({
         note: 'Пароль хранится в Bitwarden; не отправляйте токены в чат.',
         policy: 'Подтверждение входа выполняется только в приложении.',
+        englishPolicy: 'Password rotation is documented in the team policy.',
+        russianPolicy: 'Политика смены пароля описана в регламенте команды.',
       }),
     ).toMatchObject({ note: expect.any(String), policy: expect.any(String) });
   });
@@ -156,6 +160,32 @@ describe('workspace schemas', () => {
     if (!contactMaximum.success) expect(contactMaximum.error.issues[0]?.message).toBe('Имя контакта слишком длинное.');
     if (!attachmentType.success) expect(attachmentType.error.issues[0]?.message).toBe('Размер файла должен быть числом.');
     if (!secureItemType.success) expect(secureItemType.error.issues[0]?.message).toBe('Название безопасной записи должно быть текстом.');
+  });
+
+  it('returns Russian container errors for nested user input', () => {
+    const attachmentObject = attachmentInputSchema.safeParse(null);
+    const taskAttachment = taskInputSchema.safeParse({ title: 'Смена', attachments: [null] });
+    const taskAttachments = taskInputSchema.safeParse({ title: 'Смена', attachments: 'не список' });
+    const contactMethod = contactInputSchema.safeParse({ name: 'Илья', methods: [null] });
+    const contactMethods = contactInputSchema.safeParse({ name: 'Илья', methods: 'не список' });
+    const secureMetadata = secureItemInputSchema.safeParse({
+      title: 'Касса',
+      externalUrl: 'https://vault.bitwarden.com/#/items/123',
+      metadata: 'не объект',
+    });
+
+    expect(attachmentObject.success).toBe(false);
+    expect(taskAttachment.success).toBe(false);
+    expect(taskAttachments.success).toBe(false);
+    expect(contactMethod.success).toBe(false);
+    expect(contactMethods.success).toBe(false);
+    expect(secureMetadata.success).toBe(false);
+    if (!attachmentObject.success) expect(attachmentObject.error.issues[0]?.message).toBe('Вложение должно быть объектом.');
+    if (!taskAttachment.success) expect(taskAttachment.error.issues[0]?.message).toBe('Вложение должно быть объектом.');
+    if (!taskAttachments.success) expect(taskAttachments.error.issues[0]?.message).toBe('Вложения должны быть списком.');
+    if (!contactMethod.success) expect(contactMethod.error.issues[0]?.message).toBe('Способ связи должен быть объектом.');
+    if (!contactMethods.success) expect(contactMethods.error.issues[0]?.message).toBe('Способы связи должны быть списком.');
+    if (!secureMetadata.success) expect(secureMetadata.error.issues[0]?.message).toBe('Метаданные должны быть объектом.');
   });
 
   it('accepts a contact with phone, Telegram, and WhatsApp methods', () => {
