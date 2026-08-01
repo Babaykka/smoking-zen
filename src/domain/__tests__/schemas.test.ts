@@ -4,6 +4,7 @@ import {
   MAX_ATTACHMENT_BYTES,
   contactInputSchema,
   prioritySchema,
+  safeMetadataSchema,
   secureItemInputSchema,
   taskInputSchema,
 } from '@/domain/schemas';
@@ -36,6 +37,34 @@ describe('workspace schemas', () => {
         metadata: { cardNumber: '4242 4242 4242 4242' },
       }),
     ).toThrow();
+  });
+
+  it.each([
+    { пароль: 'нельзя' },
+    { секрет: 'нельзя' },
+    { токен: 'нельзя' },
+    { пин: '1234' },
+    { 'код подтверждения': '123456' },
+    { label: 4242424242424242 },
+  ])('rejects sensitive Russian keys and numeric PAN metadata: %o', (metadata) => {
+    expect(safeMetadataSchema.safeParse(metadata).success).toBe(false);
+  });
+
+  it('allows a masked last four digits value', () => {
+    expect(safeMetadataSchema.parse({ last4: '4242' })).toEqual({ last4: '4242' });
+  });
+
+  it('returns a Russian validation error instead of throwing for malformed safe URLs', () => {
+    const result = secureItemInputSchema.safeParse({
+      title: 'Касса',
+      externalUrl: 'это не URL',
+      metadata: {},
+    });
+
+    expect(result.success).toBe(false);
+    if (!result.success) {
+      expect(result.error.issues[0]?.message).toBe('Укажите корректную HTTPS-ссылку Bitwarden.');
+    }
   });
 
   it('accepts a contact with phone, Telegram, and WhatsApp methods', () => {

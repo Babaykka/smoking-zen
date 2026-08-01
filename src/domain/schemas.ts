@@ -75,37 +75,54 @@ export const contactInputSchema = z
   })
   .strict();
 
-const safeMetadataValueSchema = z.union([z.string().max(2_000), z.number().finite(), z.boolean(), z.null()]);
+const safeMetadataValueSchema = z.union([
+  z.string({ error: 'Значение метаданных должно быть строкой, числом, логическим значением или пустым.' }).max(2_000, 'Значение метаданных слишком длинное.'),
+  z.number({ error: 'Значение метаданных должно быть строкой, числом, логическим значением или пустым.' }).finite('Число в метаданных должно быть конечным.'),
+  z.boolean({ error: 'Значение метаданных должно быть строкой, числом, логическим значением или пустым.' }),
+  z.null(),
+]);
 
-function containsForbiddenSafeData(value: string) {
-  const compact = value.replace(/[\s-]/g, '');
+const sensitiveMetadataKey = /(?:password|пароль|passphrase|secret|секрет|token|токен|pin|пин|cvv|cvc|otp|(?:код\s*)?подтвержден\p{L}*|confirmation\s*(?:code)?|card(?:number)?|pan)/iu;
 
-  return /\d{13,19}/.test(compact) || /\b(?:cvv|cvc|password|passphrase|otp|pin)\b/i.test(value);
+function containsPanLikeSequence(value: string | number) {
+  const compact = String(value).replace(/\D/g, '');
+
+  return /\d{13,19}/.test(compact);
 }
+
+function isBitwardenUrl(value: string) {
+  try {
+    const url = new URL(value);
+    return url.protocol === 'https:' && (url.hostname === 'bitwarden.com' || url.hostname.endsWith('.bitwarden.com'));
+  } catch {
+    return false;
+  }
+}
+
+export const safeMetadataSchema = z
+  .record(z.string().trim().min(1, 'Название поля метаданных не может быть пустым.').max(100, 'Название поля метаданных слишком длинное.'), safeMetadataValueSchema)
+  .superRefine((metadata, context) => {
+    for (const [key, value] of Object.entries(metadata)) {
+      if (sensitiveMetadataKey.test(key)) {
+        context.addIssue({ code: 'custom', message: 'Секретные данные и реквизиты карт хранить нельзя.', path: [key] });
+      }
+      if ((typeof value === 'string' || typeof value === 'number') && containsPanLikeSequence(value)) {
+        context.addIssue({ code: 'custom', message: 'Полный номер карты хранить нельзя.', path: [key] });
+      }
+    }
+  });
 
 export const secureItemInputSchema = z
   .object({
     title: z.string().trim().min(1).max(280),
     externalUrl: z
-      .string()
-      .url()
-      .refine((value) => {
-        const url = new URL(value);
-        return url.protocol === 'https:' && (url.hostname === 'bitwarden.com' || url.hostname.endsWith('.bitwarden.com'));
-      }, 'A Bitwarden HTTPS URL is required'),
-    metadata: z.record(z.string().trim().min(1).max(100), safeMetadataValueSchema).default({}),
+      .string({ error: 'Укажите корректную HTTPS-ссылку Bitwarden.' })
+      .trim()
+      .min(1, 'Укажите корректную HTTPS-ссылку Bitwarden.')
+      .refine(isBitwardenUrl, 'Укажите корректную HTTPS-ссылку Bitwarden.'),
+    metadata: safeMetadataSchema.default({}),
   })
-  .strict()
-  .superRefine(({ metadata }, context) => {
-    for (const [key, value] of Object.entries(metadata)) {
-      if (/(?:password|passphrase|secret|token|cvv|cvc|pin|otp|confirmation|card(?:number)?|pan)/i.test(key)) {
-        context.addIssue({ code: 'custom', message: 'Secret or payment card metadata is not allowed', path: ['metadata', key] });
-      }
-      if (typeof value === 'string' && containsForbiddenSafeData(value)) {
-        context.addIssue({ code: 'custom', message: 'Secret or complete payment card data is not allowed', path: ['metadata', key] });
-      }
-    }
-  });
+  .strict();
 
 export type TaskInput = z.input<typeof taskInputSchema>;
 export type CommentInput = z.input<typeof commentInputSchema>;

@@ -24,7 +24,9 @@ export function WorkspaceProvider({ children, repository }: WorkspaceProviderPro
   const [snapshot, setSnapshot] = useState<WorkspaceSnapshot>(() => activeRepository.snapshot());
 
   useEffect(() => {
-    return activeRepository.subscribe(setSnapshot);
+    const unsubscribe = activeRepository.subscribe(setSnapshot);
+    activeRepository.hydrate();
+    return unsubscribe;
   }, [activeRepository]);
 
   const value = useMemo(() => ({ repository: activeRepository, snapshot }), [activeRepository, snapshot]);

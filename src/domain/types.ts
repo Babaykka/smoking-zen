@@ -95,13 +95,10 @@ export type AuditEvent = {
   occurredAt: string;
 };
 
-export type NotificationDelivery = {
-  id: string;
-  workspaceId: string;
+export type NotificationDelivery = RecordMetadata & {
   eventId: string;
   channel: 'telegram';
   deliveredAt: string | null;
-  createdAt: string;
 };
 
 export type WorkspaceEntity = 'task' | 'comment' | 'knowledge' | 'contact' | 'secureItem';

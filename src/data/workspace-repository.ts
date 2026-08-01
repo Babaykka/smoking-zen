@@ -54,6 +54,7 @@ export interface WorkspaceRepository {
   updateSecureItem(id: string, input: Partial<SecureItemInput>, expectedVersion: number): SecureItemLink;
   deleteSecureItem(id: string, expectedVersion: number): SecureItemLink;
   restore(entity: WorkspaceEntity, id: string, expectedVersion: number): RestorableRecord;
+  hydrate(): void;
   search(query: string): SearchResult[];
   subscribe(listener: WorkspaceListener): () => void;
 }

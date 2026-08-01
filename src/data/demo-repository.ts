@@ -36,9 +36,12 @@ type RepositoryOptions = {
   clock?: () => string;
   idFactory?: () => string;
   seed?: WorkspaceSnapshot;
+  loadPersisted?: boolean;
 };
 
 type MutableRecord = Task | Comment | KnowledgeItem | Contact | SecureItemLink;
+
+const RESTORE_WINDOW_MS = 30 * 24 * 60 * 60 * 1_000;
 
 function clone<T>(value: T): T {
   if (typeof structuredClone === 'function') return structuredClone(value);
@@ -66,6 +69,7 @@ function visibleSnapshot(state: WorkspaceSnapshot): WorkspaceSnapshot {
   snapshot.contacts = active(snapshot.contacts);
   snapshot.members = active(snapshot.members);
   snapshot.secureItems = active(snapshot.secureItems);
+  snapshot.notificationDeliveries = active(snapshot.notificationDeliveries);
   return snapshot;
 }
 
@@ -93,12 +97,40 @@ export function createLocalStoragePersistence(key = 'smoking-zen-demo-workspace'
 
 export function createDemoRepository(options: RepositoryOptions = {}): WorkspaceRepository {
   const persistence = options.persistence ?? createLocalStoragePersistence();
-  const loaded = persistence.load();
+  const loadPersisted = options.loadPersisted ?? options.persistence !== undefined;
+  const loaded = loadPersisted ? persistence.load() : null;
   let state = isSnapshot(loaded) ? clone(loaded) : clone(options.seed ?? demoSeed);
   const listeners = new Set<WorkspaceListener>();
-  let generatedIds = 0;
   const now = options.clock ?? (() => new Date().toISOString());
-  const nextId = options.idFactory ?? (() => `demo-${++generatedIds}`);
+  const existingIds = new Set<string>();
+  let generatedIds = 0;
+  const initializeGeneratedIds = () => {
+    existingIds.clear();
+    generatedIds = 0;
+    for (const record of [
+      ...state.taskStatuses,
+      ...state.sections,
+      ...state.tasks,
+      ...state.comments,
+      ...state.knowledge,
+      ...state.contacts,
+      ...state.members,
+      ...state.secureItems,
+      ...state.auditEvents,
+      ...state.notificationDeliveries,
+    ]) {
+      existingIds.add(record.id);
+      const match = /^demo-(\d+)$/.exec(record.id);
+      if (match) generatedIds = Math.max(generatedIds, Number(match[1]));
+    }
+  };
+  initializeGeneratedIds();
+  const nextId = options.idFactory ?? (() => {
+    let candidate = `demo-${++generatedIds}`;
+    while (existingIds.has(candidate)) candidate = `demo-${++generatedIds}`;
+    existingIds.add(candidate);
+    return candidate;
+  });
 
   const recordCollections: Record<WorkspaceEntity, keyof Pick<WorkspaceSnapshot, 'tasks' | 'comments' | 'knowledge' | 'contacts' | 'secureItems'>> = {
     task: 'tasks', comment: 'comments', knowledge: 'knowledge', contact: 'contacts', secureItem: 'secureItems',
@@ -112,9 +144,13 @@ export function createDemoRepository(options: RepositoryOptions = {}): Workspace
     return record;
   };
 
+  const notify = () => {
+    for (const listener of listeners) listener(visibleSnapshot(state));
+  };
+
   const persistAndNotify = () => {
     persistence.save(clone(state));
-    for (const listener of listeners) listener(visibleSnapshot(state));
+    notify();
   };
 
   const audit = (entity: WorkspaceEntity, entityId: string, action: AuditAction) => {
@@ -210,6 +246,10 @@ export function createDemoRepository(options: RepositoryOptions = {}): Workspace
     restore: (entity, id, expectedVersion): RestorableRecord => {
       const current = recordsFor(entity).find((record) => record.id === id && record.deletedAt !== null);
       if (!current) throw new Error('Удалённая запись не найдена');
+      const deletedAt = current.deletedAt === null ? Number.NaN : Date.parse(current.deletedAt);
+      if (!Number.isFinite(deletedAt) || Date.parse(now()) >= deletedAt + RESTORE_WINDOW_MS) {
+        throw new Error('Восстановление доступно только 30 дней после удаления.');
+      }
       assertVersion(current, expectedVersion);
       const restored = { ...current, version: current.version + 1, updatedAt: now(), deletedAt: null };
       const records = recordsFor(entity);
@@ -217,6 +257,13 @@ export function createDemoRepository(options: RepositoryOptions = {}): Workspace
       audit(entity, id, 'restored');
       persistAndNotify();
       return clone(restored);
+    },
+    hydrate: () => {
+      const persisted = persistence.load();
+      if (!isSnapshot(persisted)) return;
+      state = clone(persisted);
+      initializeGeneratedIds();
+      notify();
     },
     search: (query) => searchWorkspace(visibleSnapshot(state), query),
     subscribe: (listener) => {
