@@ -46,8 +46,11 @@ async function createDatabase(options: { seedRounds?: number } = {}) {
     );
     create schema realtime;
     create table realtime.messages (
-      id uuid primary key default extensions.gen_random_uuid(), extension text, topic text
+      id uuid primary key default extensions.gen_random_uuid(), extension text, topic text, event text, payload jsonb
     );
+    create function realtime.send(payload jsonb, event text, topic text, private boolean)
+      returns void language sql volatile set search_path = '' as
+      'insert into realtime.messages (extension, topic, event, payload) values (''broadcast'', topic, event, payload)';
     create function realtime.topic()
       returns text language sql stable set search_path = '' as 'select null::text';
   `);
@@ -213,6 +216,29 @@ describe('Supabase schema runtime security', () => {
 
     expect(signature.rows).toEqual([{
       arguments: 'p_token_hash text, p_telegram_id text, p_first_name text, p_last_name text, p_username text, p_language_code text',
+    }]);
+  });
+
+  it('broadcasts task changes only on the owning private workspace topic', async () => {
+    const database = await createDatabase({ seedRounds: 1 });
+    const status = await database.query<{ id: string; workspace_id: string }>(
+      'select id, workspace_id from public.task_statuses order by position limit 1',
+    );
+
+    await database.exec('delete from realtime.messages');
+    await database.query(
+      'insert into public.tasks (workspace_id, title, status_id) values ($1, $2, $3)',
+      [status.rows[0]!.workspace_id, 'Realtime task', status.rows[0]!.id],
+    );
+    const messages = await database.query<{ topic: string; extension: string; event: string; payload: { entity: string } }>(
+      'select topic, extension, event, payload from realtime.messages',
+    );
+
+    expect(messages.rows).toEqual([{
+      topic: `workspace:${status.rows[0]!.workspace_id}`,
+      extension: 'broadcast',
+      event: 'workspace_changed',
+      payload: { entity: 'task', action: 'created' },
     }]);
   });
 });

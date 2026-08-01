@@ -248,3 +248,47 @@ with check (
   extension = 'broadcast'
   and private.is_workspace_member(private.broadcast_workspace_id(realtime.topic()))
 );
+
+create or replace function private.broadcast_workspace_change()
+returns trigger
+language plpgsql
+security definer
+set search_path = ''
+as $$
+declare
+  event_action text;
+  event_entity text;
+begin
+  event_entity := case tg_table_name when 'tasks' then 'task' else 'comment' end;
+  event_action := case
+    when tg_op = 'INSERT' then 'created'
+    when old.deleted_at is null and new.deleted_at is not null then 'deleted'
+    when old.deleted_at is not null and new.deleted_at is null then 'restored'
+    else 'updated'
+  end;
+
+  perform realtime.send(
+    jsonb_build_object('entity', event_entity, 'action', event_action),
+    'workspace_changed',
+    'workspace:' || new.workspace_id::text,
+    true
+  );
+  return new;
+end;
+$$;
+
+revoke all on function private.broadcast_workspace_change() from public;
+
+do $triggers$
+declare
+  table_name text;
+begin
+  foreach table_name in array array['tasks', 'comments'] loop
+    execute format('drop trigger if exists broadcast_workspace_change on public.%I', table_name);
+    execute format(
+      'create trigger broadcast_workspace_change after insert or update on public.%I for each row execute function private.broadcast_workspace_change()',
+      table_name
+    );
+  end loop;
+end;
+$triggers$;

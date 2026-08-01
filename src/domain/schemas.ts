@@ -20,6 +20,11 @@ const idSchema = (label: string) => z
 
 const nullableIdSchema = idSchema('Значение').nullable().optional();
 const optionalTextSchema = z.string({ error: 'Заметка должна быть текстом.' }).trim().max(10_000, 'Заметка слишком длинная.').optional();
+const secretLikeText = /(?:\b(?:password|passphrase|secret|token|pin|cvv|cvc|otp)\b|пароль|секрет|токен|пин|(?:код\s*)?подтвержден\p{L}*)(?:\s*(?:[:=]|[-–—])\s*|\s+(?=\S*(?:\d|[._~+/=-])))\S+/iu;
+
+export function containsSecretLikeText(value: string): boolean {
+  return secretLikeText.test(value) || /\d(?:[ -]*\d){12,18}/.test(value);
+}
 
 export const attachmentInputSchema = z
   .object({
@@ -33,7 +38,7 @@ export const attachmentInputSchema = z
 
 export const taskInputSchema = z
   .object({
-    title: z.string({ error: 'Название задачи должно быть текстом.' }).trim().min(1, 'Введите название задачи.').max(280, 'Название задачи слишком длинное.'),
+    title: z.string({ error: 'Название задачи должно быть текстом.' }).trim().min(1, 'Введите название задачи.').max(280, 'Название задачи слишком длинное.').refine((value) => !containsSecretLikeText(value), 'Секретные данные и реквизиты карт хранить нельзя.'),
     description: z.string({ error: 'Описание задачи должно быть текстом.' }).trim().max(20_000, 'Описание задачи слишком длинное.').default(''),
     priority: prioritySchema.default(3),
     statusId: idSchema('Статус').optional(),
@@ -89,7 +94,7 @@ const safeMetadataValueSchema = z.union([
 ]);
 
 const sensitiveMetadataKey = /(?:password|пароль|passphrase|secret|секрет|token|токен|pin|пин|cvv|cvc|otp|(?:код\s*)?подтвержден\p{L}*|confirmation\s*(?:code)?|card(?:number)?|pan)/iu;
-const explicitCredentialValue = /(?:\b(?:password|passphrase|secret|token|pin|cvv|cvc|otp)\b|пароль|секрет|токен|пин|(?:код\s*)?подтвержден\p{L}*)(?:\s*(?:[:=]|[-–—])\s*|\s+(?=\S*(?:\d|[._~+/=-])))\S+/iu;
+const explicitCredentialValue = secretLikeText;
 
 function containsPanLikeSequence(value: string | number) {
   const compact = String(value).replace(/\D/g, '');
