@@ -4,6 +4,7 @@ export default defineConfig({
   testDir: './tests/e2e',
   use: {
     baseURL: 'http://127.0.0.1:3000',
+    colorScheme: 'light',
     trace: 'on-first-retry',
   },
   webServer: {
@@ -13,8 +14,12 @@ export default defineConfig({
   },
   projects: [
     {
-      name: 'chromium',
+      name: 'desktop-chromium',
       use: { ...devices['Desktop Chrome'] },
+    },
+    {
+      name: 'mobile-chromium',
+      use: { ...devices['Pixel 5'] },
     },
   ],
 });
