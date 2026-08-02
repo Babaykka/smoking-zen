@@ -975,22 +975,32 @@ describe('private file and secure-item schema runtime', () => {
       set attempts = 7, lease_id = $2, lease_expires_at = clock_timestamp() + interval '5 minutes'
       where id = $1
     `, [queue.rows[0]!.id, legacyLease]);
+    const legacySchedule = (await database.query<{
+      remove_after: string; retain_until: string; lease_expires_at: string;
+    }>(`
+      select remove_after::text, retain_until::text, lease_expires_at::text
+      from public.file_cleanup_queue where id = $1
+    `, [queue.rows[0]!.id])).rows[0]!;
 
     await applyMigration(database, MIGRATION_0014);
     const upgraded = await database.query<{
       first_remove_succeeded_at: string | null; attempts: number; lease_id: string;
+      remove_after: string; retain_until: string; lease_expires_at: string;
     }>(`
-      select first_remove_succeeded_at::text, attempts, lease_id::text
+      select first_remove_succeeded_at::text, attempts, lease_id::text,
+        remove_after::text, retain_until::text, lease_expires_at::text
       from public.file_cleanup_queue where id = $1
     `, [queue.rows[0]!.id]);
     expect(upgraded.rows).toEqual([{
       first_remove_succeeded_at: null,
       attempts: 7,
       lease_id: legacyLease,
+      ...legacySchedule,
     }]);
     await applyMigration(database, MIGRATION_0014);
     expect((await database.query(`
-      select first_remove_succeeded_at::text, attempts, lease_id::text
+      select first_remove_succeeded_at::text, attempts, lease_id::text,
+        remove_after::text, retain_until::text, lease_expires_at::text
       from public.file_cleanup_queue where id = $1
     `, [queue.rows[0]!.id])).rows).toEqual(upgraded.rows);
 
@@ -1020,6 +1030,235 @@ describe('private file and secure-item schema runtime', () => {
       select first_remove_succeeded_at::text, remove_after::text, retain_until::text
       from public.file_cleanup_queue where id = $1
     `, [queue.rows[0]!.id])).rows).toEqual(anchored.rows);
+  });
+
+  it('restores guards erased by the old 0013 finish and requires two post-upgrade removals for every retirement reason', async () => {
+    const before0014 = MIGRATIONS.slice(0, MIGRATIONS.indexOf(MIGRATION_0014));
+    const database = await createDatabase(before0014, false);
+    const owner = await bootstrapOwner(database);
+    const status = await database.query<{ id: string }>(
+      "select id from public.task_statuses where workspace_id = $1 and name = 'Новая'", [owner.workspace_id],
+    );
+    const cases = [
+      {
+        attachmentId: 'a0000000-0000-4000-8000-000000000025',
+        path: '10000000-0000-4000-8000-000000000025',
+        taskId: '40000000-0000-4000-8000-000000000025',
+        reason: 'expired',
+        expiresInMinutes: -1,
+      },
+      {
+        attachmentId: 'a0000000-0000-4000-8000-000000000026',
+        path: '10000000-0000-4000-8000-000000000026',
+        taskId: '40000000-0000-4000-8000-000000000026',
+        reason: 'parent_missing',
+        expiresInMinutes: 15,
+      },
+      {
+        attachmentId: 'a0000000-0000-4000-8000-000000000027',
+        path: '10000000-0000-4000-8000-000000000027',
+        taskId: '40000000-0000-4000-8000-000000000027',
+        reason: 'invalid_content',
+        expiresInMinutes: 15,
+      },
+    ] as const;
+
+    for (const candidate of cases) {
+      await database.query(`
+        insert into public.tasks (id, workspace_id, title, status_id)
+        values ($1, $2, $3, $4)
+      `, [candidate.taskId, owner.workspace_id, `upgrade-gap-${candidate.reason}`, status.rows[0]!.id]);
+      await database.query(`
+        insert into public.attachments (
+          id, workspace_id, task_id, name, mime_type, size_bytes, storage_path,
+          created_by, quarantine_expires_at
+        ) values (
+          $1, $2, $3, $4, 'text/plain', 16, $5, $6,
+          clock_timestamp() + $7::int * interval '1 minute'
+        )
+      `, [
+        candidate.attachmentId, owner.workspace_id, candidate.taskId,
+        `${candidate.reason}.txt`, candidate.path, owner.user_id, candidate.expiresInMinutes,
+      ]);
+    }
+    await database.query(
+      'update public.tasks set deleted_at = clock_timestamp() where id = $1',
+      [cases[1].taskId],
+    );
+
+    for (const candidate of cases) {
+      expect((await database.query<{ retired: boolean }>(`
+        select public.retire_quarantine_attachment($1, $2, $3, $4) as retired
+      `, [owner.workspace_id, candidate.attachmentId, candidate.path, candidate.reason])).rows)
+        .toEqual([{ retired: true }]);
+    }
+    await database.query(`
+      update public.file_cleanup_queue
+      set remove_after = clock_timestamp() - interval '25 hours',
+          retain_until = clock_timestamp() - interval '1 hour'
+      where attachment_id in ($1, $2, $3)
+    `, cases.map(({ attachmentId }) => attachmentId));
+    const legacyQueues = await database.query<{ attachment_id: string; queue_id: string }>(`
+      select attachment_id::text, id::text as queue_id
+      from public.file_cleanup_queue
+      where attachment_id in ($1, $2, $3)
+      order by attachment_id
+    `, cases.map(({ attachmentId }) => attachmentId));
+    expect(legacyQueues.rows.map(({ attachment_id }) => attachment_id))
+      .toEqual(cases.map(({ attachmentId }) => attachmentId));
+    for (const queue of legacyQueues.rows) {
+      const lease = await database.query<{ lease_id: string }>(
+        'select public.prepare_file_cleanup_object($1)::text as lease_id', [queue.queue_id],
+      );
+      expect((await database.query<{ removed: boolean }>(
+        'select public.finish_file_cleanup_object($1, $2) as removed',
+        [queue.queue_id, lease.rows[0]!.lease_id],
+      )).rows).toEqual([{ removed: true }]);
+    }
+    expect((await database.query<{ count: number }>(`
+      select count(*)::int as count from public.file_cleanup_queue
+      where attachment_id in ($1, $2, $3)
+    `, cases.map(({ attachmentId }) => attachmentId))).rows).toEqual([{ count: 0 }]);
+
+    const migrationStarted = (await database.query<{ observed_at: string }>(
+      'select clock_timestamp()::text as observed_at',
+    )).rows[0]!.observed_at;
+    await applyMigration(database, MIGRATION_0014);
+    const restored = await database.query<{
+      attachment_id: string;
+      queue_id: string;
+      first_remove_succeeded_at: string | null;
+      lease_id: string | null;
+      remove_after: string;
+      retain_until: string;
+      scoped: boolean;
+      signed_window_protected: boolean;
+      retained: boolean;
+    }>(`
+      select attachment.id::text as attachment_id, cleanup.id::text as queue_id,
+        cleanup.first_remove_succeeded_at::text, cleanup.lease_id::text,
+        cleanup.remove_after::text, cleanup.retain_until::text,
+        cleanup.workspace_id = attachment.workspace_id
+          and cleanup.attachment_id = attachment.id
+          and cleanup.storage_path = attachment.storage_path as scoped,
+        cleanup.remove_after >= greatest($4::timestamptz, attachment.quarantine_expires_at)
+          as signed_window_protected,
+        cleanup.retain_until >= cleanup.remove_after + interval '24 hours' as retained
+      from public.attachments as attachment
+      join public.file_cleanup_queue as cleanup
+        on cleanup.workspace_id = attachment.workspace_id
+       and cleanup.attachment_id = attachment.id
+       and cleanup.storage_path = attachment.storage_path
+      where attachment.id in ($1, $2, $3)
+      order by attachment.id
+    `, [...cases.map(({ attachmentId }) => attachmentId), migrationStarted]);
+    expect(restored.rows.map(({ attachment_id }) => attachment_id))
+      .toEqual(cases.map(({ attachmentId }) => attachmentId));
+    for (const row of restored.rows) {
+      expect(row).toMatchObject({
+        first_remove_succeeded_at: null,
+        lease_id: null,
+        scoped: true,
+        signed_window_protected: true,
+        retained: true,
+      });
+    }
+
+    await applyMigration(database, MIGRATION_0014);
+    expect((await database.query(`
+      select attachment.id::text as attachment_id, cleanup.id::text as queue_id,
+        cleanup.first_remove_succeeded_at::text, cleanup.lease_id::text,
+        cleanup.remove_after::text, cleanup.retain_until::text,
+        cleanup.workspace_id = attachment.workspace_id
+          and cleanup.attachment_id = attachment.id
+          and cleanup.storage_path = attachment.storage_path as scoped,
+        cleanup.remove_after >= greatest($4::timestamptz, attachment.quarantine_expires_at)
+          as signed_window_protected,
+        cleanup.retain_until >= cleanup.remove_after + interval '24 hours' as retained
+      from public.attachments as attachment
+      join public.file_cleanup_queue as cleanup
+        on cleanup.workspace_id = attachment.workspace_id
+       and cleanup.attachment_id = attachment.id
+       and cleanup.storage_path = attachment.storage_path
+      where attachment.id in ($1, $2, $3)
+      order by attachment.id
+    `, [...cases.map(({ attachmentId }) => attachmentId), migrationStarted])).rows).toEqual(restored.rows);
+
+    await database.query(`
+      update public.file_cleanup_queue
+      set remove_after = clock_timestamp() - interval '1 second',
+          retain_until = clock_timestamp() - interval '1 second'
+      where attachment_id in ($1, $2, $3)
+    `, cases.map(({ attachmentId }) => attachmentId));
+    const firstLeases = new Map<string, string>();
+    for (const row of restored.rows) {
+      const lease = await database.query<{ lease_id: string }>(
+        'select public.prepare_file_cleanup_object($1)::text as lease_id', [row.queue_id],
+      );
+      firstLeases.set(row.queue_id, lease.rows[0]!.lease_id);
+      expect((await database.query<{ removed: boolean }>(
+        'select public.finish_file_cleanup_object($1, $2) as removed',
+        [row.queue_id, lease.rows[0]!.lease_id],
+      )).rows).toEqual([{ removed: false }]);
+      expect((await database.query<{ removed: boolean }>(
+        'select public.finish_file_cleanup_object($1, $2) as removed',
+        [row.queue_id, lease.rows[0]!.lease_id],
+      )).rows).toEqual([{ removed: false }]);
+      expect((await database.query<{ lease_id: string | null }>(
+        'select public.prepare_file_cleanup_object($1)::text as lease_id', [row.queue_id],
+      )).rows).toEqual([{ lease_id: null }]);
+    }
+    const afterFirstSuccess = await database.query<{
+      queue_id: string;
+      first_remove_succeeded_at: string | null;
+      remove_after: string;
+      retain_until: string;
+      lease_id: string | null;
+      delayed: boolean;
+    }>(`
+      select id::text as queue_id, first_remove_succeeded_at::text,
+        remove_after::text, retain_until::text, lease_id::text,
+        remove_after >= first_remove_succeeded_at + interval '24 hours' as delayed
+      from public.file_cleanup_queue
+      where attachment_id in ($1, $2, $3)
+      order by attachment_id
+    `, cases.map(({ attachmentId }) => attachmentId));
+    expect(afterFirstSuccess.rows).toHaveLength(3);
+    for (const row of afterFirstSuccess.rows) {
+      expect(row).toMatchObject({ delayed: true, lease_id: null });
+      expect(row.first_remove_succeeded_at).not.toBeNull();
+    }
+    await applyMigration(database, MIGRATION_0014);
+    expect((await database.query(`
+      select id::text as queue_id, first_remove_succeeded_at::text,
+        remove_after::text, retain_until::text, lease_id::text,
+        remove_after >= first_remove_succeeded_at + interval '24 hours' as delayed
+      from public.file_cleanup_queue
+      where attachment_id in ($1, $2, $3)
+      order by attachment_id
+    `, cases.map(({ attachmentId }) => attachmentId))).rows).toEqual(afterFirstSuccess.rows);
+
+    await database.query(`
+      update public.file_cleanup_queue
+      set first_remove_succeeded_at = clock_timestamp() - interval '25 hours',
+          remove_after = clock_timestamp() - interval '1 second',
+          retain_until = clock_timestamp() - interval '1 second'
+      where attachment_id in ($1, $2, $3)
+    `, cases.map(({ attachmentId }) => attachmentId));
+    for (const row of restored.rows) {
+      const secondLease = await database.query<{ lease_id: string }>(
+        'select public.prepare_file_cleanup_object($1)::text as lease_id', [row.queue_id],
+      );
+      expect(secondLease.rows[0]!.lease_id).not.toBe(firstLeases.get(row.queue_id));
+      expect((await database.query<{ removed: boolean }>(
+        'select public.finish_file_cleanup_object($1, $2) as removed',
+        [row.queue_id, secondLease.rows[0]!.lease_id],
+      )).rows).toEqual([{ removed: true }]);
+    }
+    expect((await database.query<{ count: number }>(`
+      select count(*)::int as count from public.file_cleanup_queue
+      where attachment_id in ($1, $2, $3)
+    `, cases.map(({ attachmentId }) => attachmentId))).rows).toEqual([{ count: 0 }]);
   });
 
   it('backfills retained tombstones for signed quarantine paths created before 0013 and reapplies without churn', async () => {

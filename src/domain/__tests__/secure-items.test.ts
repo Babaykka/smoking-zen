@@ -118,8 +118,9 @@ describe('secure item schemas', () => {
     expect(secureItemInputSchema.safeParse({ ...validItem, purpose }).success).toBe(true);
   });
 
-  it.each(unsafeSafeUrlFixtures)('rejects canonically disguised path, query, or fragment data: %s', (externalUrl) => {
+  it.each(unsafeSafeUrlFixtures)('rejects canonically disguised URL data in direct input and patch schemas: %s', (externalUrl) => {
     expect(secureItemInputSchema.safeParse({ ...validItem, externalUrl }).success).toBe(false);
+    expect(secureItemPatchSchema.safeParse({ externalUrl }).success).toBe(false);
   });
 
   it.each(safeSafeUrlFixtures)('preserves a benign canonical Safe URL: %s', (externalUrl) => {

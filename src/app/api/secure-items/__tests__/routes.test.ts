@@ -6,7 +6,11 @@ import { createSecureItemRevealHandler } from '@/app/api/secure-items/[id]/revea
 import { createSecureItemHandler } from '@/app/api/secure-items/[id]/route';
 import { createSecureItemsHandler } from '@/app/api/secure-items/route';
 import { ConflictError, RestoreExpiredError } from '@/data/workspace-repository';
-import { unsafeSafeTextFixtures, unsafeSafeUrlFixtures } from '@/domain/__tests__/safe-content-fixtures';
+import {
+  safeSafeUrlFixtures,
+  unsafeSafeTextFixtures,
+  unsafeSafeUrlFixtures,
+} from '@/domain/__tests__/safe-content-fixtures';
 import type { SecureItemSummary } from '@/domain/types';
 import {
   SecureItemUrlNotAllowedError,
@@ -143,6 +147,23 @@ describe('secure-item routes', () => {
     }), { params: Promise.resolve({ id: itemId }) });
     expect(updated.status).toBe(400);
     expect(secureStore.updateSecureItem).not.toHaveBeenCalled();
+    },
+  );
+
+  it.each(safeSafeUrlFixtures)(
+    'preserves an exact or benign encoded URL through create and update validation: %s', async (externalUrl) => {
+      const secureStore = store();
+      const collection = createSecureItemsHandler(dependencies(secureStore));
+      const created = await collection(request('https://app.example/api/secure-items', 'POST', {
+        ...validInput, externalUrl,
+      }));
+      expect(created.status).toBe(201);
+
+      const item = createSecureItemHandler(dependencies(secureStore));
+      const updated = await item(request(`https://app.example/api/secure-items/${itemId}`, 'PATCH', {
+        input: { externalUrl }, expectedVersion: 1,
+      }), { params: Promise.resolve({ id: itemId }) });
+      expect(updated.status).toBe(200);
     },
   );
 

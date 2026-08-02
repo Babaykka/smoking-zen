@@ -315,7 +315,6 @@ function secureItemShape(selfHostedOrigins: readonly string[]) {
     cardPurpose: optionalSecureText('Назначение карты', 2_000),
     lastFour: lastFourSchema,
     externalUrl: z.string({ error: 'Укажите корректную HTTPS-ссылку Bitwarden.' })
-      .trim()
       .min(1, 'Укажите корректную HTTPS-ссылку Bitwarden.')
       .max(2_000, 'Ссылка Bitwarden слишком длинная.')
       .refine((value) => isAllowedBitwardenUrl(value, selfHostedOrigins), 'Укажите корректную HTTPS-ссылку Bitwarden.'),

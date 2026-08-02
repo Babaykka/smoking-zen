@@ -106,6 +106,39 @@ revoke all on function private.ensure_quarantine_cleanup_guard(uuid, uuid, text,
 grant execute on function private.ensure_quarantine_cleanup_guard(uuid, uuid, text, timestamptz)
   to service_role;
 
+-- Recover retired quarantine paths whose old 0013 finish already deleted the
+-- only queue row. Runtime discovery intentionally ignores soft-deleted metadata,
+-- so upgrade convergence must restore these guards directly from durable rows.
+-- The helper preserves an existing guard's scope, live lease, retained schedule,
+-- and explicit first-success anchor; reapplication therefore cannot move them.
+do $backfill_retired_quarantine_guards$
+declare
+  candidate record;
+begin
+  for candidate in
+    select workspace_id, id as attachment_id, storage_path,
+      greatest(clock_timestamp(), quarantine_expires_at) as first_sweep_at
+    from public.attachments
+    where state = 'quarantine'
+      and deleted_at is not null
+      and storage_path is not null
+      and quarantine_expires_at is not null
+    order by storage_path
+  loop
+    perform private.ensure_quarantine_cleanup_guard(
+      candidate.workspace_id,
+      candidate.attachment_id,
+      candidate.storage_path,
+      candidate.first_sweep_at
+    );
+  end loop;
+
+  -- A ready row no longer stores its randomized quarantine key. If an older
+  -- cleanup already erased that key's queue row, no deployed durable relation
+  -- remains from which this migration could reconstruct it safely.
+end;
+$backfill_retired_quarantine_guards$;
+
 -- A successful finish is the durable acknowledgement that Storage removal
 -- completed. Every retained row records that first acknowledgement and schedules
 -- a second sweep at the later of its existing anchor and 24 hours from reality.

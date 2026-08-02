@@ -22,6 +22,11 @@ const unsafeWhitespaceUrlFixtures = canonicalSafeWhitespaceFixtures.map((whitesp
 const unsafeLiteralWhitespaceUrlFixtures = canonicalSafeWhitespaceFixtures.map((whitespace) =>
   `https://vault.bitwarden.com/#/items/example${whitespace}path`);
 
+const unsafeBoundaryWhitespaceUrlFixtures = canonicalSafeWhitespaceFixtures.flatMap((whitespace) => [
+  `${whitespace}https://vault.bitwarden.com/#/items/example`,
+  `https://vault.bitwarden.com/#/items/example${whitespace}`,
+]);
+
 export const unsafeSafeTextFixtures = [
   ...unicodeDashPunctuationFixtures.map((separator) => `password${separator}hunter2`),
   ...unsafeWhitespaceTextFixtures,
@@ -47,6 +52,7 @@ export const unsafeSafeUrlFixtures = [
     `https://vault.bitwarden.com/#/items/${encodeURIComponent(`password${separator}hunter2`)}`),
   ...unsafeWhitespaceUrlFixtures,
   ...unsafeLiteralWhitespaceUrlFixtures,
+  ...unsafeBoundaryWhitespaceUrlFixtures,
   'https://vault.bitwarden.com/?item=pass%E2%80%8Bword%2Fhunter2',
   'https://vault.bitwarden.com/#/items/pass%25E2%2580%258Bword%252Fhunter2',
   'https://vault.bitwarden.com/#/items/4111+1111+1111+1111',
