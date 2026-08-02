@@ -4,6 +4,7 @@ import {
   knowledgeInputSchema,
   mergeKnowledgePatch,
   secureItemInputSchema,
+  secureItemPatchSchema,
   taskInputSchema,
   type CommentInput,
   type ContactInput,
@@ -18,12 +19,12 @@ import type {
   Contact,
   KnowledgeItem,
   RecordMetadata,
-  SecureItemLink,
+  SecureItemSummary,
   Task,
   WorkspaceEntity,
   WorkspaceSnapshot,
 } from '@/domain/types';
-import { demoSeed } from '@/data/demo-seed';
+import { demoSeed, demoSecureItemRevealUrls } from '@/data/demo-seed';
 import {
   assertRestorableRecord,
   ConflictError,
@@ -39,9 +40,10 @@ type RepositoryOptions = {
   idFactory?: () => string;
   seed?: WorkspaceSnapshot;
   loadPersisted?: boolean;
+  secureItemRevealUrls?: Readonly<Record<string, string>>;
 };
 
-type MutableRecord = Task | Comment | KnowledgeItem | Contact | SecureItemLink;
+type MutableRecord = Task | Comment | KnowledgeItem | Contact | SecureItemSummary;
 
 function clone<T>(value: T): T {
   if (typeof structuredClone === 'function') return structuredClone(value);
@@ -100,6 +102,23 @@ export function createDemoRepository(options: RepositoryOptions = {}): Workspace
   const loadPersisted = options.loadPersisted ?? options.persistence !== undefined;
   const loaded = loadPersisted ? persistence.load() : null;
   let state = isSnapshot(loaded) ? clone(loaded) : clone(options.seed ?? demoSeed);
+  state.secureItems = state.secureItems.map((item) => ({
+    id: item.id,
+    workspaceId: item.workspaceId,
+    title: item.title,
+    purpose: typeof item.purpose === 'string' ? item.purpose : '',
+    owner: typeof item.owner === 'string' ? item.owner : '',
+    reviewDate: typeof item.reviewDate === 'string' ? item.reviewDate : null,
+    cardBank: typeof item.cardBank === 'string' ? item.cardBank : null,
+    cardHolder: typeof item.cardHolder === 'string' ? item.cardHolder : null,
+    cardPurpose: typeof item.cardPurpose === 'string' ? item.cardPurpose : null,
+    lastFour: typeof item.lastFour === 'string' ? item.lastFour : null,
+    version: item.version,
+    createdAt: item.createdAt,
+    updatedAt: item.updatedAt,
+    deletedAt: item.deletedAt,
+  }));
+  const secureItemRevealUrls = new Map(Object.entries(options.secureItemRevealUrls ?? demoSecureItemRevealUrls));
   const listeners = new Set<WorkspaceListener>();
   const now = options.clock ?? (() => new Date().toISOString());
   const existingIds = new Set<string>();
@@ -206,7 +225,10 @@ export function createDemoRepository(options: RepositoryOptions = {}): Workspace
     ...(current ? mergeKnowledgePatch(withoutMetadata(current), input) : knowledgeInputSchema.parse(input)),
   });
   const toContact = (input: Partial<ContactInput>, current?: Contact): Omit<Contact, keyof RecordMetadata> => ({ ...contactInputSchema.parse({ ...(current ? withoutMetadata(current) : {}), ...input }) });
-  const toSecureItem = (input: Partial<SecureItemInput>, current?: SecureItemLink): Omit<SecureItemLink, keyof RecordMetadata> => ({ ...secureItemInputSchema.parse({ ...(current ? withoutMetadata(current) : {}), ...input }) });
+  const secureSummary = (input: SecureItemInput): Omit<SecureItemSummary, keyof RecordMetadata> => {
+    const { externalUrl: _externalUrl, ...summary } = secureItemInputSchema.parse(input);
+    return summary;
+  };
 
   return {
     snapshot: () => visibleSnapshot(state),
@@ -238,13 +260,28 @@ export function createDemoRepository(options: RepositoryOptions = {}): Workspace
       return updateRecord<Contact>('contact', id, expectedVersion, toContact(input, current));
     },
     deleteContact: (id, expectedVersion) => deleteRecord<Contact>('contact', id, expectedVersion),
-    createSecureItem: (input) => createRecord<SecureItemLink>('secureItem', toSecureItem(input)),
-    updateSecureItem: (id, input, expectedVersion) => {
-      const current = findActive('secureItem', id) as SecureItemLink;
-      assertVersion(current, expectedVersion);
-      return updateRecord<SecureItemLink>('secureItem', id, expectedVersion, toSecureItem(input, current));
+    createSecureItem: (input) => {
+      const parsed = secureItemInputSchema.parse(input);
+      const created = createRecord<SecureItemSummary>('secureItem', secureSummary(parsed));
+      secureItemRevealUrls.set(created.id, parsed.externalUrl);
+      return created;
     },
-    deleteSecureItem: (id, expectedVersion) => deleteRecord<SecureItemLink>('secureItem', id, expectedVersion),
+    updateSecureItem: (id, input, expectedVersion) => {
+      const current = findActive('secureItem', id) as SecureItemSummary;
+      assertVersion(current, expectedVersion);
+      const parsed = secureItemPatchSchema.parse(input);
+      const { externalUrl, ...summaryPatch } = parsed;
+      const updated = updateRecord<SecureItemSummary>('secureItem', id, expectedVersion, summaryPatch);
+      if (externalUrl !== undefined) secureItemRevealUrls.set(id, externalUrl);
+      return updated;
+    },
+    deleteSecureItem: (id, expectedVersion) => deleteRecord<SecureItemSummary>('secureItem', id, expectedVersion),
+    revealSecureItem: (id) => {
+      findActive('secureItem', id);
+      const externalUrl = secureItemRevealUrls.get(id);
+      if (!externalUrl) throw new Error('Ссылка доступна только до перезагрузки демо-режима.');
+      return { externalUrl };
+    },
     restore: (entity, id, expectedVersion): RestorableRecord => {
       const current = recordsFor(entity).find((record) => record.id === id);
       assertRestorableRecord(current, expectedVersion, Date.parse(now()));

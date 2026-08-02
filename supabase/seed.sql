@@ -121,16 +121,31 @@ values (
 )
 on conflict (id) do update set value = excluded.value, deleted_at = null;
 
-insert into public.secure_items (id, workspace_id, title, external_url, metadata)
+insert into public.secure_items (
+  id, workspace_id, title, purpose, owner, review_date,
+  card_bank, card_holder, card_purpose, last_four, external_url
+)
 values (
   '90000000-0000-4000-8000-000000000001',
   '10000000-0000-4000-8000-000000000001',
   'Касса',
-  'https://vault.bitwarden.com/#/items/example-non-secret-record',
-  '{"location":"Основной бар","purpose":"Ссылка на запись в хранилище"}'::jsonb
+  'Доступ к учётной записи кассы',
+  'Управляющий',
+  null,
+  null,
+  null,
+  null,
+  null,
+  'https://vault.bitwarden.com/#/items/example-non-secret-record'
 )
 on conflict (id) do update set
   title = excluded.title,
+  purpose = excluded.purpose,
+  owner = excluded.owner,
+  review_date = excluded.review_date,
+  card_bank = excluded.card_bank,
+  card_holder = excluded.card_holder,
+  card_purpose = excluded.card_purpose,
+  last_four = excluded.last_four,
   external_url = excluded.external_url,
-  metadata = excluded.metadata,
   deleted_at = null;

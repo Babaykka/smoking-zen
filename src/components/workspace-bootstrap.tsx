@@ -13,6 +13,7 @@ import { TaskWorkspace } from '@/features/tasks/task-workspace';
 import { KnowledgeWorkspace } from '@/features/knowledge/knowledge-workspace';
 import { PeopleWorkspace } from '@/features/people/people-workspace';
 import { GlobalSearch } from '@/features/search/global-search';
+import { SecureItemsWorkspace } from '@/features/secure-items/secure-items-workspace';
 import type { SearchNavigationTarget, SearchResult, WorkspaceSnapshot } from '@/domain/types';
 import { WorkspaceProvider } from '@/providers/workspace-provider';
 
@@ -29,6 +30,7 @@ type WorkspaceBootstrapProps = {
 
 const viewTitles: Record<ViewKey, string> = {
   today: 'Сегодня', tasks: 'Задачи', knowledge: 'База знаний', people: 'Люди',
+  safe: 'Сейф',
 };
 
 function defaultDemoGatewayFactory() {
@@ -73,6 +75,8 @@ function WorkspaceApplication({ gateway, mode }: { gateway: WorkspaceGateway; mo
           <KnowledgeWorkspace onSearchTargetConsumed={consumeSearchTarget} searchTarget={searchTarget?.entity === 'knowledge' ? searchTarget : undefined} />
         ) : activeView === 'people' ? (
           <PeopleWorkspace onSearchTargetConsumed={consumeSearchTarget} searchTarget={searchTarget?.entity === 'contact' ? searchTarget : undefined} />
+        ) : activeView === 'safe' ? (
+          <SecureItemsWorkspace />
         ) : (
           <section aria-labelledby="view-title" className="workspace-loading">
             <p className="workspace-loading__eyebrow">Smoking Zen</p>

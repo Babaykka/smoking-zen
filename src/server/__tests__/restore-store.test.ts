@@ -29,6 +29,8 @@ function clientFor(table: string, state: RestoreState, deletedAt?: string): Supa
     const chain = {
       select: vi.fn(() => chain),
       eq: vi.fn(() => chain),
+      is: vi.fn(() => chain),
+      order: vi.fn(async () => ({ data: [], error: null })),
       maybeSingle: vi.fn(async () => ({ data: selectedTable === table ? row : null, error: null })),
     };
     return chain;

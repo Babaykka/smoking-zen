@@ -3,6 +3,7 @@
 import { useEffect, useRef, useState, type FormEvent } from 'react';
 
 import { SafeMarkdown } from '@/components/safe-markdown';
+import { AttachmentWidget } from '@/features/files/attachment-widget';
 import { ConflictError } from '@/data/workspace-repository';
 import { knowledgeInputSchema } from '@/domain/schemas';
 import type { KnowledgeItem, KnowledgeKind, SearchNavigationTarget } from '@/domain/types';
@@ -33,10 +34,12 @@ export function KnowledgeWorkspace({
   const [archived, setArchived] = useState<KnowledgeItem | null>(null);
   const [expectedVersion, setExpectedVersion] = useState(0);
   const knowledgeRef = useRef(snapshot.knowledge);
+  const selectedRef = useRef<KnowledgeItem | null>(null);
+  const pendingSaveRef = useRef<Promise<KnowledgeItem> | null>(null);
   const returnFocusRef = useRef<HTMLElement | null>(null);
   useEffect(() => { knowledgeRef.current = snapshot.knowledge; }, [snapshot.knowledge]);
 
-  const open = (item: KnowledgeItem) => { setSelected(item); setDraft(draftFrom(item)); setExpectedVersion(item.version); setError(''); };
+  const open = (item: KnowledgeItem) => { selectedRef.current = item; setSelected(item); setDraft(draftFrom(item)); setExpectedVersion(item.version); setError(''); };
   useEffect(() => {
     if (!searchTarget) return;
     const timer = window.setTimeout(() => {
@@ -48,6 +51,7 @@ export function KnowledgeWorkspace({
   }, [onSearchTargetConsumed, searchTarget]);
   const close = () => {
     const selectedId = selected?.id;
+    selectedRef.current = null;
     setSelected(null); setCreating(false); setDraft(null); setError('');
     window.setTimeout(() => {
       const fallback = selectedId
@@ -61,19 +65,30 @@ export function KnowledgeWorkspace({
     if (!draft) return;
     const parsed = knowledgeInputSchema.safeParse(draft);
     if (!parsed.success) { setError(parsed.error.issues[0]?.message ?? 'Проверьте заполнение материала.'); return; }
+    const operation = selected
+      ? repository.updateKnowledge(selected.id, { title: parsed.data.title, body: parsed.data.body, kind: parsed.data.kind, linkUrl: parsed.data.linkUrl, sectionId: parsed.data.sectionId }, expectedVersion)
+      : repository.createKnowledge(parsed.data);
+    pendingSaveRef.current = operation;
     try {
-      const item = selected
-        ? await repository.updateKnowledge(selected.id, { title: parsed.data.title, body: parsed.data.body, kind: parsed.data.kind, linkUrl: parsed.data.linkUrl, sectionId: parsed.data.sectionId }, expectedVersion)
-        : await repository.createKnowledge(parsed.data);
+      const item = await operation;
+      selectedRef.current = item;
       setSelected(item); setDraft(draftFrom(item)); setExpectedVersion(item.version); setCreating(false); setError('');
     } catch (cause) {
       if (cause instanceof ConflictError) setExpectedVersion(cause.actualVersion);
       setError(cause instanceof ConflictError ? 'Материал изменён другим пользователем. Черновик сохранён.' : cause instanceof Error ? cause.message : 'Не удалось сохранить материал.');
+    } finally {
+      if (pendingSaveRef.current === operation) pendingSaveRef.current = null;
     }
   };
   const archive = async () => {
-    if (!selected) return;
-    try { setArchived(await repository.deleteKnowledge(selected.id, expectedVersion)); setSelected(null); setDraft(null); setCreating(false); setError(''); } catch (cause) { setError(cause instanceof Error ? cause.message : 'Не удалось архивировать материал.'); }
+    let current = selectedRef.current ?? selected;
+    if (!current) return;
+    try {
+      if (pendingSaveRef.current) current = await pendingSaveRef.current;
+      setArchived(await repository.deleteKnowledge(current.id, current.version));
+      selectedRef.current = null;
+      setSelected(null); setDraft(null); setCreating(false); setError('');
+    } catch (cause) { setError(cause instanceof Error ? cause.message : 'Не удалось архивировать материал.'); }
   };
   const restore = async () => {
     if (!archived) return;
@@ -92,7 +107,7 @@ export function KnowledgeWorkspace({
       {draft.kind === 'link' && <label>HTTPS-ссылка<input onChange={(event) => setDraft({ ...draft, linkUrl: event.target.value || null })} value={draft.linkUrl ?? ''} /></label>}
       <label>Раздел<select onChange={(event) => setDraft({ ...draft, sectionId: event.target.value || null })} value={draft.sectionId ?? ''}><option value="">Без раздела</option>{snapshot.sections.map((section) => <option key={section.id} value={section.id}>{section.name}</option>)}</select></label>
       <div aria-label="Предпросмотр материала"><SafeMarkdown value={draft.body} /></div><button className="task-primary-button" type="submit">Сохранить материал</button>
-    </form>{selected && <button onClick={archive} type="button">Архивировать материал</button>}{error.includes('Черновик') && <button onClick={() => { void save(); }} type="button">Повторить сохранение</button>}</aside>}
+    </form>{selected && <AttachmentWidget attachments={snapshot.knowledge.find((item) => item.id === selected.id)?.attachments ?? selected.attachments} target={{ type: 'knowledge', id: selected.id }} />}{selected && <button onClick={archive} type="button">Архивировать материал</button>}{error.includes('Черновик') && <button onClick={() => { void save(); }} type="button">Повторить сохранение</button>}</aside>}
     {archived && <button onClick={restore} type="button">Восстановить материал</button>}
     {error && <p className="workspace-error" role="alert">{error}</p>}
   </section>;

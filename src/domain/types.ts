@@ -14,7 +14,6 @@ export type Attachment = {
   name: string;
   mimeType: string;
   size: number;
-  storagePath?: string;
 };
 
 export type TaskStatus = RecordMetadata & {
@@ -79,11 +78,18 @@ export type WorkspaceMember = RecordMetadata & {
   active: boolean;
 };
 
-export type SecureItemLink = RecordMetadata & {
+export type SecureItemSummary = RecordMetadata & {
   title: string;
-  externalUrl: string;
-  metadata: Record<string, string | number | boolean | null>;
+  purpose: string;
+  owner: string;
+  reviewDate: string | null;
+  cardBank: string | null;
+  cardHolder: string | null;
+  cardPurpose: string | null;
+  lastFour: string | null;
 };
+
+export type SecureItemReveal = { externalUrl: string };
 
 export type AuditAction = 'created' | 'updated' | 'deleted' | 'restored';
 
@@ -113,7 +119,7 @@ export type WorkspaceSnapshot = {
   knowledge: KnowledgeItem[];
   contacts: Contact[];
   members: WorkspaceMember[];
-  secureItems: SecureItemLink[];
+  secureItems: SecureItemSummary[];
   auditEvents: AuditEvent[];
   notificationDeliveries: NotificationDelivery[];
 };

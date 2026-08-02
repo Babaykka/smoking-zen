@@ -55,7 +55,6 @@ describe('knowledge, contact and search routes', () => {
       name: escaped.repeat(255),
       mimeType: escaped.repeat(200),
       size: 25 * 1024 * 1024,
-      storagePath: escaped.repeat(1_000),
     }));
     const urlPrefix = 'https://example.com/';
     const input = {

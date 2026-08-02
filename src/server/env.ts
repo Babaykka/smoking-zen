@@ -5,6 +5,26 @@ const telegramIdSchema = z
   .regex(/^\d{1,16}$/)
   .refine((value) => BigInt(value) > 0n && BigInt(value) <= 4_503_599_627_370_495n);
 
+const selfHostedBitwardenOriginsSchema = z.string().optional().transform((raw, context) => {
+  if (!raw?.trim()) return [] as string[];
+  const origins: string[] = [];
+  for (const entry of raw.split(',')) {
+    const value = entry.trim();
+    try {
+      const url = new URL(value);
+      if (
+        !value || url.protocol !== 'https:' || url.username || url.password || url.port
+        || url.pathname !== '/' || url.search || url.hash || url.origin !== value.replace(/\/$/u, '')
+      ) throw new Error('invalid origin');
+      if (!origins.includes(url.origin)) origins.push(url.origin);
+    } catch {
+      context.addIssue({ code: 'custom', message: 'Invalid Bitwarden self-hosted origin.' });
+      return z.NEVER;
+    }
+  }
+  return origins;
+});
+
 const productionEnvironmentSchema = z.object({
   APP_MODE: z.literal('production'),
   APP_ORIGIN: z.string().url().refine((value) => new URL(value).protocol === 'https:'),
@@ -19,6 +39,7 @@ const productionEnvironmentSchema = z.object({
   SUPABASE_JWT_KID: z.string().trim().min(1).max(200),
   OWNER_TELEGRAM_ID: telegramIdSchema,
   WORKSPACE_NAME: z.string().trim().min(1).max(120).default('Smoking Zen'),
+  BITWARDEN_SELF_HOSTED_ORIGINS: selfHostedBitwardenOriginsSchema,
   NODE_ENV: z.string().optional(),
 });
 
@@ -42,6 +63,7 @@ export type ProductionServerEnvironment = {
   supabaseJwtKid: string;
   ownerTelegramId: string;
   workspaceName: string;
+  bitwardenSelfHostedOrigins: string[];
 };
 
 export type ServerEnvironment = DemoServerEnvironment | ProductionServerEnvironment;
@@ -76,6 +98,7 @@ export function parseServerEnvironment(source: Record<string, string | undefined
     supabaseJwtKid: parsed.data.SUPABASE_JWT_KID,
     ownerTelegramId: parsed.data.OWNER_TELEGRAM_ID,
     workspaceName: parsed.data.WORKSPACE_NAME,
+    bitwardenSelfHostedOrigins: parsed.data.BITWARDEN_SELF_HOSTED_ORIGINS,
   };
 }
 

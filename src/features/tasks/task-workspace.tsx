@@ -3,6 +3,7 @@
 import { useEffect, useMemo, useRef, useState, type FormEvent } from 'react';
 
 import { SafeMarkdown } from '@/components/safe-markdown';
+import { AttachmentWidget } from '@/features/files/attachment-widget';
 import { ConflictError } from '@/data/workspace-repository';
 import { matchesTaskFilter, type TaskFilter } from '@/domain/filters';
 import type { Priority, SearchNavigationTarget, Task } from '@/domain/types';
@@ -235,6 +236,7 @@ export function TaskWorkspace({ activeView, createRequest, now = new Date(), sea
               <button onClick={() => saveDraft(conflictVersion)} type="button">Повторить с моими данными</button>
             </div>
           )}
+          <AttachmentWidget attachments={selectedTask.attachments} target={{ type: 'task', id: selectedTask.id }} />
           <section className="task-comments">
             <h2>Комментарии</h2>
             {snapshot.comments.filter((item) => item.taskId === selectedId).map((item) => <p key={item.id}>{item.body}</p>)}

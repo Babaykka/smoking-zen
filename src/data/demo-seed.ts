@@ -52,10 +52,15 @@ export const demoSeed: WorkspaceSnapshot = {
   ],
   secureItems: [
     {
-      id: 'secure-pos', workspaceId, title: 'Касса', externalUrl: 'https://vault.bitwarden.com/#/items/demo-pos', metadata: { location: 'Основной бар' },
+      id: 'secure-pos', workspaceId, title: 'Касса', purpose: 'Доступ к основной кассе', owner: 'Управляющий', reviewDate: null,
+      cardBank: 'Тестовый банк', cardHolder: null, cardPurpose: 'Операционные расходы', lastFour: '0000',
       version: 1, createdAt, updatedAt: createdAt, deletedAt: null,
     },
   ],
   auditEvents: [],
   notificationDeliveries: [],
+};
+
+export const demoSecureItemRevealUrls: Readonly<Record<string, string>> = {
+  'secure-pos': 'https://vault.bitwarden.com/#/items/demo-pos',
 };

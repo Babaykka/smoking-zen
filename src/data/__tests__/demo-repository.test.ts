@@ -199,12 +199,13 @@ describe('demo workspace repository', () => {
     expect(repository.snapshot().notificationDeliveries).toEqual([delivery]);
   });
 
-  it('never searches secure URLs or metadata', () => {
+  it('never searches secure URLs or private safe fields', () => {
     const repository = createRepository();
     repository.createSecureItem({
       title: 'Касса',
+      purpose: 'very-private-metadata',
+      owner: 'Управляющий',
       externalUrl: 'https://vault.bitwarden.com/#/items/very-private-url',
-      metadata: { label: 'very-private-metadata' },
     });
 
     expect(repository.search('very-private')).toEqual([]);

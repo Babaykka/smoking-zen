@@ -81,8 +81,7 @@ export const attachmentInputSchema = z
     id: idSchema('Идентификатор файла'),
     name: z.string({ error: 'Название файла должно быть текстом.' }).trim().min(1, 'Введите название файла.').max(255, 'Название файла слишком длинное.'),
     mimeType: z.string({ error: 'Тип файла должен быть текстом.' }).trim().min(1, 'Укажите тип файла.').max(200, 'Тип файла слишком длинный.'),
-    size: z.number({ error: 'Размер файла должен быть числом.' }).int('Размер файла должен быть целым числом.').nonnegative('Размер файла не может быть отрицательным.').max(MAX_ATTACHMENT_BYTES, 'Размер файла не должен превышать 25 МиБ.'),
-    storagePath: z.string({ error: 'Путь к файлу должен быть текстом.' }).trim().min(1, 'Путь к файлу не может быть пустым.').max(1_000, 'Путь к файлу слишком длинный.').optional(),
+    size: z.number({ error: 'Размер файла должен быть числом.' }).int('Размер файла должен быть целым числом.').positive('Файл не может быть пустым.').max(MAX_ATTACHMENT_BYTES, 'Размер файла не должен превышать 25 МиБ.'),
   }, { error: 'Вложение должно быть объектом.' })
   .strict();
 
@@ -200,58 +199,106 @@ export const contactPatchSchema = z.object({
   methods: z.array(contactMethodSchema, { error: 'Способы связи должны быть списком.' }).min(1, 'Добавьте хотя бы один способ связи.').max(10, 'Можно добавить не более 10 способов связи.').optional(),
 }, { error: 'Изменения контакта должны быть объектом.' }).strict();
 
-const safeMetadataValueSchema = z.union([
-  z.string({ error: 'Значение метаданных должно быть строкой, числом, логическим значением или пустым.' }).max(2_000, 'Значение метаданных слишком длинное.'),
-  z.number({ error: 'Значение метаданных должно быть строкой, числом, логическим значением или пустым.' }).finite('Число в метаданных должно быть конечным.'),
-  z.boolean({ error: 'Значение метаданных должно быть строкой, числом, логическим значением или пустым.' }),
-  z.null(),
-]);
+const BUILTIN_BITWARDEN_ORIGINS = ['https://vault.bitwarden.com', 'https://vault.bitwarden.eu'] as const;
+const secretQueryKey = /(?:token|signature|credential|secret|password|passphrase|pin|cvv|cvc|otp|confirmation|x-amz-)/iu;
 
-const sensitiveMetadataKey = /(?:password|пароль|passphrase|secret|секрет|token|токен|pin|пин|cvv|cvc|otp|(?:код\s*)?подтвержден\p{L}*|confirmation\s*(?:code)?|card(?:number)?|pan)/iu;
-const explicitCredentialValue = secretLikeText;
-
-function containsPanLikeSequence(value: string | number) {
-  const compact = String(value).replace(/\D/g, '');
-
-  return /\d{13,19}/.test(compact);
+function allowedBitwardenOrigins(selfHostedOrigins: readonly string[]): Set<string> {
+  const origins = new Set<string>(BUILTIN_BITWARDEN_ORIGINS);
+  for (const value of selfHostedOrigins) {
+    try {
+      const url = new URL(value);
+      if (
+        url.protocol === 'https:' && !url.username && !url.password && !url.port &&
+        url.pathname === '/' && !url.search && !url.hash && url.origin === value.replace(/\/$/, '')
+      ) origins.add(url.origin);
+    } catch {
+      // Invalid configuration entries never broaden the allowlist.
+    }
+  }
+  return origins;
 }
 
-function isBitwardenUrl(value: string) {
+function isBitwardenUrl(value: string, origins: ReadonlySet<string>) {
   try {
     const url = new URL(value);
-    return url.protocol === 'https:' && (url.hostname === 'bitwarden.com' || url.hostname.endsWith('.bitwarden.com'));
+    if (url.protocol !== 'https:' || url.username || url.password || url.port || !origins.has(url.origin)) return false;
+    return [...url.searchParams.entries()].every(([key, queryValue]) =>
+      !secretQueryKey.test(key) && !containsSecretLikeText(queryValue),
+    );
   } catch {
     return false;
   }
 }
 
-export const safeMetadataSchema = z
-  .record(z.string().trim().min(1, 'Название поля метаданных не может быть пустым.').max(100, 'Название поля метаданных слишком длинное.'), safeMetadataValueSchema, { error: 'Метаданные должны быть объектом.' })
-  .superRefine((metadata, context) => {
-    for (const [key, value] of Object.entries(metadata)) {
-      if (sensitiveMetadataKey.test(key)) {
-        context.addIssue({ code: 'custom', message: 'Секретные данные и реквизиты карт хранить нельзя.', path: [key] });
-      }
-      if ((typeof value === 'string' || typeof value === 'number') && containsPanLikeSequence(value)) {
-        context.addIssue({ code: 'custom', message: 'Полный номер карты хранить нельзя.', path: [key] });
-      }
-      if (typeof value === 'string' && explicitCredentialValue.test(value)) {
-        context.addIssue({ code: 'custom', message: 'Секретные данные и реквизиты карт хранить нельзя.', path: [key] });
-      }
-    }
-  });
+const secureText = (label: string, maximum = 2_000) => safeFreeText(
+  z.string({ error: `${label} должно быть текстом.` }).trim().min(1, `Заполните поле «${label}».`).max(maximum, `${label} слишком длинное.`),
+);
+const optionalSecureText = (label: string, maximum = 280) => safeFreeText(
+  z.string({ error: `${label} должно быть текстом.` }).trim().min(1, `Заполните поле «${label}».`).max(maximum, `${label} слишком длинное.`),
+).nullable().optional();
+const reviewDateSchema = z.string({ error: 'Дата проверки должна быть строкой.' })
+  .regex(/^\d{4}-\d{2}-\d{2}$/, 'Укажите дату проверки в формате ГГГГ-ММ-ДД.')
+  .refine((value) => {
+    const parsed = new Date(`${value}T00:00:00.000Z`);
+    return Number.isFinite(parsed.getTime()) && parsed.toISOString().slice(0, 10) === value;
+  }, 'Укажите существующую дату проверки.')
+  .nullable()
+  .optional();
+const lastFourSchema = z.string({ error: 'Последние четыре цифры должны быть строкой.' })
+  .regex(/^\d{4}$/, 'Укажите ровно четыре последние цифры.')
+  .nullable()
+  .optional();
 
-export const secureItemInputSchema = z
-  .object({
-    title: z.string({ error: 'Название безопасной записи должно быть текстом.' }).trim().min(1, 'Введите название безопасной записи.').max(280, 'Название безопасной записи слишком длинное.'),
-    externalUrl: z
-      .string({ error: 'Укажите корректную HTTPS-ссылку Bitwarden.' })
+function secureItemShape(selfHostedOrigins: readonly string[]) {
+  const origins = allowedBitwardenOrigins(selfHostedOrigins);
+  return {
+    title: safeFreeText(z.string({ error: 'Название безопасной записи должно быть текстом.' })
+      .trim().min(1, 'Введите название безопасной записи.').max(280, 'Название безопасной записи слишком длинное.')),
+    purpose: secureText('Назначение', 2_000),
+    owner: secureText('Ответственный', 280),
+    reviewDate: reviewDateSchema,
+    cardBank: optionalSecureText('Банк'),
+    cardHolder: optionalSecureText('Держатель карты'),
+    cardPurpose: optionalSecureText('Назначение карты', 2_000),
+    lastFour: lastFourSchema,
+    externalUrl: z.string({ error: 'Укажите корректную HTTPS-ссылку Bitwarden.' })
       .trim()
       .min(1, 'Укажите корректную HTTPS-ссылку Bitwarden.')
-      .refine(isBitwardenUrl, 'Укажите корректную HTTPS-ссылку Bitwarden.'),
-    metadata: safeMetadataSchema.default({}),
-  }, { error: 'Безопасная запись должна быть объектом.' })
-  .strict();
+      .max(2_000, 'Ссылка Bitwarden слишком длинная.')
+      .refine((value) => isBitwardenUrl(value, origins), 'Укажите корректную HTTPS-ссылку Bitwarden.'),
+  } as const;
+}
+
+export function createSecureItemInputSchema(selfHostedOrigins: readonly string[]) {
+  return z.object(secureItemShape(selfHostedOrigins), { error: 'Безопасная запись должна быть объектом.' })
+    .strict()
+    .transform((item) => ({
+      ...item,
+      reviewDate: item.reviewDate ?? null,
+      cardBank: item.cardBank ?? null,
+      cardHolder: item.cardHolder ?? null,
+      cardPurpose: item.cardPurpose ?? null,
+      lastFour: item.lastFour ?? null,
+    }));
+}
+
+export function createSecureItemPatchSchema(selfHostedOrigins: readonly string[]) {
+  const shape = secureItemShape(selfHostedOrigins);
+  return z.object({
+    title: shape.title.optional(),
+    purpose: shape.purpose.optional(),
+    owner: shape.owner.optional(),
+    reviewDate: shape.reviewDate,
+    cardBank: shape.cardBank,
+    cardHolder: shape.cardHolder,
+    cardPurpose: shape.cardPurpose,
+    lastFour: shape.lastFour,
+    externalUrl: shape.externalUrl.optional(),
+  }, { error: 'Изменения безопасной записи должны быть объектом.' }).strict();
+}
+
+export const secureItemInputSchema = createSecureItemInputSchema([]);
+export const secureItemPatchSchema = createSecureItemPatchSchema([]);
 
 export type TaskInput = z.input<typeof taskInputSchema>;
 export type TaskPatchInput = z.input<typeof taskPatchSchema>;
@@ -261,6 +308,7 @@ export type KnowledgePatchInput = z.input<typeof knowledgePatchSchema>;
 export type ContactInput = z.input<typeof contactInputSchema>;
 export type ContactPatchInput = z.input<typeof contactPatchSchema>;
 export type SecureItemInput = z.input<typeof secureItemInputSchema>;
+export type SecureItemPatchInput = z.input<typeof secureItemPatchSchema>;
 export type ParsedTaskInput = z.output<typeof taskInputSchema>;
 export type ParsedTaskPatchInput = z.output<typeof taskPatchSchema>;
 export type ParsedCommentInput = z.output<typeof commentInputSchema>;
@@ -269,5 +317,6 @@ export type ParsedKnowledgePatchInput = z.output<typeof knowledgePatchSchema>;
 export type ParsedContactInput = z.output<typeof contactInputSchema>;
 export type ParsedContactPatchInput = z.output<typeof contactPatchSchema>;
 export type ParsedSecureItemInput = z.output<typeof secureItemInputSchema>;
+export type ParsedSecureItemPatchInput = z.output<typeof secureItemPatchSchema>;
 
 export const DEFAULT_PRIORITY: Priority = 3;

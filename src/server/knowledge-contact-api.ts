@@ -12,7 +12,7 @@ import {
   type KnowledgeInput,
   type KnowledgePatchInput,
 } from '@/domain/schemas';
-import type { Contact, ContactMethod, KnowledgeItem, RecordMetadata, SearchResult } from '@/domain/types';
+import type { Attachment, Contact, ContactMethod, KnowledgeItem, RecordMetadata, SearchResult } from '@/domain/types';
 import { requireProductionEnvironment } from '@/server/env';
 import { readSessionCookie } from '@/server/http';
 import { isDatabaseVersionConflict, throwKnownRestoreDatabaseError } from '@/server/restore';
@@ -53,12 +53,12 @@ function metadata(row: Record<string, unknown>): RecordMetadata {
   };
 }
 
-function knowledgeFromRow(value: unknown): KnowledgeItem {
+function knowledgeFromRow(value: unknown, attachments: Attachment[] = []): KnowledgeItem {
   const row = value as Record<string, unknown>;
   return {
     ...metadata(row), title: String(row.title), body: String(row.body ?? ''),
     kind: row.kind as KnowledgeItem['kind'], linkUrl: row.link_url === null ? null : String(row.link_url),
-    sectionId: row.section_id === null ? null : String(row.section_id), attachments: [],
+    sectionId: row.section_id === null ? null : String(row.section_id), attachments,
   };
 }
 
@@ -70,6 +70,11 @@ function contactMethodFromRow(value: unknown): ContactMethod {
 function contactFromRow(value: unknown, methods: ContactMethod[]): Contact {
   const row = value as Record<string, unknown>;
   return { ...metadata(row), name: String(row.name), category: row.category as Contact['category'], notes: String(row.notes ?? ''), methods };
+}
+
+function attachmentFromRow(value: unknown): Attachment {
+  const row = value as Record<string, unknown>;
+  return { id: String(row.id), name: String(row.name), mimeType: String(row.mime_type), size: Number(row.size_bytes) };
 }
 
 function isVersionConflict(result: DataResult): boolean {
@@ -84,6 +89,11 @@ export function createSupabaseKnowledgeContactStore(
   client: SupabaseClient,
   createActorClient: (actorUserId: string) => SupabaseClient = () => client,
 ): KnowledgeContactApiStore {
+  const knowledgeAttachments = async (workspaceId: string, id: string): Promise<Attachment[]> => {
+    const result = await client.from('attachments').select('id,name,mime_type,size_bytes')
+      .eq('workspace_id', workspaceId).eq('knowledge_item_id', id).eq('state', 'ready').is('deleted_at', null).order('created_at') as DataResult;
+    return (assertResult(result) as unknown[]).map(attachmentFromRow);
+  };
   const currentKnowledge = async (workspaceId: string, id: string) => {
     const result = await client.from('knowledge_items').select('*').eq('workspace_id', workspaceId).eq('id', id).maybeSingle() as DataResult;
     return assertResult(result) as Record<string, unknown> | null;
@@ -129,7 +139,7 @@ export function createSupabaseKnowledgeContactStore(
         title: merged.title, body: merged.body, kind: merged.kind, link_url: merged.linkUrl, section_id: merged.sectionId,
       }).eq('workspace_id', workspaceId).eq('id', id).eq('version', expectedVersion).is('deleted_at', null).select('*').maybeSingle() as DataResult;
       const data = assertResult(result);
-      return data ? knowledgeFromRow(data) : conflictOrMissing(currentKnowledge, workspaceId, id, expectedVersion);
+      return data ? knowledgeFromRow(data, await knowledgeAttachments(workspaceId, id)) : conflictOrMissing(currentKnowledge, workspaceId, id, expectedVersion);
     },
     async deleteKnowledge(workspaceId, id, expectedVersion, actorUserId) {
       const result = await createActorClient(actorUserId).from('knowledge_items').update({ deleted_at: new Date().toISOString() })
@@ -145,7 +155,7 @@ export function createSupabaseKnowledgeContactStore(
       throwKnownRestoreDatabaseError(result.error, 'knowledge_not_found');
       const rows = assertResult(result) as unknown[];
       const row = rows[0];
-      if (row) return knowledgeFromRow(row);
+      if (row) return knowledgeFromRow(row, await knowledgeAttachments(workspaceId, id));
       throw new Error('Не удалось восстановить запись.');
     },
     async createContact(workspaceId, input, actorUserId) {

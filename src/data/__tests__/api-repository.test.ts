@@ -75,6 +75,91 @@ describe('API task repository', () => {
     await expect(repository.search('   ')).resolves.toEqual([]);
     expect(fetcher).toHaveBeenCalledOnce();
   });
+
+  it('runs sign-upload-complete without retaining signed URLs or bytes in workspace state', async () => {
+    const attachment = { id: 'attachment-ready', name: 'policy.txt', mimeType: 'text/plain', size: 18 };
+    const signed = {
+      ...attachment,
+      uploadUrl: 'https://storage.example/private-upload?token=ephemeral',
+      expiresAt: '2026-08-02T14:05:00.000Z',
+    };
+    const fetcher = vi.fn()
+      .mockResolvedValueOnce(new Response(JSON.stringify({ data: signed, error: null, requestId: 'sign' }), { status: 201 }))
+      .mockResolvedValueOnce(new Response('', { status: 200 }))
+      .mockResolvedValueOnce(new Response(JSON.stringify({ data: attachment, error: null, requestId: 'complete' }), { status: 200 }));
+    const repository = createApiRepository({ initialSnapshot: demoSeed, fetcher, realtime: () => () => {} });
+    const progress: number[] = [];
+    const file = new File(['Регламент смены.\n'], 'policy.txt', { type: 'text/plain' });
+
+    await expect(repository.uploadAttachment(
+      { type: 'task', id: demoSeed.tasks[0]!.id },
+      file,
+      (value) => progress.push(value),
+    )).resolves.toEqual(attachment);
+
+    const signCall = fetcher.mock.calls[0]!;
+    expect(signCall[0]).toBe('/api/files/sign-upload');
+    expect(JSON.parse(String((signCall[1] as RequestInit).body))).toMatchObject({
+      parentType: 'task', parentId: demoSeed.tasks[0]!.id, name: 'policy.txt', declaredMime: 'text/plain', size: file.size,
+    });
+    expect(fetcher).toHaveBeenNthCalledWith(2, signed.uploadUrl, expect.objectContaining({ method: 'PUT', body: file }));
+    expect(fetcher).toHaveBeenNthCalledWith(3, `/api/files/${attachment.id}/complete`, expect.objectContaining({ method: 'POST' }));
+    expect(progress).toEqual([10, 30, 80, 100]);
+    expect(repository.snapshot().tasks[0]!.attachments).toEqual([attachment]);
+    expect(JSON.stringify(repository.snapshot())).not.toMatch(/private-upload|token=ephemeral|Регламент смены/iu);
+  });
+
+  it('rejects a forbidden file locally before requesting an upload grant', async () => {
+    const fetcher = vi.fn();
+    const repository = createApiRepository({ initialSnapshot: demoSeed, fetcher, realtime: () => () => {} });
+    const svg = new File(['<svg><script>alert(1)</script></svg>'], 'unsafe.svg', { type: 'image/svg+xml' });
+
+    await expect(repository.uploadAttachment({ type: 'task', id: demoSeed.tasks[0]!.id }, svg))
+      .rejects.toThrow(/Разрешены только JPEG/iu);
+    expect(fetcher).not.toHaveBeenCalled();
+  });
+
+  it('keeps Safe summaries in state while reveal URLs remain response-local', async () => {
+    const created = {
+      ...demoSeed.secureItems[0]!, id: 'safe-new', title: 'Терминал', version: 1,
+    };
+    const externalUrl = 'https://vault.bitwarden.com/#/items/memory-only-response';
+    const fetcher = vi.fn()
+      .mockResolvedValueOnce(new Response(JSON.stringify({ data: created, error: null, requestId: 'create' }), { status: 201 }))
+      .mockResolvedValueOnce(new Response(JSON.stringify({ data: { externalUrl }, error: null, requestId: 'reveal' }), { status: 200 }));
+    const repository = createApiRepository({ initialSnapshot: demoSeed, fetcher, realtime: () => () => {} });
+
+    await repository.createSecureItem({
+      title: 'Терминал', purpose: 'Оплата', owner: 'Управляющий', externalUrl,
+    });
+    await expect(repository.revealSecureItem('safe-new')).resolves.toEqual({ externalUrl });
+
+    expect(fetcher).toHaveBeenNthCalledWith(1, '/api/secure-items', expect.objectContaining({
+      method: 'POST', body: expect.stringContaining(externalUrl),
+    }));
+    expect(fetcher).toHaveBeenNthCalledWith(2, '/api/secure-items/safe-new/reveal', expect.objectContaining({ method: 'POST' }));
+    expect(repository.snapshot().secureItems).toContainEqual(created);
+    expect(JSON.stringify(repository.snapshot())).not.toContain(externalUrl);
+  });
+
+  it('removes an archived Safe summary and restores it through the recovery action', async () => {
+    const current = demoSeed.secureItems[0]!;
+    const deleted = { ...current, version: 2, deletedAt: '2026-08-02T14:00:00.000Z' };
+    const restored = { ...current, version: 3, deletedAt: null };
+    const fetcher = vi.fn()
+      .mockResolvedValueOnce(new Response(JSON.stringify({ data: deleted, error: null, requestId: 'delete' }), { status: 200 }))
+      .mockResolvedValueOnce(new Response(JSON.stringify({ data: restored, error: null, requestId: 'restore' }), { status: 200 }));
+    const repository = createApiRepository({ initialSnapshot: demoSeed, fetcher, realtime: () => () => {} });
+
+    await repository.deleteSecureItem(current.id, current.version);
+    expect(repository.snapshot().secureItems).not.toContainEqual(expect.objectContaining({ id: current.id }));
+    await repository.restoreSecureItem(current.id, deleted.version);
+
+    expect(fetcher).toHaveBeenNthCalledWith(2, `/api/secure-items/${current.id}`, expect.objectContaining({
+      method: 'PATCH', body: JSON.stringify({ action: 'restore', expectedVersion: 2 }),
+    }));
+    expect(repository.snapshot().secureItems).toContainEqual(restored);
+  });
 });
 
 describe('workspace Realtime', () => {

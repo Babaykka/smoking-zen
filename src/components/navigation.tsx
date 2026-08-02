@@ -1,6 +1,9 @@
-import { BookOpen, CheckSquare, House, UsersRound } from 'lucide-react';
+'use client';
 
-export type ViewKey = 'today' | 'tasks' | 'knowledge' | 'people';
+import { BookOpen, CheckSquare, Ellipsis, House, ShieldCheck, UsersRound } from 'lucide-react';
+import { useState } from 'react';
+
+export type ViewKey = 'today' | 'tasks' | 'knowledge' | 'people' | 'safe';
 
 type NavigationProps = {
   activeView: ViewKey;
@@ -16,11 +19,12 @@ const navigationItems = [
 ];
 
 export function Navigation({ activeView, onNavigate, variant }: NavigationProps) {
+  const [secondaryOpen, setSecondaryOpen] = useState(false);
+
   return (
     <nav aria-label="Основная навигация" className={`navigation navigation--${variant}`}>
       {navigationItems.map(({ icon: Icon, key, label }) => {
         const isActive = key === activeView;
-
         return (
           <a
             aria-current={isActive ? 'page' : undefined}
@@ -37,6 +41,34 @@ export function Navigation({ activeView, onNavigate, variant }: NavigationProps)
           </a>
         );
       })}
+      <div className="navigation__secondary">
+        <button
+          aria-expanded={secondaryOpen}
+          aria-haspopup="menu"
+          className={activeView === 'safe' ? 'navigation__link navigation__link--active' : 'navigation__link'}
+          onClick={() => setSecondaryOpen((current) => !current)}
+          type="button"
+        >
+          <Ellipsis aria-hidden="true" size={20} strokeWidth={1.8} />
+          <span>Ещё</span>
+        </button>
+        <div className="navigation__secondary-menu" hidden={!secondaryOpen} role="menu">
+          <a
+            aria-current={activeView === 'safe' ? 'page' : undefined}
+            className={activeView === 'safe' ? 'navigation__link navigation__link--active' : 'navigation__link'}
+            href="#safe"
+            onClick={(event) => {
+              event.preventDefault();
+              setSecondaryOpen(false);
+              onNavigate('safe');
+            }}
+            role="menuitem"
+          >
+            <ShieldCheck aria-hidden="true" size={20} strokeWidth={1.8} />
+            <span>Сейф</span>
+          </a>
+        </div>
+      </div>
     </nav>
   );
 }

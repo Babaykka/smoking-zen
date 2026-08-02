@@ -1,4 +1,4 @@
-import { render, screen } from '@testing-library/react';
+import { fireEvent, render, screen } from '@testing-library/react';
 
 import { AppShell } from '@/components/app-shell';
 
@@ -28,5 +28,15 @@ describe('AppShell', () => {
     );
 
     expect(screen.getAllByRole('button', { name: 'Создать задачу' })).toHaveLength(2);
+  });
+
+  it('places Safe under the secondary navigation instead of the primary destinations', () => {
+    const navigate = vi.fn();
+    render(<AppShell activeView="today" onNavigate={navigate} onCreate={() => {}}><p>Содержимое</p></AppShell>);
+    for (const trigger of screen.getAllByText('Ещё')) fireEvent.click(trigger);
+    const links = screen.getAllByRole('menuitem', { name: 'Сейф' });
+    expect(links).toHaveLength(2);
+    fireEvent.click(links[0]!);
+    expect(navigate).toHaveBeenCalledWith('safe');
   });
 });

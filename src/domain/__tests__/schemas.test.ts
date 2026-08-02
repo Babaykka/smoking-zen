@@ -10,7 +10,6 @@ import {
   mergeKnowledgePatch,
   knowledgePatchSchema,
   prioritySchema,
-  safeMetadataSchema,
   secureItemInputSchema,
   taskInputSchema,
 } from '@/domain/schemas';
@@ -135,46 +134,6 @@ describe('workspace schemas', () => {
     ).toThrow();
   });
 
-  it.each([
-    { пароль: 'нельзя' },
-    { секрет: 'нельзя' },
-    { токен: 'нельзя' },
-    { пин: '1234' },
-    { 'код подтверждения': '123456' },
-    { label: 4242424242424242 },
-  ])('rejects sensitive Russian keys and numeric PAN metadata: %o', (metadata) => {
-    expect(safeMetadataSchema.safeParse(metadata).success).toBe(false);
-  });
-
-  it('allows a masked last four digits value', () => {
-    expect(safeMetadataSchema.parse({ last4: '4242' })).toEqual({ last4: '4242' });
-  });
-
-  it.each([
-    'password: hunter2',
-    'пароль: hunter2',
-    'token=abc.def.ghi',
-    'OTP: 123456',
-    'OTP 123456',
-    'one-time password: 123456',
-    'пин: 1234',
-    'пароль hunter2',
-    'код подтверждения: 123456',
-  ])('rejects an explicit credential in a metadata value: %s', (note) => {
-    expect(safeMetadataSchema.safeParse({ note }).success).toBe(false);
-  });
-
-  it('allows harmless metadata prose about security policies', () => {
-    expect(
-      safeMetadataSchema.parse({
-        note: 'Пароль хранится в Bitwarden; не отправляйте токены в чат.',
-        policy: 'Подтверждение входа выполняется только в приложении.',
-        englishPolicy: 'Password rotation is documented in the team policy.',
-        russianPolicy: 'Политика смены пароля описана в регламенте команды.',
-      }),
-    ).toMatchObject({ note: expect.any(String), policy: expect.any(String) });
-  });
-
   it('rejects explicit secrets and complete card numbers in task descriptions and comments', () => {
     expect(taskInputSchema.safeParse({ title: 'Смена', description: 'token=abc.def.ghi' }).success).toBe(false);
     expect(taskInputSchema.safeParse({ title: 'Касса', description: 'Карта 4242 4242 4242 4242' }).success).toBe(false);
@@ -189,8 +148,9 @@ describe('workspace schemas', () => {
   it('returns a Russian validation error instead of throwing for malformed safe URLs', () => {
     const result = secureItemInputSchema.safeParse({
       title: 'Касса',
+      purpose: 'Доступ к кассе',
+      owner: 'Управляющий',
       externalUrl: 'это не URL',
-      metadata: {},
     });
 
     expect(result.success).toBe(false);
@@ -221,19 +181,23 @@ describe('workspace schemas', () => {
 
   it('returns concise Russian messages for attachment validation errors', () => {
     const missingName = attachmentInputSchema.safeParse({ id: 'attachment-1', name: '', mimeType: 'application/pdf', size: 1 });
+    const empty = attachmentInputSchema.safeParse({ id: 'attachment-1', name: 'menu.pdf', mimeType: 'application/pdf', size: 0 });
     const oversized = attachmentInputSchema.safeParse({ id: 'attachment-1', name: 'menu.pdf', mimeType: 'application/pdf', size: MAX_ATTACHMENT_BYTES + 1 });
 
     expect(missingName.success).toBe(false);
+    expect(empty.success).toBe(false);
     expect(oversized.success).toBe(false);
     if (!missingName.success) expect(missingName.error.issues[0]?.message).toBe('Введите название файла.');
+    if (!empty.success) expect(empty.error.issues[0]?.message).toBe('Файл не может быть пустым.');
     if (!oversized.success) expect(oversized.error.issues[0]?.message).toBe('Размер файла не должен превышать 25 МиБ.');
   });
 
   it('returns a concise Russian message for a missing secure item title', () => {
     const result = secureItemInputSchema.safeParse({
       title: '',
+      purpose: 'Доступ к кассе',
+      owner: 'Управляющий',
       externalUrl: 'https://vault.bitwarden.com/#/items/123',
-      metadata: {},
     });
 
     expect(result.success).toBe(false);
@@ -254,8 +218,9 @@ describe('workspace schemas', () => {
     });
     const secureItemType = secureItemInputSchema.safeParse({
       title: 42,
+      purpose: 'Доступ к кассе',
+      owner: 'Управляющий',
       externalUrl: 'https://vault.bitwarden.com/#/items/123',
-      metadata: {},
     });
 
     expect(taskType.success).toBe(false);
@@ -274,10 +239,12 @@ describe('workspace schemas', () => {
     const taskAttachments = taskInputSchema.safeParse({ title: 'Смена', attachments: 'не список' });
     const contactMethod = contactInputSchema.safeParse({ name: 'Илья', methods: [null] });
     const contactMethods = contactInputSchema.safeParse({ name: 'Илья', methods: 'не список' });
-    const secureMetadata = secureItemInputSchema.safeParse({
+    const secureNested = secureItemInputSchema.safeParse({
       title: 'Касса',
+      purpose: 'Доступ к кассе',
+      owner: 'Управляющий',
       externalUrl: 'https://vault.bitwarden.com/#/items/123',
-      metadata: 'не объект',
+      card: { lastFour: '4242' },
     });
 
     expect(attachmentObject.success).toBe(false);
@@ -285,13 +252,13 @@ describe('workspace schemas', () => {
     expect(taskAttachments.success).toBe(false);
     expect(contactMethod.success).toBe(false);
     expect(contactMethods.success).toBe(false);
-    expect(secureMetadata.success).toBe(false);
+    expect(secureNested.success).toBe(false);
     if (!attachmentObject.success) expect(attachmentObject.error.issues[0]?.message).toBe('Вложение должно быть объектом.');
     if (!taskAttachment.success) expect(taskAttachment.error.issues[0]?.message).toBe('Вложение должно быть объектом.');
     if (!taskAttachments.success) expect(taskAttachments.error.issues[0]?.message).toBe('Вложения должны быть списком.');
     if (!contactMethod.success) expect(contactMethod.error.issues[0]?.message).toBe('Способ связи должен быть объектом.');
     if (!contactMethods.success) expect(contactMethods.error.issues[0]?.message).toBe('Способы связи должны быть списком.');
-    if (!secureMetadata.success) expect(secureMetadata.error.issues[0]?.message).toBe('Метаданные должны быть объектом.');
+    if (!secureNested.success) expect(secureNested.error.issues[0]?.message).toBe('Безопасная запись должна быть объектом.');
   });
 
   it('accepts a contact with phone, Telegram, and WhatsApp methods', () => {

@@ -14,6 +14,7 @@ const MIGRATIONS = [
   'supabase/migrations/0006_knowledge_contacts_search.sql',
   'supabase/migrations/0007_task5_integrity.sql',
   'supabase/migrations/0008_task5_taxonomy_recovery.sql',
+  'supabase/migrations/0009_private_files_secure_items.sql',
 ];
 const HISTORICAL_TASK5_MIGRATION = 'src/server/__tests__/historical-0006-knowledge-contacts-search.sql';
 const TASK5_TAXONOMY_RECOVERY_MIGRATION = 'supabase/migrations/0008_task5_taxonomy_recovery.sql';
@@ -56,7 +57,8 @@ async function createDatabase(options: { seedRounds?: number; migrations?: strin
       as 'select coalesce(nullif(current_setting(''request.jwt.claims'', true), ''''), ''{}'')::jsonb';
     create schema storage;
     create table storage.buckets (
-      id text primary key, name text not null, public boolean not null default false, file_size_limit bigint
+      id text primary key, name text not null, public boolean not null default false, file_size_limit bigint,
+      allowed_mime_types text[]
     );
     create table storage.objects (
       id uuid primary key default extensions.gen_random_uuid(), bucket_id text, name text

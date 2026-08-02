@@ -100,6 +100,24 @@ describe('server environment', () => {
 
     expect(environment).toMatchObject({
       mode: 'production', supabasePublishableKey: 'sb_publishable_test', supabaseJwtEs256PrivateKey: expect.stringContaining('PRIVATE KEY'), supabaseJwtKid: 'trusted-es256-key',
+      bitwardenSelfHostedOrigins: [],
     });
+  });
+
+  it('accepts only exact HTTPS origins in the self-hosted Bitwarden allowlist', () => {
+    const base = {
+      APP_MODE: 'production', APP_ORIGIN: 'https://app.example', TELEGRAM_BOT_TOKEN: 'bot-token',
+      SESSION_SECRET: 's'.repeat(32), SUPABASE_URL: 'https://project.supabase.co', SUPABASE_ANON_KEY: 'anon',
+      SUPABASE_PUBLISHABLE_KEY: 'sb_publishable_test', SUPABASE_SERVICE_ROLE_KEY: 'service',
+      SUPABASE_JWT_ES256_PRIVATE_KEY: '-----BEGIN PRIVATE KEY-----\ntest\n-----END PRIVATE KEY-----',
+      SUPABASE_JWT_KID: 'trusted-es256-key', OWNER_TELEGRAM_ID: '123456789',
+    };
+    expect(parseServerEnvironment({
+      ...base, BITWARDEN_SELF_HOSTED_ORIGINS: 'https://vault.example.org, https://vault.company.example',
+    })).toMatchObject({ bitwardenSelfHostedOrigins: ['https://vault.example.org', 'https://vault.company.example'] });
+    for (const value of ['http://vault.example.org', 'https://vault.example.org/path', 'https://user@vault.example.org', 'https://vault.example.org:8443']) {
+      expect(() => parseServerEnvironment({ ...base, BITWARDEN_SELF_HOSTED_ORIGINS: value }))
+        .toThrow('Production server configuration is incomplete.');
+    }
   });
 });

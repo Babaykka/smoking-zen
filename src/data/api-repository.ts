@@ -1,7 +1,8 @@
 import { ConflictError, type WorkspaceListener } from '@/data/workspace-repository';
-import type { CommentInput, ContactInput, ContactPatchInput, KnowledgeInput, KnowledgePatchInput, TaskInput, TaskPatchInput } from '@/domain/schemas';
+import { validateUpload, type AttachmentTarget, type SignedAttachmentDownload } from '@/domain/files';
+import type { CommentInput, ContactInput, ContactPatchInput, KnowledgeInput, KnowledgePatchInput, SecureItemInput, SecureItemPatchInput, TaskInput, TaskPatchInput } from '@/domain/schemas';
 import type { WorkspaceGateway } from '@/data/workspace-gateway';
-import type { Comment, Contact, KnowledgeItem, SearchResult, Task, WorkspaceSnapshot } from '@/domain/types';
+import type { Attachment, Comment, Contact, KnowledgeItem, SearchResult, SecureItemReveal, SecureItemSummary, Task, WorkspaceSnapshot } from '@/domain/types';
 
 type ApiEnvelope<T> = { data: T | null; error: { code: string; message: string } | null; requestId: string };
 type RealtimeSubscriber = (workspaceId: string, listener: () => void) => () => void;
@@ -46,6 +47,12 @@ async function envelope<T>(response: Response): Promise<ApiEnvelope<T>> {
   }
   if (!parsed || typeof parsed !== 'object' || !('data' in parsed) || !('error' in parsed)) throw new Error('Сервер вернул некорректный ответ.');
   return parsed as ApiEnvelope<T>;
+}
+
+function bytesToBase64(bytes: Uint8Array): string {
+  let binary = '';
+  for (const byte of bytes) binary += String.fromCharCode(byte);
+  return btoa(binary);
 }
 
 export function createApiRepository(options: ApiRepositoryOptions): WorkspaceGateway & { pendingTaskInput(id: string): TaskPatchInput | undefined } {
@@ -201,6 +208,83 @@ export function createApiRepository(options: ApiRepositoryOptions): WorkspaceGat
       state.contacts.push(restored);
       notify();
       return clone(restored);
+    },
+    async createSecureItem(input: SecureItemInput): Promise<SecureItemSummary> {
+      const created = await request<SecureItemSummary>('/api/secure-items', 'POST', input);
+      state.secureItems.push(created);
+      notify();
+      return clone(created);
+    },
+    async updateSecureItem(id: string, input: SecureItemPatchInput, expectedVersion: number): Promise<SecureItemSummary> {
+      const updated = await request<SecureItemSummary>(`/api/secure-items/${encodeURIComponent(id)}`, 'PATCH', { input, expectedVersion });
+      state.secureItems = state.secureItems.map((item) => item.id === id ? updated : item);
+      notify();
+      return clone(updated);
+    },
+    async deleteSecureItem(id: string, expectedVersion: number): Promise<SecureItemSummary> {
+      const deleted = await request<SecureItemSummary>(`/api/secure-items/${encodeURIComponent(id)}`, 'DELETE', { expectedVersion });
+      state.secureItems = state.secureItems.filter((item) => item.id !== id);
+      notify();
+      return clone(deleted);
+    },
+    async restoreSecureItem(id: string, expectedVersion: number): Promise<SecureItemSummary> {
+      const restored = await request<SecureItemSummary>(`/api/secure-items/${encodeURIComponent(id)}`, 'PATCH', {
+        action: 'restore', expectedVersion,
+      });
+      state.secureItems = [...state.secureItems.filter((item) => item.id !== id), restored];
+      notify();
+      return clone(restored);
+    },
+    async revealSecureItem(id: string): Promise<SecureItemReveal> {
+      return request<SecureItemReveal>(`/api/secure-items/${encodeURIComponent(id)}/reveal`, 'POST', {});
+    },
+    async uploadAttachment(target: AttachmentTarget, file: File, onProgress?: (percent: number) => void): Promise<Attachment> {
+      assertActive();
+      onProgress?.(10);
+      const headerBytes = new Uint8Array(await file.slice(0, 8_192).arrayBuffer());
+      const validated = validateUpload({ name: file.name, declaredMime: file.type, size: file.size, headerBytes });
+      const signed = await request<Attachment & { uploadUrl: string; expiresAt: string }>('/api/files/sign-upload', 'POST', {
+        parentType: target.type,
+        parentId: target.id,
+        name: validated.name,
+        declaredMime: validated.declaredMime,
+        size: validated.size,
+        headerBase64: bytesToBase64(headerBytes),
+      });
+      onProgress?.(30);
+      const uploadResponse = await fetcher(signed.uploadUrl, {
+        method: 'PUT',
+        credentials: 'omit',
+        headers: {
+          'cache-control': 'max-age=0',
+          'content-type': file.type,
+          'x-upsert': 'false',
+        },
+        body: file,
+        referrerPolicy: 'no-referrer',
+        ...(options.signal ? { signal: options.signal } : {}),
+      });
+      assertActive();
+      if (!uploadResponse.ok) throw new Error('Не удалось передать файл в закрытое хранилище.');
+      onProgress?.(80);
+      const completed = await request<Attachment>(`/api/files/${encodeURIComponent(signed.id)}/complete`, 'POST', {});
+      if (target.type === 'task') {
+        state.tasks = state.tasks.map((item) => item.id === target.id ? {
+          ...item,
+          attachments: [...item.attachments.filter((attachment) => attachment.id !== completed.id), completed],
+        } : item);
+      } else {
+        state.knowledge = state.knowledge.map((item) => item.id === target.id ? {
+          ...item,
+          attachments: [...item.attachments.filter((attachment) => attachment.id !== completed.id), completed],
+        } : item);
+      }
+      onProgress?.(100);
+      notify();
+      return clone(completed);
+    },
+    async downloadAttachment(id: string): Promise<SignedAttachmentDownload> {
+      return request<SignedAttachmentDownload>(`/api/files/${encodeURIComponent(id)}/download`, 'GET', undefined);
     },
     async search(query: string, options?: { signal?: AbortSignal }): Promise<SearchResult[]> {
       return query.trim() ? request<SearchResult[]>('/api/search', 'POST', { query }, options?.signal) : [];

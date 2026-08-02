@@ -3,7 +3,8 @@ import type {
   Contact,
   KnowledgeItem,
   SearchResult,
-  SecureItemLink,
+  SecureItemReveal,
+  SecureItemSummary,
   Task,
   WorkspaceEntity,
   WorkspaceSnapshot,
@@ -15,10 +16,11 @@ import type {
   KnowledgeInput,
   KnowledgePatchInput,
   SecureItemInput,
+  SecureItemPatchInput,
   TaskInput,
 } from '@/domain/schemas';
 
-export type RestorableRecord = Task | Comment | KnowledgeItem | Contact | SecureItemLink;
+export type RestorableRecord = Task | Comment | KnowledgeItem | Contact | SecureItemSummary;
 export type WorkspaceListener = (snapshot: WorkspaceSnapshot) => void;
 
 export type WorkspacePersistence = {
@@ -89,9 +91,10 @@ export interface WorkspaceRepository {
   createContact(input: ContactInput): Contact;
   updateContact(id: string, input: ContactPatchInput, expectedVersion: number): Contact;
   deleteContact(id: string, expectedVersion: number): Contact;
-  createSecureItem(input: SecureItemInput): SecureItemLink;
-  updateSecureItem(id: string, input: Partial<SecureItemInput>, expectedVersion: number): SecureItemLink;
-  deleteSecureItem(id: string, expectedVersion: number): SecureItemLink;
+  createSecureItem(input: SecureItemInput): SecureItemSummary;
+  updateSecureItem(id: string, input: SecureItemPatchInput, expectedVersion: number): SecureItemSummary;
+  deleteSecureItem(id: string, expectedVersion: number): SecureItemSummary;
+  revealSecureItem(id: string): SecureItemReveal;
   restore(entity: WorkspaceEntity, id: string, expectedVersion: number): RestorableRecord;
   hydrate(): void;
   search(query: string): SearchResult[];
