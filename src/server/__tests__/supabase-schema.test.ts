@@ -10,6 +10,7 @@ const MIGRATIONS = [
   'supabase/migrations/0002_rls_storage_realtime.sql',
   'supabase/migrations/0003_task_realtime_actor.sql',
   'supabase/migrations/0004_realtime_scope_lockdown.sql',
+  'supabase/migrations/0005_audit_immutability.sql',
 ];
 const OWNER_TELEGRAM_ID = '4503599627370495';
 const REQUIRED_SECTIONS = [
@@ -277,6 +278,75 @@ describe('Supabase schema runtime security', () => {
       { workspace_id: workspaceOne, actor_user_id: actorOne },
       { workspace_id: workspaceTwo, actor_user_id: null },
     ]);
+  });
+
+  it('allows service-role audit reads and trigger writes while denying every direct audit mutation', async () => {
+    const database = await createDatabase({ seedRounds: 1 });
+    const workspaceId = '10000000-0000-4000-8000-000000000001';
+    const taskId = '61000000-0000-4000-8000-000000000005';
+    const commentId = '62000000-0000-4000-8000-000000000005';
+    const directEventId = '63000000-0000-4000-8000-000000000005';
+    await database.exec('set role service_role');
+
+    await database.query(
+      'insert into public.tasks (id, workspace_id, title, status_id) values ($1, $2, $3, $4)',
+      [taskId, workspaceId, 'Service task', '40000000-0000-4000-8000-000000000001'],
+    );
+    await database.query(
+      'insert into public.comments (id, workspace_id, task_id, author_id, body) values ($1, $2, $3, $4, $5)',
+      [commentId, workspaceId, taskId, '30000000-0000-4000-8000-000000000001', 'Service comment'],
+    );
+    const triggerEvents = await database.query<{ entity_type: string; entity_id: string }>(`
+      select entity_type, entity_id
+      from public.audit_events
+      where entity_id in ('${taskId}', '${commentId}')
+      order by entity_type
+    `);
+
+    const rejected = async (sql: string, params: unknown[] = []) => {
+      try {
+        await database.query(sql, params);
+        return false;
+      } catch {
+        return true;
+      }
+    };
+    const mutations = {
+      insert: await rejected(
+        `insert into public.audit_events
+          (id, workspace_id, entity_type, entity_id, action, entity_version)
+         values ($1, $2, 'task', $3, 'created', 1)`,
+        [directEventId, workspaceId, '64000000-0000-4000-8000-000000000005'],
+      ),
+      update: await rejected("update public.audit_events set action = 'updated' where id = $1", [directEventId]),
+      delete: await rejected('delete from public.audit_events where id = $1', [directEventId]),
+      truncate: await rejected('truncate table public.audit_events cascade'),
+    };
+    const privileges = await database.query<{
+      can_select: boolean;
+      can_insert: boolean;
+      can_update: boolean;
+      can_delete: boolean;
+      can_truncate: boolean;
+    }>(`
+      select
+        has_table_privilege(current_user, 'public.audit_events', 'select') as can_select,
+        has_table_privilege(current_user, 'public.audit_events', 'insert') as can_insert,
+        has_table_privilege(current_user, 'public.audit_events', 'update') as can_update,
+        has_table_privilege(current_user, 'public.audit_events', 'delete') as can_delete,
+        has_table_privilege(current_user, 'public.audit_events', 'truncate') as can_truncate
+    `);
+
+    expect(triggerEvents.rows).toEqual([
+      { entity_type: 'comment', entity_id: commentId },
+      { entity_type: 'task', entity_id: taskId },
+    ]);
+    expect(mutations).toEqual({ insert: true, update: true, delete: true, truncate: true });
+    expect(privileges.rows).toEqual([{
+      can_select: true, can_insert: false, can_update: false, can_delete: false, can_truncate: false,
+    }]);
+    await database.exec('reset role');
+    await expect(database.exec('truncate table public.audit_events cascade')).rejects.toThrow(/append-only/i);
   });
 
   it('denies a Realtime-scoped authenticated bearer every direct business-table mutation', async () => {
