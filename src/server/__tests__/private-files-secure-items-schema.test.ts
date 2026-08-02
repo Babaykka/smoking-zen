@@ -16,6 +16,7 @@ const MIGRATIONS = [
   'supabase/migrations/0008_task5_taxonomy_recovery.sql',
   'supabase/migrations/0009_private_files_secure_items.sql',
   'supabase/migrations/0010_task6_ambiguous_file_cleanup.sql',
+  'supabase/migrations/0011_task6_late_cleanup_safe_convergence.sql',
 ];
 
 const databases: PGlite[] = [];
@@ -26,7 +27,7 @@ async function applyMigration(database: PGlite, filename: string) {
   await database.exec(migration);
 }
 
-async function createDatabase() {
+async function createDatabase(migrations: readonly string[] = MIGRATIONS, reapplyLast = true) {
   const database = new PGlite();
   databases.push(database);
   await database.exec(`
@@ -69,8 +70,8 @@ async function createDatabase() {
     alter default privileges in schema public grant execute on functions to anon, authenticated, service_role;
   `);
 
-  for (const filename of MIGRATIONS) await applyMigration(database, filename);
-  await applyMigration(database, MIGRATIONS.at(-1)!);
+  for (const filename of migrations) await applyMigration(database, filename);
+  if (reapplyLast) await applyMigration(database, migrations.at(-1)!);
   return database;
 }
 
@@ -191,6 +192,9 @@ describe('private file and secure-item schema runtime', () => {
     `, [attachmentId])).rejects.toThrow();
 
     const readyPath = attachmentId;
+    await database.query('select public.arm_attachment_ready_cleanup($1, $2, $3)', [
+      owner.workspace_id, attachmentId, readyPath,
+    ]);
     await database.query(`select * from public.complete_attachment_upload(
       $1, $2, $3, $4, 'policy.pdf', 'application/pdf', 64, repeat('a', 64)
     )`, [owner.workspace_id, attachmentId, quarantinePath, readyPath]);
@@ -223,6 +227,9 @@ describe('private file and secure-item schema runtime', () => {
         id, workspace_id, task_id, name, mime_type, size_bytes, storage_path, created_by, quarantine_expires_at
       ) values ($1, $2, $3, 'policy.txt', 'text/plain', 16, $4, $5, clock_timestamp() + interval '15 minutes')
     `, [attachmentId, owner.workspace_id, task.rows[0]!.id, quarantinePath, owner.user_id]);
+    await database.query('select public.arm_attachment_ready_cleanup($1, $2, $3)', [
+      owner.workspace_id, attachmentId, readyPath,
+    ]);
     await database.query('update public.tasks set deleted_at = clock_timestamp() where id = $1', [task.rows[0]!.id]);
 
     await expect(database.query(`select * from public.complete_attachment_upload(
@@ -256,10 +263,10 @@ describe('private file and secure-item schema runtime', () => {
       values ($1, $2, $3, clock_timestamp()) returning id
     `, [owner.workspace_id, attachmentId, readyObject]);
 
-    const deferred = await database.query<{ removable: boolean }>(
-      'select public.prepare_file_cleanup_object($1) as removable', [queued.rows[0]!.id],
+    const deferred = await database.query<{ lease_id: string | null }>(
+      'select public.prepare_file_cleanup_object($1)::text as lease_id', [queued.rows[0]!.id],
     );
-    expect(deferred.rows).toEqual([{ removable: false }]);
+    expect(deferred.rows).toEqual([{ lease_id: null }]);
     expect((await database.query<{ count: number }>(
       'select count(*)::int as count from public.file_cleanup_queue where id = $1', [queued.rows[0]!.id],
     )).rows).toEqual([{ count: 1 }]);
@@ -274,16 +281,201 @@ describe('private file and secure-item schema runtime', () => {
       returning id
     `, [owner.workspace_id, attachmentId, readyObject]);
 
-    const referenced = await database.query<{ removable: boolean }>(
-      'select public.prepare_file_cleanup_object($1) as removable', [staleQueue.rows[0]!.id],
+    const referenced = await database.query<{ lease_id: string | null }>(
+      'select public.prepare_file_cleanup_object($1)::text as lease_id', [staleQueue.rows[0]!.id],
     );
-    expect(referenced.rows).toEqual([{ removable: false }]);
+    expect(referenced.rows).toEqual([{ lease_id: null }]);
     expect((await database.query<{ count: number }>(
       'select count(*)::int as count from public.file_cleanup_queue where id = $1', [staleQueue.rows[0]!.id],
     )).rows).toEqual([{ count: 0 }]);
     expect((await database.query<{ state: string; storage_path: string }>(
       'select state, storage_path from public.attachments where id = $1', [attachmentId],
     )).rows).toEqual([{ state: 'ready', storage_path: readyObject }]);
+  });
+
+  it('lets completion publish first and atomically cancel its unleased late-commit guard', async () => {
+    const database = await createDatabase();
+    const owner = await bootstrapOwner(database);
+    const status = await database.query<{ id: string }>(
+      "select id from public.task_statuses where workspace_id = $1 and name = 'Новая'", [owner.workspace_id],
+    );
+    const task = await database.query<{ id: string }>(`
+      insert into public.tasks (workspace_id, title, status_id) values ($1, 'Completion first', $2) returning id
+    `, [owner.workspace_id, status.rows[0]!.id]);
+    const attachmentId = 'a0000000-0000-4000-8000-000000000006';
+    const quarantinePath = '10000000-0000-4000-8000-000000000006';
+    await database.query(`
+      insert into public.attachments (
+        id, workspace_id, task_id, name, mime_type, size_bytes, storage_path, created_by, quarantine_expires_at
+      ) values ($1, $2, $3, 'first.txt', 'text/plain', 16, $4, $5, clock_timestamp() + interval '15 minutes')
+    `, [attachmentId, owner.workspace_id, task.rows[0]!.id, quarantinePath, owner.user_id]);
+
+    const armed = await database.query<{ queue_id: string }>(
+      'select public.arm_attachment_ready_cleanup($1, $2, $3) as queue_id',
+      [owner.workspace_id, attachmentId, attachmentId],
+    );
+    await database.query(`select * from public.complete_attachment_upload(
+      $1, $2, $3, $4, 'first.txt', 'text/plain', 16, repeat('d', 64)
+    )`, [owner.workspace_id, attachmentId, quarantinePath, attachmentId]);
+
+    const lease = await database.query<{ lease_id: string | null }>(
+      'select public.prepare_file_cleanup_object($1)::text as lease_id', [armed.rows[0]!.queue_id],
+    );
+    expect(lease.rows).toEqual([{ lease_id: null }]);
+    expect((await database.query<{ count: number }>(
+      'select count(*)::int as count from public.file_cleanup_queue where id = $1', [armed.rows[0]!.queue_id],
+    )).rows).toEqual([{ count: 0 }]);
+    expect((await database.query<{ state: string }>(
+      'select state from public.attachments where id = $1', [attachmentId],
+    )).rows).toEqual([{ state: 'ready' }]);
+  });
+
+  it('blocks completion after cleanup prepare commits and re-arms the token-matched tombstone after remove', async () => {
+    const database = await createDatabase();
+    const owner = await bootstrapOwner(database);
+    const status = await database.query<{ id: string }>(
+      "select id from public.task_statuses where workspace_id = $1 and name = 'Новая'", [owner.workspace_id],
+    );
+    const task = await database.query<{ id: string }>(`
+      insert into public.tasks (workspace_id, title, status_id) values ($1, 'Prepare first', $2) returning id
+    `, [owner.workspace_id, status.rows[0]!.id]);
+    const attachmentId = 'a0000000-0000-4000-8000-000000000007';
+    const quarantinePath = '10000000-0000-4000-8000-000000000007';
+    await database.query(`
+      insert into public.attachments (
+        id, workspace_id, task_id, name, mime_type, size_bytes, storage_path, created_by, quarantine_expires_at
+      ) values ($1, $2, $3, 'second.txt', 'text/plain', 16, $4, $5, clock_timestamp() + interval '15 minutes')
+    `, [attachmentId, owner.workspace_id, task.rows[0]!.id, quarantinePath, owner.user_id]);
+
+    const armed = await database.query<{ queue_id: string }>(
+      'select public.arm_attachment_ready_cleanup($1, $2, $3) as queue_id',
+      [owner.workspace_id, attachmentId, attachmentId],
+    );
+    await database.query(`
+      update public.attachments
+      set quarantine_expires_at = clock_timestamp() - interval '1 second'
+      where id = $1
+    `, [attachmentId]);
+    await database.query('update public.file_cleanup_queue set remove_after = clock_timestamp() where id = $1', [armed.rows[0]!.queue_id]);
+    const prepared = await database.query<{ lease_id: string | null }>(
+      'select public.prepare_file_cleanup_object($1)::text as lease_id', [armed.rows[0]!.queue_id],
+    );
+    expect(prepared.rows[0]!.lease_id).toMatch(/^[0-9a-f-]{36}$/u);
+
+    await expect(database.query(`select * from public.complete_attachment_upload(
+      $1, $2, $3, $4, 'second.txt', 'text/plain', 16, repeat('e', 64)
+    )`, [owner.workspace_id, attachmentId, quarantinePath, attachmentId])).rejects.toThrow(/attachment_cleanup_in_progress/iu);
+    const wrongToken = await database.query<{ removed: boolean }>(
+      'select public.finish_file_cleanup_object($1, $2) as removed',
+      [armed.rows[0]!.queue_id, 'ffffffff-ffff-4fff-8fff-ffffffffffff'],
+    );
+    expect(wrongToken.rows).toEqual([{ removed: false }]);
+    expect((await database.query<{ lease_id: string | null }>(
+      'select lease_id::text from public.file_cleanup_queue where id = $1', [armed.rows[0]!.queue_id],
+    )).rows).toEqual([{ lease_id: prepared.rows[0]!.lease_id }]);
+    const finished = await database.query<{ removed: boolean }>(
+      'select public.finish_file_cleanup_object($1, $2) as removed',
+      [armed.rows[0]!.queue_id, prepared.rows[0]!.lease_id],
+    );
+
+    expect(finished.rows).toEqual([{ removed: false }]);
+    expect((await database.query<{ state: string }>(
+      'select state from public.attachments where id = $1', [attachmentId],
+    )).rows).toEqual([{ state: 'quarantine' }]);
+    const guard = await database.query<{ lease_id: string | null; delayed: boolean }>(`
+      select lease_id::text, remove_after = retain_until and retain_until > clock_timestamp() as delayed
+      from public.file_cleanup_queue where id = $1
+    `, [armed.rows[0]!.queue_id]);
+    expect(guard.rows).toEqual([{ lease_id: null, delayed: true }]);
+  });
+
+  it('reapplies 0010 without mutating an existing legacy attachment version or timestamp', async () => {
+    const migration0010 = 'supabase/migrations/0010_task6_ambiguous_file_cleanup.sql';
+    const before0010 = MIGRATIONS.slice(0, MIGRATIONS.indexOf(migration0010));
+    const database = await createDatabase(before0010, false);
+    const owner = await bootstrapOwner(database);
+    const status = await database.query<{ id: string }>(
+      "select id from public.task_statuses where workspace_id = $1 and name = 'Новая'", [owner.workspace_id],
+    );
+    const task = await database.query<{ id: string }>(`
+      insert into public.tasks (workspace_id, title, status_id) values ($1, 'Legacy attachment', $2) returning id
+    `, [owner.workspace_id, status.rows[0]!.id]);
+    const attachmentId = 'a0000000-0000-4000-8000-000000000008';
+    const legacyPath = `${owner.workspace_id}/quarantine/10000000-0000-4000-8000-000000000008`;
+    await database.query(`
+      insert into public.attachments (
+        id, workspace_id, task_id, name, mime_type, size_bytes, storage_path, created_by, quarantine_expires_at
+      ) values ($1, $2, $3, 'legacy.txt', 'text/plain', 16, $4, $5, clock_timestamp() + interval '15 minutes')
+    `, [attachmentId, owner.workspace_id, task.rows[0]!.id, legacyPath, owner.user_id]);
+    await applyMigration(database, migration0010);
+    const first = await database.query<{ version: number; updated_at: string }>(
+      'select version, updated_at::text from public.attachments where id = $1', [attachmentId],
+    );
+
+    await applyMigration(database, migration0010);
+    const second = await database.query<{ version: number; updated_at: string }>(
+      'select version, updated_at::text from public.attachments where id = $1', [attachmentId],
+    );
+
+    expect(second.rows).toEqual(first.rows);
+  });
+
+  it('converges unsafe legacy metadata and URL values before installing strict Safe constraints', async () => {
+    const database = await createDatabase(MIGRATIONS.slice(0, 8), false);
+    const owner = await bootstrapOwner(database);
+    await database.query(`
+      insert into public.secure_items (workspace_id, title, external_url, metadata)
+      values ($1, 'Legacy unsafe', 'https://vault.bitwarden.com/#/items/access_token/abc.def',
+        '{"purpose":"password hunter2","owner":"4111.1111.1111.1111"}'::jsonb)
+    `, [owner.workspace_id]);
+    for (const filename of MIGRATIONS.slice(8)) await applyMigration(database, filename);
+
+    const row = await database.query<{ purpose: string; owner: string; external_url: string }>(`
+      select purpose, owner, external_url from public.secure_items where workspace_id = $1
+    `, [owner.workspace_id]);
+    expect(row.rows).toEqual([{
+      purpose: 'Ссылка на запись в Bitwarden',
+      owner: 'Команда',
+      external_url: 'https://vault.bitwarden.com/',
+    }]);
+    const unsafe = await database.query<{ count: number }>(`
+      select count(*)::int as count
+      from public.secure_items
+      where not private.secure_item_text_is_safe(title)
+        or not private.secure_item_text_is_safe(purpose)
+        or not private.secure_item_text_is_safe(owner)
+        or not private.secure_item_url_is_safe(external_url)
+    `);
+    expect(unsafe.rows).toEqual([{ count: 0 }]);
+  });
+
+  it('rejects unsafe fresh Safe summaries and nested encoded URLs while preserving benign UUID routes', async () => {
+    const database = await createDatabase();
+    const owner = await bootstrapOwner(database);
+    for (const purpose of ['password/hunter2', 'access_token/abc.def', '4111.1111.1111.1111']) {
+      await expect(database.query(`
+        insert into public.secure_items (workspace_id, title, purpose, owner, external_url)
+        values ($1, 'Unsafe summary', $2, 'Команда', 'https://vault.bitwarden.com/#/items/example')
+      `, [owner.workspace_id, purpose])).rejects.toThrow();
+    }
+    for (const externalUrl of [
+      'https://vault.bitwarden.com/#/items/password/hunter2',
+      'https://vault.bitwarden.com/?item=credential%2Fuser.name',
+      'https://vault.bitwarden.com/#/items/access.token/abc.def',
+      'https://vault.bitwarden.com/#/items/password%25252Fhunter2',
+      'https://vault.bitwarden.com/#/items/4111_1111_1111_1111',
+      'https://vault.bitwarden.com/#/items/%252561%252563%252563%252565%252573%252573%25255f%252574%25256f%25256b%252565%25256e%252fabc.def',
+    ]) {
+      await expect(database.query(`
+        insert into public.secure_items (workspace_id, title, purpose, owner, external_url)
+        values ($1, 'Unsafe URL', 'Политика паролей', 'Команда', $2)
+      `, [owner.workspace_id, externalUrl])).rejects.toThrow();
+    }
+    await expect(database.query(`
+      insert into public.secure_items (workspace_id, title, purpose, owner, external_url)
+      values ($1, 'Benign UUID', 'Пароль хранится в Bitwarden', 'Команда',
+        'https://vault.bitwarden.com/#/vault/item/123e4567-e89b-12d3-a456-426614174000')
+    `, [owner.workspace_id])).resolves.toBeDefined();
   });
 
   it('rejects cross-workspace cleanup references and globally duplicated opaque object names', async () => {
@@ -348,12 +540,24 @@ describe('private file and secure-item schema runtime', () => {
     `);
     const cleanupPrivileges = await database.query<{
       anon: boolean; auth: boolean; service: boolean;
+      arm_anon: boolean; arm_auth: boolean; arm_service: boolean;
+      prepare_anon: boolean; prepare_auth: boolean; prepare_service: boolean;
+      finish_anon: boolean; finish_auth: boolean; finish_service: boolean;
       restore_anon: boolean; restore_auth: boolean; restore_service: boolean;
     }>(`
       select
         has_function_privilege('anon', 'public.complete_attachment_upload(uuid,uuid,text,text,text,text,bigint,text)', 'execute') as anon,
         has_function_privilege('authenticated', 'public.complete_attachment_upload(uuid,uuid,text,text,text,text,bigint,text)', 'execute') as auth,
         has_function_privilege('service_role', 'public.complete_attachment_upload(uuid,uuid,text,text,text,text,bigint,text)', 'execute') as service,
+        has_function_privilege('anon', 'public.arm_attachment_ready_cleanup(uuid,uuid,text)', 'execute') as arm_anon,
+        has_function_privilege('authenticated', 'public.arm_attachment_ready_cleanup(uuid,uuid,text)', 'execute') as arm_auth,
+        has_function_privilege('service_role', 'public.arm_attachment_ready_cleanup(uuid,uuid,text)', 'execute') as arm_service,
+        has_function_privilege('anon', 'public.prepare_file_cleanup_object(uuid)', 'execute') as prepare_anon,
+        has_function_privilege('authenticated', 'public.prepare_file_cleanup_object(uuid)', 'execute') as prepare_auth,
+        has_function_privilege('service_role', 'public.prepare_file_cleanup_object(uuid)', 'execute') as prepare_service,
+        has_function_privilege('anon', 'public.finish_file_cleanup_object(uuid,uuid)', 'execute') as finish_anon,
+        has_function_privilege('authenticated', 'public.finish_file_cleanup_object(uuid,uuid)', 'execute') as finish_auth,
+        has_function_privilege('service_role', 'public.finish_file_cleanup_object(uuid,uuid)', 'execute') as finish_service,
         has_function_privilege('anon', 'public.restore_secure_item_record(uuid,uuid,integer)', 'execute') as restore_anon,
         has_function_privilege('authenticated', 'public.restore_secure_item_record(uuid,uuid,integer)', 'execute') as restore_auth,
         has_function_privilege('service_role', 'public.restore_secure_item_record(uuid,uuid,integer)', 'execute') as restore_service
@@ -377,6 +581,9 @@ describe('private file and secure-item schema runtime', () => {
     expect(browserPolicies.rows).toEqual([{ count: 0 }]);
     expect(cleanupPrivileges.rows).toEqual([{
       anon: false, auth: false, service: true,
+      arm_anon: false, arm_auth: false, arm_service: true,
+      prepare_anon: false, prepare_auth: false, prepare_service: true,
+      finish_anon: false, finish_auth: false, finish_service: true,
       restore_anon: false, restore_auth: false, restore_service: true,
     }]);
   });

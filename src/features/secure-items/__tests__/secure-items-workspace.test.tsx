@@ -110,6 +110,7 @@ describe('SecureItemsWorkspace', () => {
 
     const restoreButton = await screen.findByRole('button', { name: 'Восстановить запись' });
     expect(screen.queryByRole('heading', { name: 'Касса' })).not.toBeInTheDocument();
+    expect(restoreButton).toHaveFocus();
     fireEvent.click(restoreButton);
 
     await waitFor(() => expect(restore).toHaveBeenCalled());

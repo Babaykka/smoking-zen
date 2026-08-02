@@ -20,10 +20,11 @@ const idSchema = (label: string) => z
 
 const nullableIdSchema = idSchema('Значение').nullable().optional();
 const optionalTextSchema = z.string({ error: 'Заметка должна быть текстом.' }).trim().max(10_000, 'Заметка слишком длинная.').optional();
-const secretLikeText = /(?:\b(?:password|passphrase|secret|token|pin|cvv|cvc|otp)\b|confirmation\s+code|пароль|секрет|токен|пин|(?:код\s*)?подтвержден\p{L}*)(?:\s*(?:[:=]|[-–—])\s*|\s+(?=\S*(?:\d|[._~+/=-])))\S+/iu;
+const secretLikeText = /(?:^|[^\p{L}\p{N}])(?:password|passphrase|secret|token|credential|pin|cvv|cvc|otp|confirmation(?:[\s._/-]+code)?|пароль|секрет|токен|пин|(?:код[\s._/-]*)?подтвержден\p{L}*)(?:(?:\s*[:=/_\.-]+\s*)\S+|\s+(?=\S*(?:\d|[._~+/=-]))\S+)/iu;
+const completeCardLikeText = /\d(?:[\s._/-]*\d){12,18}/u;
 
 export function containsSecretLikeText(value: string): boolean {
-  return secretLikeText.test(value) || /\d(?:[ -]*\d){12,18}/.test(value);
+  return secretLikeText.test(value) || completeCardLikeText.test(value);
 }
 
 const safeFreeText = (schema: z.ZodString) => schema.refine(

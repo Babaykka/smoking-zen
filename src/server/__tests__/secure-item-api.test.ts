@@ -87,6 +87,20 @@ describe('Supabase secure-item adapter', () => {
     await expect(store.revealSecureItem(workspaceId, itemId)).rejects.toThrow(/больше не разрешена/iu);
   });
 
+  it.each([
+    'https://vault.bitwarden.com/#/items/password/hunter2',
+    'https://vault.bitwarden.com/?item=credential%2Fuser.name',
+    'https://vault.bitwarden.com/#/items/access.token/abc.def.ghi',
+    'https://vault.bitwarden.com/#/items/password%25252Fhunter2',
+    'https://vault.bitwarden.com/#/items/4111.1111.1111.1111',
+  ])('applies the current decoded secret/PAN predicate when revealing legacy URL %s', async (externalUrl) => {
+    const builder = query({ data: { external_url: externalUrl }, error: null });
+    const client = { from: vi.fn(() => builder) } as unknown as SupabaseClient;
+    const store = createSupabaseSecureItemStore(client, () => client, []);
+
+    await expect(store.revealSecureItem(workspaceId, itemId)).rejects.toThrow(/больше не разрешена/iu);
+  });
+
   it('reveals an exact current self-hosted origin configured for this process', async () => {
     const externalUrl = 'https://vault.example.org/#/items/private';
     const builder = query({ data: { external_url: externalUrl }, error: null });

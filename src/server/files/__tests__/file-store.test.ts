@@ -18,6 +18,7 @@ const actorUserId = '11111111-1111-4111-8111-111111111111';
 const attachmentId = 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa';
 const quarantineObjectId = 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb';
 const readyObjectId = 'cccccccc-cccc-4ccc-8ccc-cccccccccccc';
+const cleanupLeaseId = 'eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee';
 const bytes = Buffer.from('Безопасный регламент смены.\n', 'utf8');
 
 const quarantine: StoredAttachment = {
@@ -60,8 +61,8 @@ function backend(overrides: Partial<FileBackend> = {}): FileBackend {
     queueObjectCleanup: vi.fn().mockResolvedValue(undefined),
     listExpiredQuarantines: vi.fn().mockResolvedValue([]),
     listQueuedObjects: vi.fn().mockResolvedValue([]),
-    prepareQueuedObjectRemoval: vi.fn().mockResolvedValue(true),
-    deleteQueuedObject: vi.fn().mockResolvedValue(undefined),
+    prepareQueuedObjectRemoval: vi.fn().mockResolvedValue(cleanupLeaseId),
+    finishQueuedObjectRemoval: vi.fn().mockResolvedValue(true),
     removeObject: vi.fn().mockResolvedValue(undefined),
     createSignedDownloadUrl: vi.fn().mockResolvedValue('https://storage.example/private-download?token=ephemeral'),
     ...overrides,
@@ -176,7 +177,6 @@ describe('private file lifecycle store', () => {
       workspaceId,
       attachmentId,
       attachmentId,
-      quarantine.quarantineExpiresAt,
     );
     expect(vi.mocked(fileBackend.queueObjectCleanup).mock.invocationCallOrder[0])
       .toBeLessThan(vi.mocked(fileBackend.uploadReadyObject).mock.invocationCallOrder[0]!);
@@ -230,9 +230,62 @@ describe('private file lifecycle store', () => {
       workspaceId,
       attachmentId,
       attachmentId,
-      quarantine.quarantineExpiresAt,
     );
     expect(fileBackend.removeObject).not.toHaveBeenCalledWith(attachmentId);
+  });
+
+  it('retains a DB-backed tombstone when a ready write commits after the first expiry sweep', async () => {
+    const expiry = new Date(quarantine.quarantineExpiresAt!);
+    const guardEnd = new Date(expiry.getTime() + 24 * 60 * 60 * 1_000);
+    const storedObjects = new Map<string, Uint8Array>([[quarantine.storagePath, bytes]]);
+    let queued = false;
+    let queueDueAt = expiry.getTime();
+    let sweepTime = expiry.getTime();
+    let releaseReadyWrite!: () => void;
+    let markReadyWriteStarted!: () => void;
+    const readyWriteStarted = new Promise<void>((resolve) => { markReadyWriteStarted = resolve; });
+    const readyWriteCanCommit = new Promise<void>((resolve) => { releaseReadyWrite = resolve; });
+    const fileBackend = backend({
+      queueObjectCleanup: vi.fn().mockImplementation(async () => { queued = true; }),
+      listQueuedObjects: vi.fn().mockImplementation(async (now: string) => {
+        sweepTime = Date.parse(now);
+        return queued && queueDueAt <= sweepTime
+          ? [{ id: 'queue-late-ready', workspaceId, storagePath: attachmentId }]
+          : [];
+      }),
+      prepareQueuedObjectRemoval: vi.fn().mockResolvedValue(cleanupLeaseId),
+      removeObject: vi.fn().mockImplementation(async (storagePath: string) => { storedObjects.delete(storagePath); }),
+      uploadReadyObject: vi.fn().mockImplementation(async (storagePath: string, uploaded: Uint8Array) => {
+        markReadyWriteStarted();
+        await readyWriteCanCommit;
+        storedObjects.set(storagePath, uploaded);
+      }),
+      completeUpload: vi.fn().mockRejectedValue(new Error('database clock rejected expired completion')),
+      finishQueuedObjectRemoval: vi.fn().mockImplementation(async () => {
+        if (sweepTime < guardEnd.getTime()) {
+          queueDueAt = guardEnd.getTime();
+          return false;
+        }
+        queued = false;
+        return true;
+      }),
+    });
+    const store = createPrivateFileStore(fileBackend, { clock: () => new Date('2026-08-02T12:00:00.000Z') });
+
+    const completion = store.completeUpload(workspaceId, attachmentId);
+    await readyWriteStarted;
+
+    await store.cleanupExpiredUploads(expiry, 20);
+    expect(storedObjects.has(attachmentId)).toBe(false);
+    expect(queued).toBe(true);
+
+    releaseReadyWrite();
+    await expect(completion).rejects.toThrow('Не удалось завершить загрузку файла.');
+    expect(storedObjects.has(attachmentId)).toBe(true);
+
+    await store.cleanupExpiredUploads(guardEnd, 20);
+    expect(storedObjects.has(attachmentId)).toBe(false);
+    expect(queued).toBe(false);
   });
 
   it('denies completion and discards quarantine when the parent was deleted after signing', async () => {
@@ -313,7 +366,7 @@ describe('private file lifecycle store', () => {
     const cleanup = await store.cleanupExpiredUploads(new Date('2026-08-02T12:00:00.000Z'), 20);
     expect(fileBackend.deleteQuarantine).toHaveBeenCalledWith(workspaceId, attachmentId, quarantine.storagePath);
     expect(fileBackend.removeObject).toHaveBeenCalledWith(quarantineObjectId);
-    expect(fileBackend.deleteQueuedObject).toHaveBeenCalledWith('queue-1');
+    expect(fileBackend.finishQueuedObjectRemoval).toHaveBeenCalledWith('queue-1', cleanupLeaseId);
     expect(cleanup).toEqual({ removed: 2, failed: 0 });
   });
 
@@ -329,7 +382,7 @@ describe('private file lifecycle store', () => {
     const fileBackend = backend({
       getAttachment: vi.fn().mockResolvedValue(liveReady),
       listQueuedObjects: vi.fn().mockResolvedValue([{ id: 'queue-live', workspaceId, storagePath: attachmentId }]),
-      prepareQueuedObjectRemoval: vi.fn().mockResolvedValue(false),
+      prepareQueuedObjectRemoval: vi.fn().mockResolvedValue(null),
     } as Partial<FileBackend>);
     const store = createPrivateFileStore(fileBackend);
 
@@ -338,7 +391,7 @@ describe('private file lifecycle store', () => {
     expect((fileBackend as FileBackend & { prepareQueuedObjectRemoval: ReturnType<typeof vi.fn> }).prepareQueuedObjectRemoval)
       .toHaveBeenCalledWith('queue-live');
     expect(fileBackend.removeObject).not.toHaveBeenCalledWith(attachmentId);
-    expect(fileBackend.deleteQueuedObject).not.toHaveBeenCalledWith('queue-live');
+    expect(fileBackend.finishQueuedObjectRemoval).not.toHaveBeenCalled();
     expect(cleanup).toEqual({ removed: 0, failed: 0 });
   });
 });

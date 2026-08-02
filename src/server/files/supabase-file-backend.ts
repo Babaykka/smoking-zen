@@ -12,6 +12,7 @@ import type {
 } from '@/server/files/file-store';
 
 const FILE_BUCKET = 'workspace-files';
+const UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/iu;
 
 type Result = { data: unknown; error: { message?: string } | null };
 
@@ -134,14 +135,16 @@ export function createSupabaseFileBackend(client: SupabaseClient): FileBackend {
       return storedAttachment(row);
     },
 
-    async queueObjectCleanup(workspaceId, storagePath, attachmentId, removeAfter) {
-      const result = await client.from('file_cleanup_queue').upsert({
-        workspace_id: workspaceId,
-        attachment_id: attachmentId,
-        storage_path: storagePath,
-        remove_after: removeAfter,
-      }, { onConflict: 'workspace_id,storage_path' }) as Result;
-      dataOrThrow(result);
+    async queueObjectCleanup(workspaceId, storagePath, attachmentId) {
+      const result = await client.rpc('arm_attachment_ready_cleanup', {
+        p_workspace_id: workspaceId,
+        p_attachment_id: attachmentId,
+        p_ready_path: storagePath,
+      }) as Result;
+      const queueId = dataOrThrow(result);
+      if (typeof queueId !== 'string' || !UUID_PATTERN.test(queueId)) {
+        throw new Error('Private file cleanup guard was not established.');
+      }
     },
 
     async listExpiredQuarantines(now, limit) {
@@ -165,12 +168,16 @@ export function createSupabaseFileBackend(client: SupabaseClient): FileBackend {
     async prepareQueuedObjectRemoval(id) {
       const result = await client.rpc('prepare_file_cleanup_object', { p_queue_id: id }) as Result;
       const data = dataOrThrow(result);
-      return data === true;
+      return typeof data === 'string' ? data : null;
     },
 
-    async deleteQueuedObject(id) {
-      const result = await client.from('file_cleanup_queue').delete().eq('id', id) as Result;
-      dataOrThrow(result);
+    async finishQueuedObjectRemoval(id, leaseId) {
+      const result = await client.rpc('finish_file_cleanup_object', {
+        p_queue_id: id,
+        p_lease_id: leaseId,
+      }) as Result;
+      const data = dataOrThrow(result);
+      return data === true;
     },
 
     async removeObject(storagePath) {

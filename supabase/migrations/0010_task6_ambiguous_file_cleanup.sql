@@ -5,7 +5,8 @@ alter table public.attachments add column if not exists storage_layout text not 
 
 update public.attachments
 set storage_layout = 'legacy'
-where storage_path like '%/%';
+where storage_path like '%/%'
+  and storage_layout is distinct from 'legacy';
 
 alter table public.attachments drop constraint if exists attachments_storage_layout_check;
 alter table public.attachments drop constraint if exists attachments_workspace_path;

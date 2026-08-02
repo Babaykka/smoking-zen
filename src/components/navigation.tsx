@@ -65,7 +65,7 @@ export function Navigation({ activeView, onNavigate, variant }: NavigationProps)
           <Ellipsis aria-hidden="true" size={20} strokeWidth={1.8} />
           <span>Ещё</span>
         </button>
-        <div className="navigation__secondary-menu" hidden={!secondaryOpen} role="menu">
+        <div className="navigation__secondary-menu" hidden={!secondaryOpen} inert={!secondaryOpen ? true : undefined} role="menu">
           <a
             aria-current={activeView === 'safe' ? 'page' : undefined}
             className={activeView === 'safe' ? 'navigation__link navigation__link--active' : 'navigation__link'}

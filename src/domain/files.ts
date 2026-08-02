@@ -41,7 +41,7 @@ export class FileValidationError extends Error {
   }
 }
 
-const FORBIDDEN_TEXT_FRAGMENT = /(?:<!doctype\s+html\b|<\?xml\b|<!--|<\/?[a-z][a-z0-9:-]*(?:\s[^<>]*?)?\s*\/?>)/iu;
+const FORBIDDEN_TEXT_FRAGMENT = /<[^>]+>/u;
 
 function startsWith(bytes: Uint8Array, signature: readonly number[], offset = 0): boolean {
   return signature.every((byte, index) => bytes[offset + index] === byte);

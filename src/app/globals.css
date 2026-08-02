@@ -137,6 +137,10 @@ button.navigation__link {
   box-shadow: 0 0.75rem 2rem color-mix(in srgb, #000 18%, transparent);
 }
 
+.navigation__secondary-menu[hidden] {
+  display: none;
+}
+
 .navigation--sidebar .navigation__secondary-menu {
   margin-top: 0.3rem;
 }

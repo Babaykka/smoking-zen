@@ -43,6 +43,16 @@ describe('secure item schemas', () => {
     'https://vault.bitwarden.com/#/items/%70%61%73%73%77%6f%72%64%3Dhunter2',
     'https://vault.bitwarden.com/#/items/%2574%256f%256b%2565%256e%253Dabc.def.ghi',
     'https://vault.bitwarden.com/#/items/%25252570%25252561%25252573%25252573%25252577%2525256f%25252572%25252564%2525253Dhunter2',
+    'https://vault.bitwarden.com/#/items/password/hunter2',
+    'https://vault.bitwarden.com/#/items/secret_hunter2',
+    'https://vault.bitwarden.com/#/items/access.token/abc.def.ghi',
+    'https://vault.bitwarden.com/items/credential/user.name',
+    'https://vault.bitwarden.com/?item=credential%2Fuser.name',
+    'https://vault.bitwarden.com/?access%255Ftoken=abc.def.ghi',
+    'https://vault.bitwarden.com/#/items/password%25252Fhunter2',
+    'https://vault.bitwarden.com/#/items/4111.1111.1111.1111',
+    'https://vault.bitwarden.com/#/items/4111_1111_1111_1111',
+    'https://vault.bitwarden.com/items/4111/1111/1111/1111',
   ])('rejects an unsafe Bitwarden URL %s', (externalUrl) => {
     expect(secureItemInputSchema.safeParse({ ...validItem, externalUrl }).success).toBe(false);
   });
@@ -76,6 +86,9 @@ describe('secure item schemas', () => {
     ['cardBank', 'OTP: 123456'],
     ['cardHolder', '4242 4242 4242 4242'],
     ['cardPurpose', 'код подтверждения: 123456'],
+    ['purpose', 'password/hunter2'],
+    ['owner', 'access_token/abc.def.ghi'],
+    ['cardHolder', '4111.1111.1111.1111'],
   ] as const)('rejects secret or PAN content in persisted field %s', (field, value) => {
     expect(secureItemInputSchema.safeParse({ ...validItem, [field]: value }).success).toBe(false);
   });

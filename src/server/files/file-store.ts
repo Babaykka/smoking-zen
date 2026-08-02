@@ -47,11 +47,11 @@ export interface FileBackend {
   downloadObject(storagePath: string): Promise<Uint8Array>;
   uploadReadyObject(storagePath: string, bytes: Uint8Array, mimeType: string): Promise<void>;
   completeUpload(record: StoredAttachment, ready: ReadyAttachmentMutation): Promise<StoredAttachment>;
-  queueObjectCleanup(workspaceId: string, storagePath: string, attachmentId: string, removeAfter: string): Promise<void>;
+  queueObjectCleanup(workspaceId: string, storagePath: string, attachmentId: string): Promise<void>;
   listExpiredQuarantines(now: string, limit: number): Promise<StoredAttachment[]>;
   listQueuedObjects(now: string, limit: number): Promise<QueuedObject[]>;
-  prepareQueuedObjectRemoval(id: string): Promise<boolean>;
-  deleteQueuedObject(id: string): Promise<void>;
+  prepareQueuedObjectRemoval(id: string): Promise<string | null>;
+  finishQueuedObjectRemoval(id: string, leaseId: string): Promise<boolean>;
   removeObject(storagePath: string): Promise<void>;
   createSignedDownloadUrl(storagePath: string, expiresIn: number, downloadName: string): Promise<string>;
 }
@@ -237,7 +237,7 @@ export function createPrivateFileStore(backend: FileBackend, options: FileStoreO
       // Establish durable, delayed cleanup before attempting the external write. If the
       // provider commits and its response is lost, the object is still reconciliable.
       try {
-        await backend.queueObjectCleanup(workspaceId, readyPath, record.id, record.quarantineExpiresAt);
+        await backend.queueObjectCleanup(workspaceId, readyPath, record.id);
       } catch {
         throw new FileOperationError('Не удалось сохранить проверенный файл.');
       }
@@ -320,9 +320,10 @@ export function createPrivateFileStore(backend: FileBackend, options: FileStoreO
       }
       for (const object of queued) {
         try {
-          if (!await backend.prepareQueuedObjectRemoval(object.id)) continue;
+          const leaseId = await backend.prepareQueuedObjectRemoval(object.id);
+          if (!leaseId) continue;
           await backend.removeObject(object.storagePath);
-          await backend.deleteQueuedObject(object.id);
+          await backend.finishQueuedObjectRemoval(object.id, leaseId);
           removed += 1;
         } catch {
           failed += 1;

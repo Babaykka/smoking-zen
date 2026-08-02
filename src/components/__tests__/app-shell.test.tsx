@@ -40,6 +40,10 @@ describe('AppShell', () => {
     expect(within(desktop as HTMLElement).queryByRole('button', { name: 'Ещё' })).not.toBeInTheDocument();
     expect(within(mobile as HTMLElement).queryByRole('link', { name: 'Сейф' })).not.toBeInTheDocument();
     const mobileMore = within(mobile as HTMLElement).getByRole('button', { name: 'Ещё' });
+    const collapsedMenu = within(mobile as HTMLElement).getByRole('menu', { hidden: true });
+    expect(collapsedMenu).toHaveAttribute('hidden');
+    expect(collapsedMenu).toHaveAttribute('inert');
+    expect(within(mobile as HTMLElement).queryByRole('menuitem', { name: 'Сейф' })).not.toBeInTheDocument();
     fireEvent.click(mobileMore);
     expect(within(mobile as HTMLElement).getByRole('menuitem', { name: 'Сейф' })).toBeInTheDocument();
     fireEvent.click(desktopSafe);

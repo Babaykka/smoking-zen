@@ -210,6 +210,10 @@ describe('actual-byte file validation', () => {
     ['SVG-like', Buffer.from('<svg></svg>')],
     ['embedded HTML fragment', Buffer.from('Безопасное начало.\n<div data-role="policy">скрытый HTML</div>\nКонец.', 'utf8')],
     ['embedded script fragment', Buffer.from('Регламент смены.\n<script>alert(1)</script>', 'utf8')],
+    ['slash-separated SVG handler', Buffer.from('Регламент.\n<svg/onload=alert(1)>', 'utf8')],
+    ['slash-separated image handler', Buffer.from('Регламент.\n<img/src=x onerror=alert(1)>', 'utf8')],
+    ['slash-separated details handler', Buffer.from('Регламент.\n<details/open/ontoggle=alert(1)>', 'utf8')],
+    ['multiline image handler', Buffer.from('Регламент.\n<img\nsrc=x\nonerror=alert(1)>', 'utf8')],
   ])('rejects %s TXT content', async (_label, bytes) => {
     await expect(validateFile({ name: 'notes.txt', declaredMime: 'text/plain', declaredSize: bytes.length, bytes })).rejects.toThrow();
   });
@@ -286,6 +290,18 @@ describe('actual-byte file validation', () => {
 
   it('rejects an HTML fragment anywhere in the TXT preflight window', () => {
     const headerBytes = Buffer.from('Обычный текст перед фрагментом.\n<strong>HTML</strong>\n', 'utf8');
+    expect(() => validateUpload({
+      name: 'notes.txt', declaredMime: 'text/plain', size: headerBytes.length, headerBytes,
+    })).toThrow(/HTML/iu);
+  });
+
+  it.each([
+    '<svg/onload=alert(1)>',
+    '<img/src=x onerror=alert(1)>',
+    '<details/open/ontoggle=alert(1)>',
+    '<img\nsrc=x\nonerror=alert(1)>',
+  ])('rejects slash-separated markup syntax during TXT preflight: %s', (markup) => {
+    const headerBytes = Buffer.from(`Обычный текст.\n${markup}\n`, 'utf8');
     expect(() => validateUpload({
       name: 'notes.txt', declaredMime: 'text/plain', size: headerBytes.length, headerBytes,
     })).toThrow(/HTML/iu);

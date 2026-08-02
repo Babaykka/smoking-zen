@@ -69,6 +69,8 @@ export function SecureItemsWorkspace() {
   const [operation, setOperation] = useState<'save' | 'delete' | 'restore' | 'reveal' | null>(null);
   const operationRef = useRef<typeof operation>(null);
   const openerRef = useRef<HTMLButtonElement | null>(null);
+  const recoveryButtonRef = useRef<HTMLButtonElement | null>(null);
+  const recoveryFocusPendingRef = useRef(false);
   const restoreFocusPendingRef = useRef(false);
   const titleInputRef = useRef<HTMLInputElement | null>(null);
   const editorRef = useRef<HTMLElement | null>(null);
@@ -81,6 +83,13 @@ export function SecureItemsWorkspace() {
       openerRef.current?.focus();
     }
   }, [editing]);
+
+  useEffect(() => {
+    if (!editing && archived && operation === null && recoveryFocusPendingRef.current) {
+      recoveryFocusPendingRef.current = false;
+      recoveryButtonRef.current?.focus();
+    }
+  }, [archived, editing, operation]);
 
   const startOperation = (next: NonNullable<typeof operation>) => {
     if (operationRef.current) return false;
@@ -157,6 +166,7 @@ export function SecureItemsWorkspace() {
     if (!startOperation('delete')) return;
     try {
       const deleted = await repository.deleteSecureItem(editing.id, expectedVersion);
+      recoveryFocusPendingRef.current = true;
       setArchived(deleted);
       setDraft(emptyDraft());
       setEditing(null);
@@ -226,7 +236,7 @@ export function SecureItemsWorkspace() {
           <button className="task-secondary-button" disabled={operation !== null} onClick={beginCreate} type="button"><Plus aria-hidden="true" size={18} /> Добавить запись</button>
         </header>
         <div className="safe-notice"><ShieldCheck aria-hidden="true" size={22} /><p><strong>Секреты остаются в Bitwarden.</strong><br />Здесь хранятся только назначение, ответственный и безопасная ссылка.</p></div>
-        {archived && <div className="safe-recovery" role="status"><span>Запись «{archived.title}» архивирована.</span><button disabled={operation !== null} onClick={() => void restore()} type="button">Восстановить запись</button></div>}
+        {archived && <div className="safe-recovery" role="status"><span>Запись «{archived.title}» архивирована.</span><button disabled={operation !== null} onClick={() => void restore()} ref={recoveryButtonRef} type="button">Восстановить запись</button></div>}
         <div className="safe-grid">
           {snapshot.secureItems.map((item) => (
             <article className="safe-card" key={item.id}>

@@ -101,6 +101,13 @@ test('keeps the secondary Safe flow and file picker inside an exact 360px viewpo
   await expect(navigation).toBeVisible();
   await expect(navigation.locator(':scope > .navigation__link, :scope > .navigation__secondary > .navigation__link').allTextContents())
     .resolves.toEqual(['Сегодня', 'Задачи', 'База', 'Люди', 'Ещё']);
+  const collapsedMenu = navigation.getByRole('menu', { includeHidden: true });
+  const collapsedLayout = await collapsedMenu.evaluate((element) => {
+    const box = element.getBoundingClientRect();
+    return { display: getComputedStyle(element).display, height: box.height, width: box.width };
+  });
+  expect(collapsedLayout).toEqual({ display: 'none', height: 0, width: 0 });
+  await expect(collapsedMenu.getByRole('menuitem', { name: 'Сейф' })).toBeHidden();
   await navigation.getByRole('button', { name: 'Ещё' }).click();
   await navigation.getByRole('menuitem', { name: 'Сейф' }).click();
   const opener = page.getByRole('button', { name: 'Добавить запись' });
@@ -116,6 +123,11 @@ test('keeps the secondary Safe flow and file picker inside an exact 360px viewpo
 
   await page.getByRole('button', { name: 'Закрыть редактор' }).click();
   await expect(opener).toBeFocused();
+  await page.getByRole('button', { name: 'Изменить Касса' }).click();
+  await page.getByRole('button', { name: 'Архивировать' }).click();
+  const restore = page.getByRole('button', { name: 'Восстановить запись' });
+  await expect(restore).toBeFocused();
+  await restore.click();
   await navigation.getByRole('link', { name: 'Задачи' }).click();
   await page.getByRole('button', { name: 'Открыть задачу Проверить запас кокосового угля' }).click();
   const pickerBox = await page.getByText('Добавить файл', { exact: true }).boundingBox();
