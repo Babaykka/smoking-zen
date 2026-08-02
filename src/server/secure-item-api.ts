@@ -3,7 +3,7 @@ import 'server-only';
 import type { SupabaseClient } from '@supabase/supabase-js';
 
 import { ConflictError } from '@/data/workspace-repository';
-import type { ParsedSecureItemInput, ParsedSecureItemPatchInput } from '@/domain/schemas';
+import { isAllowedBitwardenUrl, type ParsedSecureItemInput, type ParsedSecureItemPatchInput } from '@/domain/schemas';
 import type { SecureItemReveal, SecureItemSummary } from '@/domain/types';
 import { requireProductionEnvironment } from '@/server/env';
 import { readSessionCookie } from '@/server/http';
@@ -40,6 +40,13 @@ export class SecureItemNotFoundError extends Error {
   constructor() {
     super('Безопасная запись не найдена.');
     this.name = 'SecureItemNotFoundError';
+  }
+}
+
+export class SecureItemUrlNotAllowedError extends Error {
+  constructor() {
+    super('Ссылка безопасной записи больше не разрешена. Обновите её.');
+    this.name = 'SecureItemUrlNotAllowedError';
   }
 }
 
@@ -131,6 +138,7 @@ function databasePatch(input: ParsedSecureItemPatchInput): Record<string, unknow
 export function createSupabaseSecureItemStore(
   client: SupabaseClient,
   createActorClient: (actorUserId: string) => SupabaseClient = () => client,
+  selfHostedOrigins: readonly string[] = [],
 ): SecureItemApiStore {
   const currentVersion = async (workspaceId: string, id: string): Promise<number | null> => {
     const result = await client.from('secure_items').select('version')
@@ -196,6 +204,7 @@ export function createSupabaseSecureItemStore(
         .eq('workspace_id', workspaceId).eq('id', id).is('deleted_at', null).maybeSingle() as Result;
       const data = dataOrThrow(result) as { external_url?: unknown } | null;
       if (!data || typeof data.external_url !== 'string') throw new SecureItemNotFoundError();
+      if (!isAllowedBitwardenUrl(data.external_url, selfHostedOrigins)) throw new SecureItemUrlNotAllowedError();
       return { externalUrl: data.external_url };
     },
   };
@@ -210,6 +219,7 @@ export function createDefaultSecureItemRouteDependencies(): SecureItemRouteDepen
     store: createSupabaseSecureItemStore(
       client,
       (actorUserId) => createServiceSupabaseClient(environment, { 'x-smoking-zen-actor': actorUserId }),
+      environment.bitwardenSelfHostedOrigins,
     ),
     requestId: () => crypto.randomUUID(),
     selfHostedOrigins: environment.bitwardenSelfHostedOrigins,

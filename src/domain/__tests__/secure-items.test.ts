@@ -39,6 +39,10 @@ describe('secure item schemas', () => {
     'https://vault.bitwarden.com:8443/#/items/example',
     'https://vault.bitwarden.com/?token=secret#/items/example',
     'javascript:alert(1)',
+    'https://vault.bitwarden.com/items/%34%31%31%31%2D%31%31%31%31%2D%31%31%31%31%2D%31%31%31%31',
+    'https://vault.bitwarden.com/#/items/%70%61%73%73%77%6f%72%64%3Dhunter2',
+    'https://vault.bitwarden.com/#/items/%2574%256f%256b%2565%256e%253Dabc.def.ghi',
+    'https://vault.bitwarden.com/#/items/%25252570%25252561%25252573%25252573%25252577%2525256f%25252572%25252564%2525253Dhunter2',
   ])('rejects an unsafe Bitwarden URL %s', (externalUrl) => {
     expect(secureItemInputSchema.safeParse({ ...validItem, externalUrl }).success).toBe(false);
   });
@@ -48,6 +52,11 @@ describe('secure item schemas', () => {
     expect(allowed.safeParse({ ...validItem, externalUrl: 'https://vault.example.org/#/items/1' }).success).toBe(true);
     expect(allowed.safeParse({ ...validItem, externalUrl: 'https://sub.vault.example.org/#/items/1' }).success).toBe(false);
     expect(allowed.safeParse({ ...validItem, externalUrl: 'https://vault.example.org:8443/#/items/1' }).success).toBe(false);
+  });
+
+  it('preserves legitimate Bitwarden item UUID routes while scanning decoded URL components', () => {
+    const externalUrl = 'https://vault.bitwarden.com/#/vault/item/123e4567-e89b-12d3-a456-426614174000';
+    expect(secureItemInputSchema.safeParse({ ...validItem, externalUrl }).success).toBe(true);
   });
 
   it('uses strict flat fields, preserves string last-four digits, and keeps patches non-defaulting', () => {

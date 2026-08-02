@@ -73,6 +73,12 @@ export function AttachmentWidget({ attachments, target }: { attachments: Attachm
         </label>
       </div>
 
+      {repository.fileStorageMode === 'metadata-only' && (
+        <p className="attachment-widget__demo-note" role="note">
+          В демо-режиме сохраняются только название и сведения о файле. Содержимое файла не сохраняется, поэтому скачать его позже нельзя.
+        </p>
+      )}
+
       {attachments.length > 0 && (
         <ul className="attachment-widget__list">
           {attachments.map((attachment) => (

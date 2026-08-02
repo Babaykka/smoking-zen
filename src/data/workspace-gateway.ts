@@ -4,6 +4,7 @@ import type { CommentInput, ContactInput, ContactPatchInput, KnowledgeInput, Kno
 import type { Attachment, Comment, Contact, KnowledgeItem, SearchResult, SecureItemReveal, SecureItemSummary, Task, WorkspaceSnapshot } from '@/domain/types';
 
 export interface WorkspaceGateway {
+  fileStorageMode: 'persistent' | 'metadata-only';
   snapshot(): WorkspaceSnapshot;
   hydrate(): Promise<void>;
   subscribe(listener: WorkspaceListener): () => void;
@@ -33,6 +34,7 @@ export interface WorkspaceGateway {
 
 export function createDemoGateway(repository: WorkspaceRepository): WorkspaceGateway {
   return {
+    fileStorageMode: 'metadata-only',
     snapshot: () => repository.snapshot(),
     async hydrate() { repository.hydrate(); },
     subscribe: (listener) => repository.subscribe(listener),

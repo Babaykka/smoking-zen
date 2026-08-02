@@ -41,7 +41,20 @@ export function Navigation({ activeView, onNavigate, variant }: NavigationProps)
           </a>
         );
       })}
-      <div className="navigation__secondary">
+      {variant === 'sidebar' ? (
+        <a
+          aria-current={activeView === 'safe' ? 'page' : undefined}
+          className={activeView === 'safe' ? 'navigation__link navigation__link--active' : 'navigation__link'}
+          href="#safe"
+          onClick={(event) => {
+            event.preventDefault();
+            onNavigate('safe');
+          }}
+        >
+          <ShieldCheck aria-hidden="true" size={20} strokeWidth={1.8} />
+          <span>Сейф</span>
+        </a>
+      ) : <div className="navigation__secondary">
         <button
           aria-expanded={secondaryOpen}
           aria-haspopup="menu"
@@ -68,7 +81,7 @@ export function Navigation({ activeView, onNavigate, variant }: NavigationProps)
             <span>Сейф</span>
           </a>
         </div>
-      </div>
+      </div>}
     </nav>
   );
 }

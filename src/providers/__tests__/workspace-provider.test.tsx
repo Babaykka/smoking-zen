@@ -55,6 +55,7 @@ describe('WorkspaceProvider', () => {
   it('only owns its subscription and never disposes a reused gateway during StrictMode effects', async () => {
     const unsubscribe = vi.fn();
     const gateway: WorkspaceGateway = {
+      fileStorageMode: 'persistent',
       snapshot: () => demoSeed,
       hydrate: vi.fn().mockResolvedValue(undefined),
       subscribe: vi.fn(() => unsubscribe),

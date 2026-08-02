@@ -35,7 +35,15 @@ export function createFileDownloadHandler(dependencies: FileRouteDependencies) {
 
     try {
       const signed = await dependencies.store.signDownload(actor.workspaceId, id, SIGNED_DOWNLOAD_SECONDS);
-      return apiResponse(requestId, 200, signed, null);
+      return new Response(null, {
+        status: 303,
+        headers: {
+          'cache-control': 'no-store',
+          location: signed.url,
+          'referrer-policy': 'no-referrer',
+          'x-content-type-options': 'nosniff',
+        },
+      });
     } catch (error) {
       if (error instanceof FileNotFoundError) return apiResponse(requestId, 404, null, { code: 'file_not_found', message: error.message });
       if (error instanceof FileNotReadyError) return apiResponse(requestId, 409, null, { code: 'file_not_ready', message: error.message });

@@ -134,11 +134,12 @@ export function createSupabaseFileBackend(client: SupabaseClient): FileBackend {
       return storedAttachment(row);
     },
 
-    async queueObjectCleanup(workspaceId, storagePath) {
+    async queueObjectCleanup(workspaceId, storagePath, attachmentId, removeAfter) {
       const result = await client.from('file_cleanup_queue').upsert({
         workspace_id: workspaceId,
+        attachment_id: attachmentId,
         storage_path: storagePath,
-        remove_after: new Date().toISOString(),
+        remove_after: removeAfter,
       }, { onConflict: 'workspace_id,storage_path' }) as Result;
       dataOrThrow(result);
     },
@@ -159,6 +160,12 @@ export function createSupabaseFileBackend(client: SupabaseClient): FileBackend {
         const row = value as Record<string, unknown>;
         return { id: String(row.id), workspaceId: String(row.workspace_id), storagePath: String(row.storage_path) };
       });
+    },
+
+    async prepareQueuedObjectRemoval(id) {
+      const result = await client.rpc('prepare_file_cleanup_object', { p_queue_id: id }) as Result;
+      const data = dataOrThrow(result);
+      return data === true;
     },
 
     async deleteQueuedObject(id) {

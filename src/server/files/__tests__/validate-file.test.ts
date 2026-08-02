@@ -208,6 +208,8 @@ describe('actual-byte file validation', () => {
     ['HTML-like', Buffer.from('  <html>not text</html>')],
     ['XML-like', Buffer.from('<?xml version="1.0"?><root/>')],
     ['SVG-like', Buffer.from('<svg></svg>')],
+    ['embedded HTML fragment', Buffer.from('Безопасное начало.\n<div data-role="policy">скрытый HTML</div>\nКонец.', 'utf8')],
+    ['embedded script fragment', Buffer.from('Регламент смены.\n<script>alert(1)</script>', 'utf8')],
   ])('rejects %s TXT content', async (_label, bytes) => {
     await expect(validateFile({ name: 'notes.txt', declaredMime: 'text/plain', declaredSize: bytes.length, bytes })).rejects.toThrow();
   });
@@ -277,8 +279,16 @@ describe('actual-byte file validation', () => {
       bytes: txt,
     });
     const key = createRandomObjectKey('33333333-3333-4333-8333-333333333333', 'quarantine', () => '11111111-1111-4111-8111-111111111111');
-    expect(key).toBe('33333333-3333-4333-8333-333333333333/quarantine/11111111-1111-4111-8111-111111111111');
+    expect(key).toBe('11111111-1111-4111-8111-111111111111');
     expect(key).not.toContain('bad');
+    expect(key).not.toMatch(/quarantine|ready|33333333/iu);
+  });
+
+  it('rejects an HTML fragment anywhere in the TXT preflight window', () => {
+    const headerBytes = Buffer.from('Обычный текст перед фрагментом.\n<strong>HTML</strong>\n', 'utf8');
+    expect(() => validateUpload({
+      name: 'notes.txt', declaredMime: 'text/plain', size: headerBytes.length, headerBytes,
+    })).toThrow(/HTML/iu);
   });
 
   it('treats header validation as preflight only and rejects a declared-size mismatch at completion', async () => {

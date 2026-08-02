@@ -17,12 +17,7 @@ export type AllowedFileMime = (typeof FILE_MIME_BY_EXTENSION)[AllowedFileExtensi
 export type AttachmentTarget = { type: 'task' | 'knowledge'; id: string };
 
 export type SignedAttachmentDownload = {
-  id: string;
-  name: string;
-  mimeType: string;
-  size: number;
   url: string;
-  expiresIn: 60;
 };
 
 export type UploadPreflightInput = {
@@ -46,7 +41,7 @@ export class FileValidationError extends Error {
   }
 }
 
-const FORBIDDEN_TEXT_PREFIX = /^\s*(?:<!doctype\s+html|<html\b|<svg\b|<\?xml\b)/iu;
+const FORBIDDEN_TEXT_FRAGMENT = /(?:<!doctype\s+html\b|<\?xml\b|<!--|<\/?[a-z][a-z0-9:-]*(?:\s[^<>]*?)?\s*\/?>)/iu;
 
 function startsWith(bytes: Uint8Array, signature: readonly number[], offset = 0): boolean {
   return signature.every((byte, index) => bytes[offset + index] === byte);
@@ -113,7 +108,7 @@ function validateHeader(extension: AllowedFileExtension, bytes: Uint8Array): voi
     case 'txt': {
       if (bytes.some((byte) => byte === 0)) throw new FileValidationError('TXT не должен содержать нулевые байты.');
       const text = new TextDecoder('utf-8').decode(bytes);
-      if (FORBIDDEN_TEXT_PREFIX.test(text)) throw new FileValidationError('HTML, XML и SVG нельзя загружать как TXT.');
+      if (FORBIDDEN_TEXT_FRAGMENT.test(text)) throw new FileValidationError('HTML, XML и SVG нельзя загружать как TXT.');
     }
   }
 }

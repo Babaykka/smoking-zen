@@ -48,6 +48,60 @@ describe('SecureItemsWorkspace', () => {
     expect(document.body.textContent).not.toContain(externalUrl);
   });
 
+  it('single-flights a duplicate create submit while the first request is pending', async () => {
+    const gateway = renderSafe();
+    let resolveCreate!: (value: Awaited<ReturnType<typeof gateway.createSecureItem>>) => void;
+    const pending = new Promise<Awaited<ReturnType<typeof gateway.createSecureItem>>>((resolve) => {
+      resolveCreate = resolve;
+    });
+    const create = vi.spyOn(gateway, 'createSecureItem').mockImplementation(() => pending);
+    fireEvent.click(screen.getByRole('button', { name: 'Добавить запись' }));
+    fireEvent.change(screen.getByLabelText('Название записи'), { target: { value: 'Терминал' } });
+    fireEvent.change(screen.getByLabelText('Назначение'), { target: { value: 'Оплата' } });
+    fireEvent.change(screen.getByLabelText('Ответственный'), { target: { value: 'Управляющий' } });
+    fireEvent.change(screen.getByLabelText('Ссылка Bitwarden'), {
+      target: { value: 'https://vault.bitwarden.com/#/items/single-flight' },
+    });
+    const submit = screen.getByRole('button', { name: 'Сохранить запись' });
+
+    fireEvent.click(submit);
+    fireEvent.click(submit);
+
+    expect(create).toHaveBeenCalledOnce();
+    expect(submit).toBeDisabled();
+    resolveCreate({
+      id: 'safe-single-flight', workspaceId: 'workspace-demo', title: 'Терминал', purpose: 'Оплата', owner: 'Управляющий',
+      reviewDate: null, cardBank: null, cardHolder: null, cardPurpose: null, lastFour: null,
+      version: 1, createdAt: '2026-08-02T12:00:00.000Z', updatedAt: '2026-08-02T12:00:00.000Z', deletedAt: null,
+    });
+    await waitFor(() => expect(screen.queryByRole('dialog')).not.toBeInTheDocument());
+  });
+
+  it('opens an accessible dialog, focuses its first field, and restores opener focus on close and save', async () => {
+    renderSafe();
+    const opener = screen.getByRole('button', { name: 'Добавить запись' });
+    opener.focus();
+    fireEvent.click(opener);
+
+    const dialog = screen.getByRole('dialog', { name: 'Новая безопасная запись' });
+    expect(dialog).toHaveAttribute('aria-modal', 'true');
+    expect(screen.getByLabelText('Название записи')).toHaveFocus();
+    fireEvent.click(screen.getByRole('button', { name: 'Закрыть редактор' }));
+    await waitFor(() => expect(opener).toHaveFocus());
+
+    fireEvent.click(opener);
+    fireEvent.change(screen.getByLabelText('Название записи'), { target: { value: 'Терминал' } });
+    fireEvent.change(screen.getByLabelText('Назначение'), { target: { value: 'Оплата' } });
+    fireEvent.change(screen.getByLabelText('Ответственный'), { target: { value: 'Управляющий' } });
+    fireEvent.change(screen.getByLabelText('Ссылка Bitwarden'), {
+      target: { value: 'https://vault.bitwarden.com/#/items/focus-return' },
+    });
+    fireEvent.click(screen.getByRole('button', { name: 'Сохранить запись' }));
+
+    await waitFor(() => expect(screen.queryByRole('dialog')).not.toBeInTheDocument());
+    expect(opener).toHaveFocus();
+  });
+
   it('archives and restores Safe metadata within the recovery window without revealing its URL', async () => {
     const gateway = renderSafe();
     const restore = vi.spyOn(gateway, 'restoreSecureItem');

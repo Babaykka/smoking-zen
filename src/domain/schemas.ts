@@ -218,13 +218,42 @@ function allowedBitwardenOrigins(selfHostedOrigins: readonly string[]): Set<stri
   return origins;
 }
 
-function isBitwardenUrl(value: string, origins: ReadonlySet<string>) {
+function decodeUrlComponent(value: string): string | null {
+  let decoded = value;
+  try {
+    for (let pass = 0; pass < 8; pass += 1) {
+      const next = decodeURIComponent(decoded);
+      if (next === decoded) return decoded;
+      decoded = next;
+    }
+    return null;
+  } catch {
+    return null;
+  }
+}
+
+function containsUrlSecret(value: string): boolean {
+  const withoutLegitimateUuid = value.replace(
+    /[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}/giu,
+    '',
+  );
+  return containsSecretLikeText(withoutLegitimateUuid);
+}
+
+export function isAllowedBitwardenUrl(value: string, selfHostedOrigins: readonly string[] = []): boolean {
+  const origins = allowedBitwardenOrigins(selfHostedOrigins);
   try {
     const url = new URL(value);
     if (url.protocol !== 'https:' || url.username || url.password || url.port || !origins.has(url.origin)) return false;
-    return [...url.searchParams.entries()].every(([key, queryValue]) =>
-      !secretQueryKey.test(key) && !containsSecretLikeText(queryValue),
-    );
+    const pathname = decodeUrlComponent(url.pathname);
+    const fragment = decodeUrlComponent(url.hash.slice(1));
+    if (pathname === null || fragment === null || containsUrlSecret(pathname) || containsUrlSecret(fragment)) return false;
+    return [...url.searchParams.entries()].every(([key, queryValue]) => {
+      const decodedKey = decodeUrlComponent(key);
+      const decodedValue = decodeUrlComponent(queryValue);
+      return decodedKey !== null && decodedValue !== null
+        && !secretQueryKey.test(decodedKey) && !containsUrlSecret(decodedValue);
+    });
   } catch {
     return false;
   }
@@ -250,7 +279,6 @@ const lastFourSchema = z.string({ error: 'Последние четыре циф
   .optional();
 
 function secureItemShape(selfHostedOrigins: readonly string[]) {
-  const origins = allowedBitwardenOrigins(selfHostedOrigins);
   return {
     title: safeFreeText(z.string({ error: 'Название безопасной записи должно быть текстом.' })
       .trim().min(1, 'Введите название безопасной записи.').max(280, 'Название безопасной записи слишком длинное.')),
@@ -265,7 +293,7 @@ function secureItemShape(selfHostedOrigins: readonly string[]) {
       .trim()
       .min(1, 'Укажите корректную HTTPS-ссылку Bitwarden.')
       .max(2_000, 'Ссылка Bitwarden слишком длинная.')
-      .refine((value) => isBitwardenUrl(value, origins), 'Укажите корректную HTTPS-ссылку Bitwarden.'),
+      .refine((value) => isAllowedBitwardenUrl(value, selfHostedOrigins), 'Укажите корректную HTTPS-ссылку Bitwarden.'),
   } as const;
 }
 

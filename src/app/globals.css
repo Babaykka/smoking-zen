@@ -721,6 +721,16 @@ button.navigation__link {
   accent-color: var(--accent);
 }
 
+.attachment-widget__demo-note {
+  margin: 0;
+  padding: 0.65rem 0.75rem;
+  border-left: 3px solid var(--accent);
+  border-radius: 0.35rem;
+  background: color-mix(in srgb, var(--accent) 8%, var(--surface));
+  color: var(--muted);
+  font-size: 0.8rem;
+}
+
 .safe-workspace {
   display: grid;
   grid-template-columns: minmax(0, 1fr);
@@ -851,6 +861,18 @@ button.navigation__link {
   border: 1px solid var(--border);
   border-radius: 1rem;
   background: var(--surface);
+}
+
+.safe-editor__heading {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.75rem;
+}
+
+.safe-editor__heading h2 {
+  margin: 0;
+  font-size: 1.05rem;
 }
 
 .safe-editor form,
@@ -1001,6 +1023,8 @@ button.navigation__link {
 
   .safe-editor {
     min-height: calc(100dvh - 7rem);
+    max-height: calc(100dvh - 7rem);
+    overflow-y: auto;
     border: 0;
     border-radius: 0;
   }

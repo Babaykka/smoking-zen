@@ -1,4 +1,4 @@
-import { fireEvent, render, screen } from '@testing-library/react';
+import { fireEvent, render, screen, within } from '@testing-library/react';
 
 import { AppShell } from '@/components/app-shell';
 
@@ -30,13 +30,19 @@ describe('AppShell', () => {
     expect(screen.getAllByRole('button', { name: 'Создать задачу' })).toHaveLength(2);
   });
 
-  it('places Safe under the secondary navigation instead of the primary destinations', () => {
+  it('shows a direct desktop Safe entry while mobile keeps Safe under “Ещё”', () => {
     const navigate = vi.fn();
-    render(<AppShell activeView="today" onNavigate={navigate} onCreate={() => {}}><p>Содержимое</p></AppShell>);
-    for (const trigger of screen.getAllByText('Ещё')) fireEvent.click(trigger);
-    const links = screen.getAllByRole('menuitem', { name: 'Сейф' });
-    expect(links).toHaveLength(2);
-    fireEvent.click(links[0]!);
+    const { container } = render(<AppShell activeView="today" onNavigate={navigate} onCreate={() => {}}><p>Содержимое</p></AppShell>);
+    const desktop = container.querySelector('.navigation--sidebar')!;
+    const mobile = container.querySelector('.navigation--bottom')!;
+
+    const desktopSafe = within(desktop as HTMLElement).getByRole('link', { name: 'Сейф' });
+    expect(within(desktop as HTMLElement).queryByRole('button', { name: 'Ещё' })).not.toBeInTheDocument();
+    expect(within(mobile as HTMLElement).queryByRole('link', { name: 'Сейф' })).not.toBeInTheDocument();
+    const mobileMore = within(mobile as HTMLElement).getByRole('button', { name: 'Ещё' });
+    fireEvent.click(mobileMore);
+    expect(within(mobile as HTMLElement).getByRole('menuitem', { name: 'Сейф' })).toBeInTheDocument();
+    fireEvent.click(desktopSafe);
     expect(navigate).toHaveBeenCalledWith('safe');
   });
 });

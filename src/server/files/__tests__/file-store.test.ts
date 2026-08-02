@@ -28,7 +28,7 @@ const quarantine: StoredAttachment = {
   name: 'policy.txt',
   mimeType: 'text/plain',
   size: bytes.length,
-  storagePath: `${workspaceId}/quarantine/${quarantineObjectId}`,
+  storagePath: quarantineObjectId,
   state: 'quarantine',
   sha256: null,
   quarantineExpiresAt: '2026-08-02T14:05:00.000Z',
@@ -41,7 +41,8 @@ function backend(overrides: Partial<FileBackend> = {}): FileBackend {
     insertQuarantine: vi.fn().mockResolvedValue(undefined),
     deleteQuarantine: vi.fn().mockResolvedValue(undefined),
     expireQuarantine: vi.fn().mockResolvedValue(undefined),
-    createSignedUploadUrl: vi.fn().mockResolvedValue('https://storage.example/private-upload?token=ephemeral'),
+    createSignedUploadUrl: vi.fn().mockImplementation(async (storagePath: string) =>
+      `https://storage.example/storage/v1/object/upload/sign/workspace-files/${storagePath}?token=ephemeral`),
     getAttachment: vi.fn().mockResolvedValue(quarantine),
     downloadObject: vi.fn().mockResolvedValue(bytes),
     uploadReadyObject: vi.fn().mockResolvedValue(undefined),
@@ -59,6 +60,7 @@ function backend(overrides: Partial<FileBackend> = {}): FileBackend {
     queueObjectCleanup: vi.fn().mockResolvedValue(undefined),
     listExpiredQuarantines: vi.fn().mockResolvedValue([]),
     listQueuedObjects: vi.fn().mockResolvedValue([]),
+    prepareQueuedObjectRemoval: vi.fn().mockResolvedValue(true),
     deleteQueuedObject: vi.fn().mockResolvedValue(undefined),
     removeObject: vi.fn().mockResolvedValue(undefined),
     createSignedDownloadUrl: vi.fn().mockResolvedValue('https://storage.example/private-download?token=ephemeral'),
@@ -93,14 +95,14 @@ describe('private file lifecycle store', () => {
       workspaceId,
       taskId: quarantine.taskId,
       knowledgeItemId: null,
-      storagePath: `${workspaceId}/quarantine/${quarantineObjectId}`,
+      storagePath: quarantineObjectId,
       createdBy: actorUserId,
       state: 'quarantine',
     }));
     expect(JSON.stringify(vi.mocked(fileBackend.insertQuarantine).mock.calls)).not.toContain('private-upload');
     expect(signed).toMatchObject({
       id: attachmentId,
-      uploadUrl: 'https://storage.example/private-upload?token=ephemeral',
+      uploadUrl: `https://storage.example/storage/v1/object/upload/sign/workspace-files/${quarantineObjectId}?token=ephemeral`,
       name: 'policy.txt',
       mimeType: 'text/plain',
       size: bytes.length,
@@ -114,7 +116,7 @@ describe('private file lifecycle store', () => {
     await expect(store.signUpload(workspaceId, actorUserId, {
       parent: { type: 'task', id: quarantine.taskId! }, file: preflight(),
     })).rejects.toThrow('Не удалось подготовить загрузку файла.');
-    expect(fileBackend.deleteQuarantine).toHaveBeenCalledWith(workspaceId, attachmentId, `${workspaceId}/quarantine/${quarantineObjectId}`);
+    expect(fileBackend.deleteQuarantine).toHaveBeenCalledWith(workspaceId, attachmentId, quarantineObjectId);
   });
 
   it('validates every uploaded byte, writes a new ready object, and atomically queues the quarantine object for cleanup', async () => {
@@ -127,15 +129,110 @@ describe('private file lifecycle store', () => {
 
     expect(fileBackend.downloadObject).toHaveBeenCalledWith(quarantine.storagePath);
     expect(fileBackend.uploadReadyObject).toHaveBeenCalledWith(
-      `${workspaceId}/ready/${attachmentId}`,
+      attachmentId,
       bytes,
       'text/plain',
     );
     expect(fileBackend.completeUpload).toHaveBeenCalledWith(quarantine, expect.objectContaining({
-      storagePath: `${workspaceId}/ready/${attachmentId}`,
+      storagePath: attachmentId,
       sha256: expect.stringMatching(/^[a-f0-9]{64}$/),
     }));
     expect(completed).toEqual({ id: attachmentId, name: 'policy.txt', mimeType: 'text/plain', size: bytes.length });
+  });
+
+  it('reconciles an RPC response loss after completion committed with cleanup established before external writes', async () => {
+    let authoritative: StoredAttachment = quarantine;
+    const completeUpload = vi.fn().mockImplementation(async (_record, ready) => {
+      authoritative = {
+        ...quarantine,
+        name: ready.name,
+        mimeType: ready.mimeType,
+        size: ready.size,
+        sha256: ready.sha256,
+        storagePath: ready.storagePath,
+        state: 'ready',
+        quarantineExpiresAt: null,
+        completedAt: '2026-08-02T12:00:00.000Z',
+      };
+      throw new Error('transport closed after commit');
+    });
+    const fileBackend = backend({
+      completeUpload,
+      getAttachment: vi.fn().mockImplementation(async () => authoritative),
+    });
+    const store = createPrivateFileStore(fileBackend, {
+      idFactory: idFactory(),
+      clock: () => new Date('2026-08-02T12:00:00.000Z'),
+    });
+
+    await expect(store.completeUpload(workspaceId, attachmentId)).resolves.toEqual({
+      id: attachmentId,
+      name: 'policy.txt',
+      mimeType: 'text/plain',
+      size: bytes.length,
+    });
+    expect(authoritative).toMatchObject({ state: 'ready', storagePath: attachmentId });
+    expect(fileBackend.queueObjectCleanup).toHaveBeenCalledWith(
+      workspaceId,
+      attachmentId,
+      attachmentId,
+      quarantine.quarantineExpiresAt,
+    );
+    expect(vi.mocked(fileBackend.queueObjectCleanup).mock.invocationCallOrder[0])
+      .toBeLessThan(vi.mocked(fileBackend.uploadReadyObject).mock.invocationCallOrder[0]!);
+    expect(vi.mocked(fileBackend.uploadReadyObject).mock.invocationCallOrder[0])
+      .toBeLessThan(completeUpload.mock.invocationCallOrder[0]!);
+  });
+
+  it('reconciles a ready-object upload that committed before its response failed', async () => {
+    const storedObjects = new Map<string, Uint8Array>([[quarantine.storagePath, bytes]]);
+    const fileBackend = backend({
+      downloadObject: vi.fn().mockImplementation(async (storagePath: string) => {
+        const stored = storedObjects.get(storagePath);
+        if (!stored) throw new Error('object missing');
+        return stored;
+      }),
+      uploadReadyObject: vi.fn().mockImplementation(async (storagePath: string, uploaded: Uint8Array) => {
+        storedObjects.set(storagePath, uploaded);
+        throw new Error('transport closed after object commit');
+      }),
+    });
+    const store = createPrivateFileStore(fileBackend, {
+      idFactory: idFactory(),
+      clock: () => new Date('2026-08-02T12:00:00.000Z'),
+    });
+
+    await expect(store.completeUpload(workspaceId, attachmentId)).resolves.toEqual({
+      id: attachmentId,
+      name: 'policy.txt',
+      mimeType: 'text/plain',
+      size: bytes.length,
+    });
+    expect(fileBackend.uploadReadyObject).toHaveBeenCalledWith(attachmentId, bytes, 'text/plain');
+    expect(fileBackend.completeUpload).toHaveBeenCalledWith(quarantine, expect.objectContaining({ storagePath: attachmentId }));
+  });
+
+  it('queues an unresolved ambiguous ready-object upload until completion can no longer reference it', async () => {
+    const fileBackend = backend({
+      downloadObject: vi.fn().mockImplementation(async (storagePath: string) => {
+        if (storagePath === quarantine.storagePath) return bytes;
+        throw new Error('ambiguous ready object cannot be read');
+      }),
+      uploadReadyObject: vi.fn().mockRejectedValue(new Error('ambiguous provider failure')),
+    });
+    const store = createPrivateFileStore(fileBackend, {
+      idFactory: idFactory(),
+      clock: () => new Date('2026-08-02T12:00:00.000Z'),
+    });
+
+    await expect(store.completeUpload(workspaceId, attachmentId)).rejects.toThrow('Не удалось сохранить проверенный файл.');
+    expect(fileBackend.queueObjectCleanup).toHaveBeenCalledWith(
+      workspaceId,
+      attachmentId,
+      attachmentId,
+      quarantine.quarantineExpiresAt,
+    );
+    expect(fileBackend.removeObject).not.toHaveBeenCalledWith(attachmentId);
   });
 
   it('denies completion and discards quarantine when the parent was deleted after signing', async () => {
@@ -173,13 +270,13 @@ describe('private file lifecycle store', () => {
     vi.mocked(fileBackend.getAttachment).mockResolvedValueOnce({
       ...quarantine,
       state: 'ready',
-      storagePath: `${workspaceId}/ready/${readyObjectId}`,
+      storagePath: attachmentId,
       sha256: 'a'.repeat(64),
       quarantineExpiresAt: null,
       completedAt: '2026-08-02T12:00:00.000Z',
     });
     const signed = await store.signDownload(workspaceId, attachmentId, 60);
-    expect(fileBackend.createSignedDownloadUrl).toHaveBeenCalledWith(`${workspaceId}/ready/${readyObjectId}`, 60, 'policy.txt');
+    expect(fileBackend.createSignedDownloadUrl).toHaveBeenCalledWith(attachmentId, 60, 'policy.txt');
     expect(signed).toMatchObject({ expiresIn: 60, name: 'policy.txt', mimeType: 'text/plain' });
   });
 
@@ -187,7 +284,7 @@ describe('private file lifecycle store', () => {
     const ready = {
       ...quarantine,
       state: 'ready' as const,
-      storagePath: `${workspaceId}/ready/${readyObjectId}`,
+      storagePath: attachmentId,
       sha256: 'a'.repeat(64),
       quarantineExpiresAt: null,
       completedAt: '2026-08-02T12:00:00.000Z',
@@ -208,15 +305,40 @@ describe('private file lifecycle store', () => {
     const fileBackend = backend({
       getAttachment: vi.fn().mockResolvedValue(expired),
       listExpiredQuarantines: vi.fn().mockResolvedValue([expired]),
-      listQueuedObjects: vi.fn().mockResolvedValue([{ id: 'queue-1', workspaceId, storagePath: `${workspaceId}/quarantine/${quarantineObjectId}` }]),
+      listQueuedObjects: vi.fn().mockResolvedValue([{ id: 'queue-1', workspaceId, storagePath: quarantineObjectId }]),
     });
     const store = createPrivateFileStore(fileBackend, { clock: () => new Date('2026-08-02T12:00:00.000Z') });
 
     await expect(store.completeUpload(workspaceId, attachmentId)).rejects.toBeInstanceOf(UploadExpiredError);
     const cleanup = await store.cleanupExpiredUploads(new Date('2026-08-02T12:00:00.000Z'), 20);
     expect(fileBackend.deleteQuarantine).toHaveBeenCalledWith(workspaceId, attachmentId, quarantine.storagePath);
-    expect(fileBackend.removeObject).toHaveBeenCalledWith(`${workspaceId}/quarantine/${quarantineObjectId}`);
+    expect(fileBackend.removeObject).toHaveBeenCalledWith(quarantineObjectId);
     expect(fileBackend.deleteQueuedObject).toHaveBeenCalledWith('queue-1');
     expect(cleanup).toEqual({ removed: 2, failed: 0 });
+  });
+
+  it('never removes a queued object unless the backend authoritatively releases it for deletion', async () => {
+    const liveReady = {
+      ...quarantine,
+      state: 'ready' as const,
+      storagePath: attachmentId,
+      sha256: 'a'.repeat(64),
+      quarantineExpiresAt: null,
+      completedAt: '2026-08-02T12:00:00.000Z',
+    };
+    const fileBackend = backend({
+      getAttachment: vi.fn().mockResolvedValue(liveReady),
+      listQueuedObjects: vi.fn().mockResolvedValue([{ id: 'queue-live', workspaceId, storagePath: attachmentId }]),
+      prepareQueuedObjectRemoval: vi.fn().mockResolvedValue(false),
+    } as Partial<FileBackend>);
+    const store = createPrivateFileStore(fileBackend);
+
+    const cleanup = await store.cleanupExpiredUploads(new Date('2026-08-02T12:00:00.000Z'), 20);
+
+    expect((fileBackend as FileBackend & { prepareQueuedObjectRemoval: ReturnType<typeof vi.fn> }).prepareQueuedObjectRemoval)
+      .toHaveBeenCalledWith('queue-live');
+    expect(fileBackend.removeObject).not.toHaveBeenCalledWith(attachmentId);
+    expect(fileBackend.deleteQueuedObject).not.toHaveBeenCalledWith('queue-live');
+    expect(cleanup).toEqual({ removed: 0, failed: 0 });
   });
 });

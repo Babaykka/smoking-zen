@@ -78,6 +78,24 @@ describe('Supabase secure-item adapter', () => {
     expect(builder.select).toHaveBeenCalledWith('external_url');
   });
 
+  it('never reveals a legacy database URL outside the current exact allowlist', async () => {
+    const legacyUrl = 'https://legacy.bitwarden.com/#/items/private';
+    const builder = query({ data: { external_url: legacyUrl }, error: null });
+    const client = { from: vi.fn(() => builder) } as unknown as SupabaseClient;
+    const store = createSupabaseSecureItemStore(client, () => client, []);
+
+    await expect(store.revealSecureItem(workspaceId, itemId)).rejects.toThrow(/больше не разрешена/iu);
+  });
+
+  it('reveals an exact current self-hosted origin configured for this process', async () => {
+    const externalUrl = 'https://vault.example.org/#/items/private';
+    const builder = query({ data: { external_url: externalUrl }, error: null });
+    const client = { from: vi.fn(() => builder) } as unknown as SupabaseClient;
+    const store = createSupabaseSecureItemStore(client, () => client, ['https://vault.example.org']);
+
+    await expect(store.revealSecureItem(workspaceId, itemId)).resolves.toEqual({ externalUrl });
+  });
+
   it('restores through the database-clock RPC and returns a summary without the reveal URL', async () => {
     const actorClient = {
       rpc: vi.fn().mockResolvedValue({ data: [{ ...row, version: 3, deleted_at: null }], error: null }),

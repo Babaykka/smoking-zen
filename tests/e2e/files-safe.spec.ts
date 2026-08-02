@@ -6,6 +6,7 @@ test('adds metadata-only demo attachments with progress and recovery-safe downlo
   await page.getByRole('button', { name: 'Открыть задачу Проверить запас кокосового угля' }).click();
 
   const picker = page.getByLabel('Добавить файл');
+  await expect(page.getByRole('note')).toContainText('Содержимое файла не сохраняется');
   await expect(picker).toHaveAttribute('accept', '.jpg,.jpeg,.png,.webp,.pdf,.txt,.docx,.xlsx');
   await picker.setInputFiles({
     name: 'unsafe.svg',
@@ -49,8 +50,13 @@ test('keeps Safe summaries masked and reveals an allowed Bitwarden URL only afte
   await page.goto('/');
 
   const navigation = page.locator('.navigation:visible');
-  await navigation.getByRole('button', { name: 'Ещё' }).click();
-  await navigation.getByRole('menuitem', { name: 'Сейф' }).click();
+  const directSafe = navigation.getByRole('link', { name: 'Сейф' });
+  if (await directSafe.isVisible()) {
+    await directSafe.click();
+  } else {
+    await navigation.getByRole('button', { name: 'Ещё' }).click();
+    await navigation.getByRole('menuitem', { name: 'Сейф' }).click();
+  }
   await expect(page.getByRole('heading', { name: 'Сейф' })).toBeVisible();
   await expect(page.getByText('•••• 0000')).toBeVisible();
   expect(await page.evaluate(() => (window as typeof window & { __openedSafeUrls?: string[] }).__openedSafeUrls)).toEqual([]);
@@ -97,16 +103,19 @@ test('keeps the secondary Safe flow and file picker inside an exact 360px viewpo
     .resolves.toEqual(['Сегодня', 'Задачи', 'База', 'Люди', 'Ещё']);
   await navigation.getByRole('button', { name: 'Ещё' }).click();
   await navigation.getByRole('menuitem', { name: 'Сейф' }).click();
-  await page.getByRole('button', { name: 'Добавить запись' }).click();
+  const opener = page.getByRole('button', { name: 'Добавить запись' });
+  await opener.click();
 
-  const editor = page.getByRole('complementary', { name: 'Безопасная запись' });
+  const editor = page.getByRole('dialog', { name: 'Новая безопасная запись' });
+  await expect(page.getByLabel('Название записи')).toBeFocused();
   const editorBox = await editor.boundingBox();
   expect(editorBox).not.toBeNull();
   expect(editorBox!.x).toBeGreaterThanOrEqual(0);
   expect(editorBox!.x + editorBox!.width).toBeLessThanOrEqual(360);
   expect(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth)).toBe(true);
 
-  await page.getByRole('button', { name: 'Закрыть' }).click();
+  await page.getByRole('button', { name: 'Закрыть редактор' }).click();
+  await expect(opener).toBeFocused();
   await navigation.getByRole('link', { name: 'Задачи' }).click();
   await page.getByRole('button', { name: 'Открыть задачу Проверить запас кокосового угля' }).click();
   const pickerBox = await page.getByText('Добавить файл', { exact: true }).boundingBox();
@@ -114,4 +123,12 @@ test('keeps the secondary Safe flow and file picker inside an exact 360px viewpo
   expect(pickerBox!.x).toBeGreaterThanOrEqual(0);
   expect(pickerBox!.x + pickerBox!.width).toBeLessThanOrEqual(360);
   expect(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth)).toBe(true);
+});
+
+test('shows Safe directly in the desktop sidebar without replacing the mobile secondary destination', async ({ page }, testInfo) => {
+  test.skip(testInfo.project.name !== 'desktop-chromium', 'Desktop navigation assertion.');
+  await page.goto('/');
+  const sidebar = page.locator('.navigation--sidebar');
+  await expect(sidebar.getByRole('link', { name: 'Сейф' })).toBeVisible();
+  await expect(sidebar.getByRole('button', { name: 'Ещё' })).toHaveCount(0);
 });

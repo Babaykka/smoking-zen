@@ -26,6 +26,11 @@ function renderWidget(overrides: { attachments?: Attachment[] } = {}) {
 }
 
 describe('AttachmentWidget', () => {
+  it('proactively explains that demo attachments retain metadata only', () => {
+    renderWidget();
+    expect(screen.getByRole('note')).toHaveTextContent(/демо-режиме.*содержимое файла не сохраняется/iu);
+  });
+
   it('uses the exact mobile picker allowlist and reports upload progress through completion', async () => {
     const gateway = renderWidget();
     const input = screen.getByLabelText('Добавить файл');

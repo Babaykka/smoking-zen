@@ -80,7 +80,7 @@ describe('API task repository', () => {
     const attachment = { id: 'attachment-ready', name: 'policy.txt', mimeType: 'text/plain', size: 18 };
     const signed = {
       ...attachment,
-      uploadUrl: 'https://storage.example/private-upload?token=ephemeral',
+      uploadUrl: 'https://storage.example/storage/v1/object/upload/sign/workspace-files/10000000-0000-4000-8000-000000000001?token=ephemeral',
       expiresAt: '2026-08-02T14:05:00.000Z',
     };
     const fetcher = vi.fn()
@@ -107,6 +107,17 @@ describe('API task repository', () => {
     expect(progress).toEqual([10, 30, 80, 100]);
     expect(repository.snapshot().tasks[0]!.attachments).toEqual([attachment]);
     expect(JSON.stringify(repository.snapshot())).not.toMatch(/private-upload|token=ephemeral|Регламент смены/iu);
+  });
+
+  it('opens downloads through a same-origin redirect route without fetching or retaining a provider URL', async () => {
+    const fetcher = vi.fn();
+    const repository = createApiRepository({ initialSnapshot: demoSeed, fetcher, realtime: () => () => {} });
+
+    await expect(repository.downloadAttachment('aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa')).resolves.toEqual({
+      url: '/api/files/aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa/download',
+    });
+    expect(fetcher).not.toHaveBeenCalled();
+    expect(JSON.stringify(repository.snapshot())).not.toMatch(/storage\/v1|token=|storagePath/iu);
   });
 
   it('rejects a forbidden file locally before requesting an upload grant', async () => {

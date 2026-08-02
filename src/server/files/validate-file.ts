@@ -62,7 +62,7 @@ function validateStrictText(bytes: Buffer): Buffer {
   if (/[\u0000-\u0008\u000b\u000c\u000e-\u001f\u007f-\u009f]/u.test(text)) {
     invalid('TXT содержит недопустимые управляющие символы.');
   }
-  if (/^\s*(?:<!doctype\s+html|<html\b|<svg\b|<\?xml\b)/iu.test(text)) {
+  if (/(?:<!doctype\s+html\b|<\?xml\b|<!--|<\/?[a-z][a-z0-9:-]*(?:\s[^<>]*?)?\s*\/?>)/iu.test(text)) {
     invalid('HTML, XML и SVG нельзя загружать как TXT.');
   }
   return bytes;
@@ -367,5 +367,6 @@ export function createRandomObjectKey(
   if (!workspacePattern.test(workspaceId) || !workspacePattern.test(objectId)) {
     invalid('Невозможно создать безопасный ключ файла.');
   }
-  return `${workspaceId}/${state}/${objectId}`;
+  void state;
+  return objectId;
 }

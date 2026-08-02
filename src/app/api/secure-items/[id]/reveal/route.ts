@@ -2,6 +2,7 @@ import { ServerConfigurationError } from '@/server/env';
 import {
   createDefaultSecureItemRouteDependencies,
   SecureItemNotFoundError,
+  SecureItemUrlNotAllowedError,
   type SecureItemRouteDependencies,
 } from '@/server/secure-item-api';
 import { apiResponse, hasSameOrigin } from '@/server/http';
@@ -23,6 +24,7 @@ export function createSecureItemRevealHandler(dependencies: SecureItemRouteDepen
       return apiResponse(requestId, 200, await dependencies.store.revealSecureItem(actor.workspaceId, id), null);
     } catch (error) {
       if (error instanceof SecureItemNotFoundError) return apiResponse(requestId, 404, null, { code: 'record_not_found', message: error.message });
+      if (error instanceof SecureItemUrlNotAllowedError) return apiResponse(requestId, 422, null, { code: 'secure_item_url_not_allowed', message: error.message });
       return apiResponse(requestId, 500, null, { code: 'internal_error', message: 'Не удалось открыть ссылку Bitwarden.' });
     }
   };

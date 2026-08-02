@@ -15,6 +15,7 @@ const MIGRATIONS = [
   'supabase/migrations/0007_task5_integrity.sql',
   'supabase/migrations/0008_task5_taxonomy_recovery.sql',
   'supabase/migrations/0009_private_files_secure_items.sql',
+  'supabase/migrations/0010_task6_ambiguous_file_cleanup.sql',
 ];
 
 const databases: PGlite[] = [];
@@ -178,7 +179,7 @@ describe('private file and secure-item schema runtime', () => {
       values ($1, 'Документы смены', $2) returning id
     `, [owner.workspace_id, status.rows[0]!.id]);
     const attachmentId = 'a0000000-0000-4000-8000-000000000001';
-    const quarantinePath = `${owner.workspace_id}/quarantine/10000000-0000-4000-8000-000000000001`;
+    const quarantinePath = '10000000-0000-4000-8000-000000000001';
     await database.query(`
       insert into public.attachments (
         id, workspace_id, task_id, name, mime_type, size_bytes, storage_path, created_by, quarantine_expires_at
@@ -189,7 +190,7 @@ describe('private file and secure-item schema runtime', () => {
       update public.attachments set state = 'ready', quarantine_expires_at = null where id = $1
     `, [attachmentId])).rejects.toThrow();
 
-    const readyPath = `${owner.workspace_id}/ready/20000000-0000-4000-8000-000000000001`;
+    const readyPath = attachmentId;
     await database.query(`select * from public.complete_attachment_upload(
       $1, $2, $3, $4, 'policy.pdf', 'application/pdf', 64, repeat('a', 64)
     )`, [owner.workspace_id, attachmentId, quarantinePath, readyPath]);
@@ -215,8 +216,8 @@ describe('private file and secure-item schema runtime', () => {
       values ($1, 'Удалённый родитель', $2) returning id
     `, [owner.workspace_id, status.rows[0]!.id]);
     const attachmentId = 'a0000000-0000-4000-8000-000000000002';
-    const quarantinePath = `${owner.workspace_id}/quarantine/10000000-0000-4000-8000-000000000002`;
-    const readyPath = `${owner.workspace_id}/ready/20000000-0000-4000-8000-000000000002`;
+    const quarantinePath = '10000000-0000-4000-8000-000000000002';
+    const readyPath = attachmentId;
     await database.query(`
       insert into public.attachments (
         id, workspace_id, task_id, name, mime_type, size_bytes, storage_path, created_by, quarantine_expires_at
@@ -229,6 +230,100 @@ describe('private file and secure-item schema runtime', () => {
     )`, [owner.workspace_id, attachmentId, quarantinePath, readyPath])).rejects.toThrow();
     const state = await database.query<{ state: string }>('select state from public.attachments where id = $1', [attachmentId]);
     expect(state.rows).toEqual([{ state: 'quarantine' }]);
+  });
+
+  it('authoritatively defers or discards cleanup for an opaque ready object that can become or is live', async () => {
+    const database = await createDatabase();
+    const owner = await bootstrapOwner(database);
+    const status = await database.query<{ id: string }>(
+      "select id from public.task_statuses where workspace_id = $1 and name = 'Новая'",
+      [owner.workspace_id],
+    );
+    const task = await database.query<{ id: string }>(`
+      insert into public.tasks (workspace_id, title, status_id)
+      values ($1, 'Неоднозначное завершение', $2) returning id
+    `, [owner.workspace_id, status.rows[0]!.id]);
+    const attachmentId = 'a0000000-0000-4000-8000-000000000003';
+    const quarantineObject = '10000000-0000-4000-8000-000000000003';
+    const readyObject = attachmentId;
+    await database.query(`
+      insert into public.attachments (
+        id, workspace_id, task_id, name, mime_type, size_bytes, storage_path, created_by, quarantine_expires_at
+      ) values ($1, $2, $3, 'policy.txt', 'text/plain', 16, $4, $5, clock_timestamp() + interval '15 minutes')
+    `, [attachmentId, owner.workspace_id, task.rows[0]!.id, quarantineObject, owner.user_id]);
+    const queued = await database.query<{ id: string }>(`
+      insert into public.file_cleanup_queue (workspace_id, attachment_id, storage_path, remove_after)
+      values ($1, $2, $3, clock_timestamp()) returning id
+    `, [owner.workspace_id, attachmentId, readyObject]);
+
+    const deferred = await database.query<{ removable: boolean }>(
+      'select public.prepare_file_cleanup_object($1) as removable', [queued.rows[0]!.id],
+    );
+    expect(deferred.rows).toEqual([{ removable: false }]);
+    expect((await database.query<{ count: number }>(
+      'select count(*)::int as count from public.file_cleanup_queue where id = $1', [queued.rows[0]!.id],
+    )).rows).toEqual([{ count: 1 }]);
+
+    await database.query(`select * from public.complete_attachment_upload(
+      $1, $2, $3, $4, 'policy.txt', 'text/plain', 16, repeat('c', 64)
+    )`, [owner.workspace_id, attachmentId, quarantineObject, readyObject]);
+    const staleQueue = await database.query<{ id: string }>(`
+      insert into public.file_cleanup_queue (workspace_id, attachment_id, storage_path, remove_after)
+      values ($1, $2, $3, clock_timestamp())
+      on conflict (workspace_id, storage_path) do update set remove_after = excluded.remove_after
+      returning id
+    `, [owner.workspace_id, attachmentId, readyObject]);
+
+    const referenced = await database.query<{ removable: boolean }>(
+      'select public.prepare_file_cleanup_object($1) as removable', [staleQueue.rows[0]!.id],
+    );
+    expect(referenced.rows).toEqual([{ removable: false }]);
+    expect((await database.query<{ count: number }>(
+      'select count(*)::int as count from public.file_cleanup_queue where id = $1', [staleQueue.rows[0]!.id],
+    )).rows).toEqual([{ count: 0 }]);
+    expect((await database.query<{ state: string; storage_path: string }>(
+      'select state, storage_path from public.attachments where id = $1', [attachmentId],
+    )).rows).toEqual([{ state: 'ready', storage_path: readyObject }]);
+  });
+
+  it('rejects cross-workspace cleanup references and globally duplicated opaque object names', async () => {
+    const database = await createDatabase();
+    const first = await bootstrapOwner(database);
+    const secondResult = await database.query<{ user_id: string; workspace_id: string }>(`select * from public.bootstrap_telegram_user(
+      '4503599627370494', 'Второй владелец', null, 'owner_files_2', 'ru', '4503599627370494', 'Smoking Zen files 2'
+    )`);
+    const second = secondResult.rows[0]!;
+    const firstStatus = await database.query<{ id: string }>(
+      "select id from public.task_statuses where workspace_id = $1 and name = 'Новая'", [first.workspace_id],
+    );
+    const secondStatus = await database.query<{ id: string }>(
+      "select id from public.task_statuses where workspace_id = $1 and name = 'Новая'", [second.workspace_id],
+    );
+    const firstTask = await database.query<{ id: string }>(`
+      insert into public.tasks (workspace_id, title, status_id) values ($1, 'Первый файл', $2) returning id
+    `, [first.workspace_id, firstStatus.rows[0]!.id]);
+    const secondTask = await database.query<{ id: string }>(`
+      insert into public.tasks (workspace_id, title, status_id) values ($1, 'Второй файл', $2) returning id
+    `, [second.workspace_id, secondStatus.rows[0]!.id]);
+    const firstAttachmentId = 'a0000000-0000-4000-8000-000000000004';
+    const opaqueObject = '10000000-0000-4000-8000-000000000004';
+    await database.query(`
+      insert into public.attachments (
+        id, workspace_id, task_id, name, mime_type, size_bytes, storage_path, created_by, quarantine_expires_at
+      ) values ($1, $2, $3, 'first.txt', 'text/plain', 16, $4, $5, clock_timestamp() + interval '15 minutes')
+    `, [firstAttachmentId, first.workspace_id, firstTask.rows[0]!.id, opaqueObject, first.user_id]);
+
+    await expect(database.query(`
+      insert into public.file_cleanup_queue (workspace_id, attachment_id, storage_path, remove_after)
+      values ($1, $2, $3, clock_timestamp())
+    `, [second.workspace_id, firstAttachmentId, firstAttachmentId])).rejects.toThrow();
+
+    await expect(database.query(`
+      insert into public.attachments (
+        id, workspace_id, task_id, name, mime_type, size_bytes, storage_path, created_by, quarantine_expires_at
+      ) values ('a0000000-0000-4000-8000-000000000005', $1, $2, 'second.txt', 'text/plain', 16, $3, $4,
+        clock_timestamp() + interval '15 minutes')
+    `, [second.workspace_id, secondTask.rows[0]!.id, opaqueObject, second.user_id])).rejects.toThrow();
   });
 
   it('keeps quarantine cleanup indexed and all business tables and Storage locked to the server role', async () => {

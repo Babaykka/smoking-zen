@@ -118,6 +118,7 @@ export function createApiRepository(options: ApiRepositoryOptions): WorkspaceGat
   };
 
   return {
+    fileStorageMode: 'persistent',
     snapshot: () => clone(state),
     hydrate,
     subscribe(listener: WorkspaceListener) {
@@ -284,7 +285,7 @@ export function createApiRepository(options: ApiRepositoryOptions): WorkspaceGat
       return clone(completed);
     },
     async downloadAttachment(id: string): Promise<SignedAttachmentDownload> {
-      return request<SignedAttachmentDownload>(`/api/files/${encodeURIComponent(id)}/download`, 'GET', undefined);
+      return { url: `/api/files/${encodeURIComponent(id)}/download` };
     },
     async search(query: string, options?: { signal?: AbortSignal }): Promise<SearchResult[]> {
       return query.trim() ? request<SearchResult[]>('/api/search', 'POST', { query }, options?.signal) : [];

@@ -31,7 +31,7 @@ function store(): PrivateFileStore {
       name: 'policy.txt',
       mimeType: 'text/plain',
       size: textBytes.length,
-      uploadUrl: 'https://storage.example/private-upload?token=ephemeral',
+      uploadUrl: `https://storage.example/storage/v1/object/upload/sign/workspace-files/${attachmentId}?token=ephemeral`,
       expiresAt: '2026-08-02T14:05:00.000Z',
     }),
     completeUpload: vi.fn().mockResolvedValue({
@@ -42,7 +42,7 @@ function store(): PrivateFileStore {
       name: 'policy.txt',
       mimeType: 'text/plain',
       size: textBytes.length,
-      url: 'https://storage.example/private-download?token=ephemeral',
+      url: `https://storage.example/storage/v1/object/sign/workspace-files/${attachmentId}?token=ephemeral`,
       expiresIn: 60,
     }),
     cleanupExpiredUploads: vi.fn().mockResolvedValue({ removed: 0, failed: 0 }),
@@ -110,7 +110,8 @@ describe('private file routes', () => {
     expect(fileStore.cleanupExpiredUploads).toHaveBeenCalledWith(expect.any(Date), 20);
     const payload = await response.json();
     expect(payload.data.uploadUrl).toContain('token=ephemeral');
-    expect(JSON.stringify(payload)).not.toContain('/quarantine/');
+    expect(JSON.stringify(payload)).not.toMatch(/\/quarantine\/|\/ready\/|33333333-3333-4333-8333-333333333333/iu);
+    expect(payload.data).not.toHaveProperty('storagePath');
   });
 
   it.each([
@@ -148,17 +149,18 @@ describe('private file routes', () => {
     expect(await missingParent.json()).toMatchObject({ data: null, error: { code: 'parent_not_found' } });
   });
 
-  it('signs ready-only downloads for exactly 60 seconds with no-store headers', async () => {
+  it('redirects ready-only downloads for exactly 60 seconds without serializing the provider URL', async () => {
     const fileStore = store();
     const handler = createFileDownloadHandler(dependencies(fileStore));
     const response = await handler(downloadRequest(), {
       params: Promise.resolve({ id: attachmentId }),
     });
 
-    expect(response.status).toBe(200);
+    expect(response.status).toBe(303);
     expect(response.headers.get('cache-control')).toBe('no-store');
     expect(fileStore.signDownload).toHaveBeenCalledWith(actor.workspaceId, attachmentId, SIGNED_DOWNLOAD_SECONDS);
-    expect(await response.json()).toMatchObject({ data: { expiresIn: 60, url: expect.stringContaining('token=ephemeral') } });
+    expect(response.headers.get('location')).toBe(`https://storage.example/storage/v1/object/sign/workspace-files/${attachmentId}?token=ephemeral`);
+    expect(await response.text()).toBe('');
   });
 
   it('rejects a cross-site request before creating a signed download grant', async () => {

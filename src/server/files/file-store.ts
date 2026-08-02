@@ -47,9 +47,10 @@ export interface FileBackend {
   downloadObject(storagePath: string): Promise<Uint8Array>;
   uploadReadyObject(storagePath: string, bytes: Uint8Array, mimeType: string): Promise<void>;
   completeUpload(record: StoredAttachment, ready: ReadyAttachmentMutation): Promise<StoredAttachment>;
-  queueObjectCleanup(workspaceId: string, storagePath: string): Promise<void>;
+  queueObjectCleanup(workspaceId: string, storagePath: string, attachmentId: string, removeAfter: string): Promise<void>;
   listExpiredQuarantines(now: string, limit: number): Promise<StoredAttachment[]>;
   listQueuedObjects(now: string, limit: number): Promise<QueuedObject[]>;
+  prepareQueuedObjectRemoval(id: string): Promise<boolean>;
   deleteQueuedObject(id: string): Promise<void>;
   removeObject(storagePath: string): Promise<void>;
   createSignedDownloadUrl(storagePath: string, expiresIn: number, downloadName: string): Promise<string>;
@@ -228,11 +229,30 @@ export function createPrivateFileStore(backend: FileBackend, options: FileStoreO
         throw new FileOperationError('Не удалось проверить загруженный файл.');
       }
 
-      const readyPath = createRandomObjectKey(workspaceId, 'ready', idFactory);
+      // The ready object name is deterministic and opaque. It can be rediscovered after an
+      // ambiguous provider response without exposing workspace or lifecycle semantics.
+      const readyPath = record.id;
+      if (!record.quarantineExpiresAt) throw new FileOperationError('Не удалось завершить загрузку файла.');
+
+      // Establish durable, delayed cleanup before attempting the external write. If the
+      // provider commits and its response is lost, the object is still reconciliable.
+      try {
+        await backend.queueObjectCleanup(workspaceId, readyPath, record.id, record.quarantineExpiresAt);
+      } catch {
+        throw new FileOperationError('Не удалось сохранить проверенный файл.');
+      }
+
       try {
         await backend.uploadReadyObject(readyPath, validated.bytes, validated.mimeType);
       } catch {
-        throw new FileOperationError('Не удалось сохранить проверенный файл.');
+        try {
+          const existing = await backend.downloadObject(readyPath);
+          if (!Buffer.from(existing).equals(validated.bytes)) {
+            throw new Error('ready object differs');
+          }
+        } catch {
+          throw new FileOperationError('Не удалось сохранить проверенный файл.');
+        }
       }
 
       try {
@@ -246,13 +266,15 @@ export function createPrivateFileStore(backend: FileBackend, options: FileStoreO
         return publicAttachment(completed);
       } catch {
         try {
-          await backend.queueObjectCleanup(workspaceId, readyPath);
+          const reconciled = await backend.getAttachment(workspaceId, attachmentId);
+          if (
+            reconciled?.state === 'ready'
+            && reconciled.storagePath === readyPath
+            && reconciled.sha256 === validated.sha256
+            && reconciled.completedAt
+          ) return publicAttachment(reconciled);
         } catch {
-          try {
-            await backend.removeObject(readyPath);
-          } catch {
-            // The completion remains failed; a later storage inventory sweep can remove this random object.
-          }
+          // The pre-established cleanup row remains authoritative and reference-safe.
         }
         throw new FileOperationError('Не удалось завершить загрузку файла.');
       }
@@ -298,6 +320,7 @@ export function createPrivateFileStore(backend: FileBackend, options: FileStoreO
       }
       for (const object of queued) {
         try {
+          if (!await backend.prepareQueuedObjectRemoval(object.id)) continue;
           await backend.removeObject(object.storagePath);
           await backend.deleteQueuedObject(object.id);
           removed += 1;
