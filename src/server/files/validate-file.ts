@@ -5,6 +5,7 @@ import sharp from 'sharp';
 import yauzl, { type Entry, type ZipFile } from 'yauzl';
 
 import {
+  containsMarkupLikeText,
   FILE_MIME_BY_EXTENSION,
   FileValidationError,
   MAX_FILE_BYTES,
@@ -62,7 +63,7 @@ function validateStrictText(bytes: Buffer): Buffer {
   if (/[\u0000-\u0008\u000b\u000c\u000e-\u001f\u007f-\u009f]/u.test(text)) {
     invalid('TXT содержит недопустимые управляющие символы.');
   }
-  if (/<[^>]+>/u.test(text)) {
+  if (containsMarkupLikeText(text)) {
     invalid('HTML, XML и SVG нельзя загружать как TXT.');
   }
   return bytes;

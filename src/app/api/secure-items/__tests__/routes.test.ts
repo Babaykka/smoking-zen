@@ -6,8 +6,13 @@ import { createSecureItemRevealHandler } from '@/app/api/secure-items/[id]/revea
 import { createSecureItemHandler } from '@/app/api/secure-items/[id]/route';
 import { createSecureItemsHandler } from '@/app/api/secure-items/route';
 import { ConflictError, RestoreExpiredError } from '@/data/workspace-repository';
+import { unsafeSafeUrlFixtures } from '@/domain/__tests__/safe-content-fixtures';
 import type { SecureItemSummary } from '@/domain/types';
-import type { SecureItemApiStore, SecureItemRouteDependencies } from '@/server/secure-item-api';
+import {
+  SecureItemUrlNotAllowedError,
+  type SecureItemApiStore,
+  type SecureItemRouteDependencies,
+} from '@/server/secure-item-api';
 
 const actor = {
   userId: '11111111-1111-4111-8111-111111111111',
@@ -124,6 +129,25 @@ describe('secure-item routes', () => {
     expect(secureStore.createSecureItem).not.toHaveBeenCalled();
   });
 
+  it.each([
+    unsafeSafeUrlFixtures[1],
+    'https://vault.bitwarden.com/?4111.1111.1111.1111=x',
+    'https://vault.bitwarden.com/items/4111:1111:1111:1111',
+  ])('returns stable 400 for canonically unsafe create and update URLs before the database: %s', async (externalUrl) => {
+    const secureStore = store();
+    const collection = createSecureItemsHandler(dependencies(secureStore));
+    const created = await collection(request('https://app.example/api/secure-items', 'POST', { ...validInput, externalUrl }));
+    expect(created.status).toBe(400);
+    expect(secureStore.createSecureItem).not.toHaveBeenCalled();
+
+    const item = createSecureItemHandler(dependencies(secureStore));
+    const updated = await item(request(`https://app.example/api/secure-items/${itemId}`, 'PATCH', {
+      input: { externalUrl }, expectedVersion: 1,
+    }), { params: Promise.resolve({ id: itemId }) });
+    expect(updated.status).toBe(400);
+    expect(secureStore.updateSecureItem).not.toHaveBeenCalled();
+  });
+
   it('keeps update patches non-defaulting and maps stale versions without overwriting', async () => {
     const secureStore = store();
     const handler = createSecureItemHandler(dependencies(secureStore));
@@ -192,6 +216,18 @@ describe('secure-item routes', () => {
     expect(response.headers.get('cache-control')).toBe('no-store');
     expect(secureStore.revealSecureItem).toHaveBeenCalledWith(actor.workspaceId, itemId);
     expect(await response.json()).toMatchObject({ data: { externalUrl: validInput.externalUrl } });
+  });
+
+  it('maps canonical legacy reveal rejection to stable 422 without exposing the URL', async () => {
+    const secureStore = store();
+    vi.mocked(secureStore.revealSecureItem).mockRejectedValueOnce(new SecureItemUrlNotAllowedError());
+    const reveal = createSecureItemRevealHandler(dependencies(secureStore));
+    const response = await reveal(request(`https://app.example/api/secure-items/${itemId}/reveal`, 'POST'), {
+      params: Promise.resolve({ id: itemId }),
+    });
+
+    expect(response.status).toBe(422);
+    expect(JSON.stringify(await response.json())).not.toMatch(/4111|hunter2|vault\.bitwarden/iu);
   });
 
   it('keeps raw database/provider details out of error envelopes', async () => {

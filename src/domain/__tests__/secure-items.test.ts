@@ -6,6 +6,12 @@ import {
   secureItemInputSchema,
   secureItemPatchSchema,
 } from '@/domain/schemas';
+import {
+  safeSafeTextFixtures,
+  safeSafeUrlFixtures,
+  unsafeSafeTextFixtures,
+  unsafeSafeUrlFixtures,
+} from '@/domain/__tests__/safe-content-fixtures';
 
 const validItem = {
   title: 'Касса',
@@ -102,5 +108,21 @@ describe('secure item schemas', () => {
       cardPurpose: null,
       lastFour: null,
     }).success).toBe(true);
+  });
+
+  it.each(unsafeSafeTextFixtures)('rejects canonically disguised persisted secret or PAN text: %s', (purpose) => {
+    expect(secureItemInputSchema.safeParse({ ...validItem, purpose }).success).toBe(false);
+  });
+
+  it.each(safeSafeTextFixtures)('preserves benign normalized Safe prose: %s', (purpose) => {
+    expect(secureItemInputSchema.safeParse({ ...validItem, purpose }).success).toBe(true);
+  });
+
+  it.each(unsafeSafeUrlFixtures)('rejects canonically disguised path, query, or fragment data: %s', (externalUrl) => {
+    expect(secureItemInputSchema.safeParse({ ...validItem, externalUrl }).success).toBe(false);
+  });
+
+  it.each(safeSafeUrlFixtures)('preserves a benign canonical Safe URL: %s', (externalUrl) => {
+    expect(secureItemInputSchema.safeParse({ ...validItem, externalUrl }).success).toBe(true);
   });
 });

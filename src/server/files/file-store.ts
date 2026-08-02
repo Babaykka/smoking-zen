@@ -41,6 +41,7 @@ export interface FileBackend {
   parentExists(workspaceId: string, parent: AttachmentParent): Promise<boolean>;
   insertQuarantine(record: NewQuarantineAttachment): Promise<void>;
   deleteQuarantine(workspaceId: string, attachmentId: string, storagePath: string): Promise<void>;
+  retireExpiredQuarantine(workspaceId: string, attachmentId: string, storagePath: string): Promise<void>;
   expireQuarantine(workspaceId: string, attachmentId: string): Promise<void>;
   createSignedUploadUrl(storagePath: string): Promise<string>;
   getAttachment(workspaceId: string, attachmentId: string): Promise<StoredAttachment | null>;
@@ -298,26 +299,22 @@ export function createPrivateFileStore(backend: FileBackend, options: FileStoreO
 
     async cleanupExpiredUploads(now = clock(), limit = 100) {
       const boundedLimit = Math.max(1, Math.min(500, Math.trunc(limit)));
-      const [expired, queued] = await Promise.all([
-        backend.listExpiredQuarantines(now.toISOString(), boundedLimit),
-        backend.listQueuedObjects(now.toISOString(), boundedLimit),
-      ]);
+      const expired = await backend.listExpiredQuarantines(now.toISOString(), boundedLimit);
       let removed = 0;
       let failed = 0;
 
       for (const record of expired) {
         try {
-          await backend.deleteQuarantine(record.workspaceId, record.id, record.storagePath);
+          await backend.retireExpiredQuarantine(record.workspaceId, record.id, record.storagePath);
           removed += 1;
         } catch {
           failed += 1;
-          try {
-            await backend.expireQuarantine(record.workspaceId, record.id);
-          } catch {
-            // Retain the row for the next bounded cleanup pass.
-          }
         }
       }
+
+      // Retirement atomically queues its object only after the database clock
+      // proves expiry. Read the queue afterwards so the same sweep can remove it.
+      const queued = await backend.listQueuedObjects(now.toISOString(), boundedLimit);
       for (const object of queued) {
         try {
           const leaseId = await backend.prepareQueuedObjectRemoval(object.id);

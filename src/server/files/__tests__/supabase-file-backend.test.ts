@@ -34,4 +34,48 @@ describe('Supabase private-file backend', () => {
       p_ready_path: attachmentId,
     });
   });
+
+  it('authorizes retirement in the database before ordinary cleanup treats a missing object as removed', async () => {
+    const remove = vi.fn().mockResolvedValue({
+      data: null,
+      error: { message: 'Object not found', statusCode: '404' },
+    });
+    const rpc = vi.fn().mockResolvedValue({ data: true, error: null });
+    const client = {
+      rpc,
+      storage: { from: vi.fn(() => ({ remove })) },
+    } as unknown as SupabaseClient;
+    const backend = createSupabaseFileBackend(client) as ReturnType<typeof createSupabaseFileBackend> & {
+      retireExpiredQuarantine?: (workspace: string, attachment: string, path: string) => Promise<void>;
+    };
+
+    expect(backend.retireExpiredQuarantine).toBeTypeOf('function');
+    await expect(backend.retireExpiredQuarantine!(workspaceId, attachmentId, attachmentId)).resolves.toBeUndefined();
+    expect(rpc).toHaveBeenCalledWith('retire_expired_quarantine_attachment', {
+      p_workspace_id: workspaceId,
+      p_attachment_id: attachmentId,
+      p_expected_storage_path: attachmentId,
+    });
+    expect(remove).not.toHaveBeenCalled();
+
+    await expect(backend.removeObject(attachmentId)).resolves.toBeUndefined();
+    expect(remove).toHaveBeenCalledWith([attachmentId]);
+    expect(rpc.mock.invocationCallOrder[0]).toBeLessThan(remove.mock.invocationCallOrder[0]!);
+  });
+
+  it.each(['attachment_retire_not_expired', 'attachment_retire_not_found'])(
+    'never touches Storage when database retirement rejects %s',
+    async (message) => {
+      const remove = vi.fn();
+      const rpc = vi.fn().mockResolvedValue({ data: null, error: { message } });
+      const client = {
+        rpc,
+        storage: { from: vi.fn(() => ({ remove })) },
+      } as unknown as SupabaseClient;
+      const backend = createSupabaseFileBackend(client);
+
+      await expect(backend.retireExpiredQuarantine(workspaceId, attachmentId, attachmentId)).rejects.toThrow();
+      expect(remove).not.toHaveBeenCalled();
+    },
+  );
 });

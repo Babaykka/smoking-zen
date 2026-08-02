@@ -20,11 +20,28 @@ const idSchema = (label: string) => z
 
 const nullableIdSchema = idSchema('Значение').nullable().optional();
 const optionalTextSchema = z.string({ error: 'Заметка должна быть текстом.' }).trim().max(10_000, 'Заметка слишком длинная.').optional();
-const secretLikeText = /(?:^|[^\p{L}\p{N}])(?:password|passphrase|secret|token|credential|pin|cvv|cvc|otp|confirmation(?:[\s._/-]+code)?|пароль|секрет|токен|пин|(?:код[\s._/-]*)?подтвержден\p{L}*)(?:(?:\s*[:=/_\.-]+\s*)\S+|\s+(?=\S*(?:\d|[._~+/=-]))\S+)/iu;
-const completeCardLikeText = /\d(?:[\s._/-]*\d){12,18}/u;
+const SAFE_SCAN_ZERO_WIDTH = /[\u200b\u200c\u200d\u2060\ufeff]/gu;
+const SAFE_SCAN_SEPARATORS = /[\p{Pd}+:\/_\.=]+/gu;
+const secretLikeText = /(?:^|[^\p{L}\p{N}])(?:password|passphrase|secret|token|credential|pin|cvv|cvc|otp|confirmation(?:[ /]+code)?|пароль|секрет|токен|пин|(?:код[ /]*)?подтвержден\p{L}*)(?:(?: *\/+ *)\S+| +(?=\S*(?:\d|[/~]))\S+)/iu;
+const completeCardLikeText = /\d(?:[ /]*\d){12,18}/u;
+
+function normalizeSafeText(value: string): string {
+  return value.normalize('NFKC').replace(SAFE_SCAN_ZERO_WIDTH, '');
+}
+
+export function normalizeSafeScanText(value: string): string {
+  return normalizeSafeText(value)
+    .replace(SAFE_SCAN_SEPARATORS, '/')
+    .replace(/\s+/gu, ' ');
+}
+
+function containsCredentialLikeText(value: string): boolean {
+  return secretLikeText.test(normalizeSafeScanText(value));
+}
 
 export function containsSecretLikeText(value: string): boolean {
-  return secretLikeText.test(value) || completeCardLikeText.test(value);
+  const scanned = normalizeSafeScanText(value);
+  return secretLikeText.test(scanned) || completeCardLikeText.test(scanned);
 }
 
 const safeFreeText = (schema: z.ZodString) => schema.refine(
@@ -48,7 +65,7 @@ function passesLuhn(value: string): boolean {
 }
 
 function containsContactSecret(kind: ContactMethodKind, value: string): boolean {
-  if (secretLikeText.test(value)) return true;
+  if (containsCredentialLikeText(value)) return true;
   const digits = value.replace(/\D/g, '');
   if (digits.length < 13 || digits.length > 19 || /^(\d)\1+$/.test(digits) || !passesLuhn(digits)) return false;
   return !((kind === 'phone' || kind === 'whatsapp') && /^\+[\d\s().-]+$/.test(value.trim()) && digits.length <= 15);
@@ -234,7 +251,7 @@ function decodeUrlComponent(value: string): string | null {
 }
 
 function containsUrlSecret(value: string): boolean {
-  const withoutLegitimateUuid = value.replace(
+  const withoutLegitimateUuid = normalizeSafeText(value).replace(
     /[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}/giu,
     '',
   );
@@ -253,7 +270,9 @@ export function isAllowedBitwardenUrl(value: string, selfHostedOrigins: readonly
       const decodedKey = decodeUrlComponent(key);
       const decodedValue = decodeUrlComponent(queryValue);
       return decodedKey !== null && decodedValue !== null
-        && !secretQueryKey.test(decodedKey) && !containsUrlSecret(decodedValue);
+        && !secretQueryKey.test(normalizeSafeText(decodedKey))
+        && !containsUrlSecret(decodedKey)
+        && !containsUrlSecret(decodedValue);
     });
   } catch {
     return false;

@@ -41,7 +41,11 @@ export class FileValidationError extends Error {
   }
 }
 
-const FORBIDDEN_TEXT_FRAGMENT = /<[^>]+>/u;
+const MARKUP_LIKE_TEXT = /(?:<!--|<!doctype(?:\s|>)|<\?xml(?:\s|\?>)|<\/?[a-z][^>]*>)/iu;
+
+export function containsMarkupLikeText(value: string): boolean {
+  return MARKUP_LIKE_TEXT.test(value);
+}
 
 function startsWith(bytes: Uint8Array, signature: readonly number[], offset = 0): boolean {
   return signature.every((byte, index) => bytes[offset + index] === byte);
@@ -108,7 +112,7 @@ function validateHeader(extension: AllowedFileExtension, bytes: Uint8Array): voi
     case 'txt': {
       if (bytes.some((byte) => byte === 0)) throw new FileValidationError('TXT не должен содержать нулевые байты.');
       const text = new TextDecoder('utf-8').decode(bytes);
-      if (FORBIDDEN_TEXT_FRAGMENT.test(text)) throw new FileValidationError('HTML, XML и SVG нельзя загружать как TXT.');
+      if (containsMarkupLikeText(text)) throw new FileValidationError('HTML, XML и SVG нельзя загружать как TXT.');
     }
   }
 }

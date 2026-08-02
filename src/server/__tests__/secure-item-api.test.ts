@@ -4,6 +4,7 @@ import type { SupabaseClient } from '@supabase/supabase-js';
 import { describe, expect, it, vi } from 'vitest';
 
 import { createSupabaseSecureItemStore, SECURE_ITEM_SUMMARY_COLUMNS } from '@/server/secure-item-api';
+import { unsafeSafeUrlFixtures } from '@/domain/__tests__/safe-content-fixtures';
 
 const workspaceId = '33333333-3333-4333-8333-333333333333';
 const itemId = 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa';
@@ -94,6 +95,14 @@ describe('Supabase secure-item adapter', () => {
     'https://vault.bitwarden.com/#/items/password%25252Fhunter2',
     'https://vault.bitwarden.com/#/items/4111.1111.1111.1111',
   ])('applies the current decoded secret/PAN predicate when revealing legacy URL %s', async (externalUrl) => {
+    const builder = query({ data: { external_url: externalUrl }, error: null });
+    const client = { from: vi.fn(() => builder) } as unknown as SupabaseClient;
+    const store = createSupabaseSecureItemStore(client, () => client, []);
+
+    await expect(store.revealSecureItem(workspaceId, itemId)).rejects.toThrow(/больше не разрешена/iu);
+  });
+
+  it.each(unsafeSafeUrlFixtures)('rejects a canonically disguised legacy reveal URL %s', async (externalUrl) => {
     const builder = query({ data: { external_url: externalUrl }, error: null });
     const client = { from: vi.fn(() => builder) } as unknown as SupabaseClient;
     const store = createSupabaseSecureItemStore(client, () => client, []);

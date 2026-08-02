@@ -5,6 +5,13 @@ import { readFile } from 'node:fs/promises';
 import { PGlite } from '@electric-sql/pglite';
 import { afterEach, describe, expect, it } from 'vitest';
 
+import {
+  safeSafeTextFixtures,
+  safeSafeUrlFixtures,
+  unsafeSafeTextFixtures,
+  unsafeSafeUrlFixtures,
+} from '@/domain/__tests__/safe-content-fixtures';
+
 const MIGRATIONS = [
   'supabase/migrations/0001_workspace_schema.sql',
   'supabase/migrations/0002_rls_storage_realtime.sql',
@@ -17,6 +24,7 @@ const MIGRATIONS = [
   'supabase/migrations/0009_private_files_secure_items.sql',
   'supabase/migrations/0010_task6_ambiguous_file_cleanup.sql',
   'supabase/migrations/0011_task6_late_cleanup_safe_convergence.sql',
+  'supabase/migrations/0012_task6_cleanup_retirement_canonical_safe.sql',
 ];
 
 const databases: PGlite[] = [];
@@ -389,6 +397,279 @@ describe('private file and secure-item schema runtime', () => {
     expect(guard.rows).toEqual([{ lease_id: null, delayed: true }]);
   });
 
+  it('keeps an expired stale lease tombstone until a reclaimed lease performs a second removal', async () => {
+    const database = await createDatabase();
+    const owner = await bootstrapOwner(database);
+    const status = await database.query<{ id: string }>(
+      "select id from public.task_statuses where workspace_id = $1 and name = 'Новая'", [owner.workspace_id],
+    );
+    const task = await database.query<{ id: string }>(`
+      insert into public.tasks (workspace_id, title, status_id)
+      values ($1, 'Stale cleanup finish', $2) returning id
+    `, [owner.workspace_id, status.rows[0]!.id]);
+    const attachmentId = 'a0000000-0000-4000-8000-000000000009';
+    const quarantinePath = '10000000-0000-4000-8000-000000000009';
+    await database.query(`
+      insert into public.attachments (
+        id, workspace_id, task_id, name, mime_type, size_bytes, storage_path, created_by, quarantine_expires_at
+      ) values ($1, $2, $3, 'stale.txt', 'text/plain', 16, $4, $5, clock_timestamp() + interval '15 minutes')
+    `, [attachmentId, owner.workspace_id, task.rows[0]!.id, quarantinePath, owner.user_id]);
+    const armed = await database.query<{ queue_id: string }>(
+      'select public.arm_attachment_ready_cleanup($1, $2, $3) as queue_id',
+      [owner.workspace_id, attachmentId, attachmentId],
+    );
+    await database.query(`
+      update public.attachments
+      set quarantine_expires_at = clock_timestamp() - interval '25 hours'
+      where id = $1
+    `, [attachmentId]);
+    await database.query(`
+      update public.file_cleanup_queue
+      set remove_after = clock_timestamp() - interval '25 hours',
+          retain_until = clock_timestamp() - interval '1 hour'
+      where id = $1
+    `, [armed.rows[0]!.queue_id]);
+
+    const first = await database.query<{ lease_id: string }>(
+      'select public.prepare_file_cleanup_object($1)::text as lease_id', [armed.rows[0]!.queue_id],
+    );
+    await database.query(`
+      update public.file_cleanup_queue
+      set lease_expires_at = clock_timestamp() - interval '1 second'
+      where id = $1
+    `, [armed.rows[0]!.queue_id]);
+    const beforeStaleFinish = await database.query<{
+      id: string; lease_id: string; remove_after: string; retain_until: string;
+    }>(`
+      select id::text, lease_id::text, remove_after::text, retain_until::text
+      from public.file_cleanup_queue where id = $1
+    `, [armed.rows[0]!.queue_id]);
+
+    const stale = await database.query<{ removed: boolean }>(
+      'select public.finish_file_cleanup_object($1, $2) as removed',
+      [armed.rows[0]!.queue_id, first.rows[0]!.lease_id],
+    );
+    expect(stale.rows).toEqual([{ removed: false }]);
+    expect((await database.query(`
+      select id::text, lease_id::text, remove_after::text, retain_until::text
+      from public.file_cleanup_queue where id = $1
+    `, [armed.rows[0]!.queue_id])).rows).toEqual(beforeStaleFinish.rows);
+
+    const reclaimed = await database.query<{ lease_id: string }>(
+      'select public.prepare_file_cleanup_object($1)::text as lease_id', [armed.rows[0]!.queue_id],
+    );
+    expect(reclaimed.rows[0]!.lease_id).not.toBe(first.rows[0]!.lease_id);
+    expect((await database.query<{ removed: boolean }>(
+      'select public.finish_file_cleanup_object($1, $2) as removed',
+      [armed.rows[0]!.queue_id, first.rows[0]!.lease_id],
+    )).rows).toEqual([{ removed: false }]);
+    expect((await database.query<{ removed: boolean }>(
+      'select public.finish_file_cleanup_object($1, $2) as removed',
+      [armed.rows[0]!.queue_id, reclaimed.rows[0]!.lease_id],
+    )).rows).toEqual([{ removed: true }]);
+    expect((await database.query<{ count: number }>(
+      'select count(*)::int as count from public.file_cleanup_queue where id = $1', [armed.rows[0]!.queue_id],
+    )).rows).toEqual([{ count: 0 }]);
+  });
+
+  it('returns one durable guard UUID when concurrent first-arm callers hit the insert conflict path', async () => {
+    const database = await createDatabase();
+    const owner = await bootstrapOwner(database);
+    const status = await database.query<{ id: string }>(
+      "select id from public.task_statuses where workspace_id = $1 and name = 'Новая'", [owner.workspace_id],
+    );
+    const task = await database.query<{ id: string }>(`
+      insert into public.tasks (workspace_id, title, status_id)
+      values ($1, 'Concurrent arm', $2) returning id
+    `, [owner.workspace_id, status.rows[0]!.id]);
+    const attachmentId = 'a0000000-0000-4000-8000-000000000010';
+    await database.query(`
+      insert into public.attachments (
+        id, workspace_id, task_id, name, mime_type, size_bytes, storage_path, created_by, quarantine_expires_at
+      ) values ($1, $2, $3, 'arm.txt', 'text/plain', 16,
+        '10000000-0000-4000-8000-000000000010', $4, clock_timestamp() + interval '15 minutes')
+    `, [attachmentId, owner.workspace_id, task.rows[0]!.id, owner.user_id]);
+
+    await database.exec(`
+      create or replace function private.inject_first_guard_conflict()
+      returns trigger language plpgsql set search_path = '' as $$
+      begin
+        if current_setting('test.inject_first_guard_conflict', true) = 'on' then
+          perform set_config('test.inject_first_guard_conflict', 'off', false);
+          insert into public.file_cleanup_queue (
+            id, workspace_id, attachment_id, storage_path, remove_after, retain_until
+          ) values (
+            '90000000-0000-4000-8000-000000000010', new.workspace_id,
+            new.attachment_id, new.storage_path, new.remove_after, new.retain_until
+          );
+        end if;
+        return new;
+      end;
+      $$;
+      create trigger inject_first_guard_conflict
+      before insert on public.file_cleanup_queue
+      for each row execute function private.inject_first_guard_conflict();
+      select set_config('test.inject_first_guard_conflict', 'on', false);
+    `);
+
+    const calls = await Promise.all([
+      database.query<{ queue_id: string }>(
+        'select public.arm_attachment_ready_cleanup($1, $2, $3) as queue_id',
+        [owner.workspace_id, attachmentId, attachmentId],
+      ),
+      database.query<{ queue_id: string }>(
+        'select public.arm_attachment_ready_cleanup($1, $2, $3) as queue_id',
+        [owner.workspace_id, attachmentId, attachmentId],
+      ),
+    ]);
+
+    expect(calls.map(({ rows }) => rows[0]!.queue_id)).toEqual([
+      '90000000-0000-4000-8000-000000000010',
+      '90000000-0000-4000-8000-000000000010',
+    ]);
+    expect((await database.query<{ count: number }>(`
+      select count(*)::int as count from public.file_cleanup_queue
+      where workspace_id = $1 and storage_path = $2
+    `, [owner.workspace_id, attachmentId])).rows).toEqual([{ count: 1 }]);
+  });
+
+  it('rejects a global ready-path guard collision from another workspace without changing its scope', async () => {
+    const database = await createDatabase();
+    const first = await bootstrapOwner(database);
+    const second = (await database.query<{ user_id: string; workspace_id: string }>(`select * from public.bootstrap_telegram_user(
+      '4503599627370493', 'Collision owner', null, 'owner_collision', 'ru',
+      '4503599627370493', 'Collision workspace'
+    )`)).rows[0]!;
+    const firstStatus = await database.query<{ id: string }>(
+      "select id from public.task_statuses where workspace_id = $1 and name = 'Новая'", [first.workspace_id],
+    );
+    const secondStatus = await database.query<{ id: string }>(
+      "select id from public.task_statuses where workspace_id = $1 and name = 'Новая'", [second.workspace_id],
+    );
+    const firstTask = await database.query<{ id: string }>(`
+      insert into public.tasks (workspace_id, title, status_id) values ($1, 'Guard owner', $2) returning id
+    `, [first.workspace_id, firstStatus.rows[0]!.id]);
+    const secondTask = await database.query<{ id: string }>(`
+      insert into public.tasks (workspace_id, title, status_id) values ($1, 'Guard collision', $2) returning id
+    `, [second.workspace_id, secondStatus.rows[0]!.id]);
+    const firstAttachmentId = 'a0000000-0000-4000-8000-000000000011';
+    const secondAttachmentId = 'a0000000-0000-4000-8000-000000000012';
+    await database.query(`
+      insert into public.attachments (
+        id, workspace_id, task_id, name, mime_type, size_bytes, storage_path, created_by, quarantine_expires_at
+      ) values ($1, $2, $3, 'owner.txt', 'text/plain', 16,
+        '10000000-0000-4000-8000-000000000011', $4, clock_timestamp() + interval '15 minutes')
+    `, [firstAttachmentId, first.workspace_id, firstTask.rows[0]!.id, first.user_id]);
+    await database.query(`
+      insert into public.attachments (
+        id, workspace_id, task_id, name, mime_type, size_bytes, storage_path, created_by, quarantine_expires_at
+      ) values ($1, $2, $3, 'collision.txt', 'text/plain', 16,
+        '10000000-0000-4000-8000-000000000012', $4, clock_timestamp() + interval '15 minutes')
+    `, [secondAttachmentId, second.workspace_id, secondTask.rows[0]!.id, second.user_id]);
+    const original = await database.query<{ id: string }>(`
+      insert into public.file_cleanup_queue (workspace_id, attachment_id, storage_path, remove_after)
+      values ($1, $2, $3, clock_timestamp()) returning id
+    `, [first.workspace_id, firstAttachmentId, secondAttachmentId]);
+
+    await expect(database.query(
+      'select public.arm_attachment_ready_cleanup($1, $2, $3)',
+      [second.workspace_id, secondAttachmentId, secondAttachmentId],
+    )).rejects.toThrow(/attachment_cleanup_guard_scope_conflict/iu);
+    expect((await database.query<{ id: string; workspace_id: string; attachment_id: string }>(`
+      select id::text, workspace_id::text, attachment_id::text
+      from public.file_cleanup_queue where storage_path = $1
+    `, [secondAttachmentId])).rows).toEqual([{
+      id: original.rows[0]!.id,
+      workspace_id: first.workspace_id,
+      attachment_id: firstAttachmentId,
+    }]);
+  });
+
+  it('soft-retires only same-workspace expired quarantines while retaining their late-ready guard', async () => {
+    const database = await createDatabase();
+    const owner = await bootstrapOwner(database);
+    const outsider = (await database.query<{ workspace_id: string }>(`select * from public.bootstrap_telegram_user(
+      '4503599627370492', 'Retire outsider', null, 'owner_retire_outsider', 'ru',
+      '4503599627370492', 'Retire outsider workspace'
+    )`)).rows[0]!;
+    const status = await database.query<{ id: string }>(
+      "select id from public.task_statuses where workspace_id = $1 and name = 'Новая'", [owner.workspace_id],
+    );
+    const task = await database.query<{ id: string }>(`
+      insert into public.tasks (workspace_id, title, status_id)
+      values ($1, 'Retire expiry', $2) returning id
+    `, [owner.workspace_id, status.rows[0]!.id]);
+    const expiredId = 'a0000000-0000-4000-8000-000000000013';
+    const unexpiredId = 'a0000000-0000-4000-8000-000000000014';
+    const readyId = 'a0000000-0000-4000-8000-000000000015';
+    const expiredPath = '10000000-0000-4000-8000-000000000013';
+    const unexpiredPath = '10000000-0000-4000-8000-000000000014';
+    await database.query(`
+      insert into public.attachments (
+        id, workspace_id, task_id, name, mime_type, size_bytes, storage_path, created_by, quarantine_expires_at
+      ) values
+        ($1, $2, $3, 'expired.txt', 'text/plain', 16, $4, $5, clock_timestamp() + interval '15 minutes'),
+        ($6, $2, $3, 'unexpired.txt', 'text/plain', 16, $7, $5, clock_timestamp() + interval '15 minutes')
+    `, [expiredId, owner.workspace_id, task.rows[0]!.id, expiredPath, owner.user_id, unexpiredId, unexpiredPath]);
+    await database.query(`
+      insert into public.attachments (
+        id, workspace_id, task_id, name, mime_type, size_bytes, storage_path, state,
+        sha256, created_by, quarantine_expires_at, completed_at
+      ) values ($1, $2, $3, 'ready.txt', 'text/plain', 16, $5, 'ready', repeat('f', 64), $4, null, clock_timestamp())
+    `, [readyId, owner.workspace_id, task.rows[0]!.id, owner.user_id, readyId]);
+    const guard = await database.query<{ queue_id: string }>(
+      'select public.arm_attachment_ready_cleanup($1, $2, $3) as queue_id',
+      [owner.workspace_id, expiredId, expiredId],
+    );
+    await database.query(`
+      update public.attachments set quarantine_expires_at = clock_timestamp() - interval '1 second'
+      where id = $1
+    `, [expiredId]);
+
+    const retired = await database.query<{ retired: boolean }>(`
+      select public.retire_expired_quarantine_attachment($1, $2, $3) as retired
+    `, [owner.workspace_id, expiredId, expiredPath]);
+    expect(retired.rows).toEqual([{ retired: true }]);
+    expect((await database.query<{ retired: boolean }>(`
+      select public.retire_expired_quarantine_attachment($1, $2, $3) as retired
+    `, [owner.workspace_id, expiredId, expiredPath])).rows).toEqual([{ retired: true }]);
+    expect((await database.query<{ deleted: boolean }>(
+      'select deleted_at is not null as deleted from public.attachments where id = $1', [expiredId],
+    )).rows).toEqual([{ deleted: true }]);
+    expect((await database.query<{ count: number }>(
+      'select count(*)::int as count from public.file_cleanup_queue where id = $1', [guard.rows[0]!.queue_id],
+    )).rows).toEqual([{ count: 1 }]);
+    expect((await database.query<{ count: number }>(`
+      select count(*)::int as count from public.file_cleanup_queue
+      where workspace_id = $1 and attachment_id = $2 and storage_path = $3
+    `, [owner.workspace_id, expiredId, expiredPath])).rows).toEqual([{ count: 1 }]);
+
+    await expect(database.query(`
+      select public.retire_expired_quarantine_attachment($1, $2, $3)
+    `, [owner.workspace_id, unexpiredId, unexpiredPath])).rejects.toThrow(/attachment_retire_not_expired/iu);
+    await expect(database.query(`
+      select public.retire_expired_quarantine_attachment($1, $2, $3)
+    `, [owner.workspace_id, readyId, readyId])).rejects.toThrow(/attachment_retire_invalid_state/iu);
+    await expect(database.query(`
+      select public.retire_expired_quarantine_attachment($1, $2, $3)
+    `, [outsider.workspace_id, expiredId, expiredPath])).rejects.toThrow(/attachment_retire_not_found/iu);
+    expect((await database.query<{ count: number }>(`
+      select count(*)::int as count from public.file_cleanup_queue
+      where storage_path in ($1, $2)
+    `, [unexpiredPath, readyId])).rows).toEqual([{ count: 0 }]);
+    expect((await database.query<{ deleted: boolean }>(
+      'select deleted_at is not null as deleted from public.attachments where id = $1', [readyId],
+    )).rows).toEqual([{ deleted: false }]);
+    expect((await database.query<{
+      anon: boolean; auth: boolean; service: boolean;
+    }>(`
+      select
+        has_function_privilege('anon', 'public.retire_expired_quarantine_attachment(uuid,uuid,text)', 'execute') as anon,
+        has_function_privilege('authenticated', 'public.retire_expired_quarantine_attachment(uuid,uuid,text)', 'execute') as auth,
+        has_function_privilege('service_role', 'public.retire_expired_quarantine_attachment(uuid,uuid,text)', 'execute') as service
+    `)).rows).toEqual([{ anon: false, auth: false, service: true }]);
+  });
+
   it('reapplies 0010 without mutating an existing legacy attachment version or timestamp', async () => {
     const migration0010 = 'supabase/migrations/0010_task6_ambiguous_file_cleanup.sql';
     const before0010 = MIGRATIONS.slice(0, MIGRATIONS.indexOf(migration0010));
@@ -423,21 +704,32 @@ describe('private file and secure-item schema runtime', () => {
   it('converges unsafe legacy metadata and URL values before installing strict Safe constraints', async () => {
     const database = await createDatabase(MIGRATIONS.slice(0, 8), false);
     const owner = await bootstrapOwner(database);
-    await database.query(`
-      insert into public.secure_items (workspace_id, title, external_url, metadata)
-      values ($1, 'Legacy unsafe', 'https://vault.bitwarden.com/#/items/access_token/abc.def',
-        '{"purpose":"password hunter2","owner":"4111.1111.1111.1111"}'::jsonb)
-    `, [owner.workspace_id]);
+    const legacyRows = [
+      ['Legacy unsafe', 'password hunter2', '4111.1111.1111.1111', 'https://vault.bitwarden.com/#/items/access_token/abc.def'],
+      ['Legacy dash', 'password—hunter2', 'Команда', 'https://vault.bitwarden.com/#/items/example'],
+      ['Legacy plus PAN', 'Политика паролей', '4111+1111+1111+1111', 'https://vault.bitwarden.com/#/items/example'],
+      ['Legacy zero width', 'pass\u200bword/hunter2', 'Команда', 'https://vault.bitwarden.com/#/items/example'],
+      ['Legacy fullwidth URL', 'Политика паролей', 'Команда', 'https://vault.bitwarden.com/#/items/ｐａｓｓｗｏｒｄ：ｈｕｎｔｅｒ２'],
+    ] as const;
+    for (const [title, purpose, itemOwner, externalUrl] of legacyRows) {
+      await database.query(`
+        insert into public.secure_items (workspace_id, title, external_url, metadata)
+        values ($1, $2, $3, jsonb_build_object('purpose', $4::text, 'owner', $5::text))
+      `, [owner.workspace_id, title, externalUrl, purpose, itemOwner]);
+    }
     for (const filename of MIGRATIONS.slice(8)) await applyMigration(database, filename);
 
-    const row = await database.query<{ purpose: string; owner: string; external_url: string }>(`
-      select purpose, owner, external_url from public.secure_items where workspace_id = $1
+    const rows = await database.query<{ title: string; purpose: string; owner: string; external_url: string }>(`
+      select title, purpose, owner, external_url
+      from public.secure_items where workspace_id = $1 order by title
     `, [owner.workspace_id]);
-    expect(row.rows).toEqual([{
-      purpose: 'Ссылка на запись в Bitwarden',
-      owner: 'Команда',
-      external_url: 'https://vault.bitwarden.com/',
-    }]);
+    expect(rows.rows).toEqual([
+      { title: 'Legacy dash', purpose: 'Ссылка на запись в Bitwarden', owner: 'Команда', external_url: 'https://vault.bitwarden.com/#/items/example' },
+      { title: 'Legacy fullwidth URL', purpose: 'Политика паролей', owner: 'Команда', external_url: 'https://vault.bitwarden.com/' },
+      { title: 'Legacy plus PAN', purpose: 'Политика паролей', owner: 'Команда', external_url: 'https://vault.bitwarden.com/#/items/example' },
+      { title: 'Legacy unsafe', purpose: 'Ссылка на запись в Bitwarden', owner: 'Команда', external_url: 'https://vault.bitwarden.com/' },
+      { title: 'Legacy zero width', purpose: 'Ссылка на запись в Bitwarden', owner: 'Команда', external_url: 'https://vault.bitwarden.com/#/items/example' },
+    ]);
     const unsafe = await database.query<{ count: number }>(`
       select count(*)::int as count
       from public.secure_items
@@ -452,7 +744,9 @@ describe('private file and secure-item schema runtime', () => {
   it('rejects unsafe fresh Safe summaries and nested encoded URLs while preserving benign UUID routes', async () => {
     const database = await createDatabase();
     const owner = await bootstrapOwner(database);
-    for (const purpose of ['password/hunter2', 'access_token/abc.def', '4111.1111.1111.1111']) {
+    for (const purpose of [
+      'password/hunter2', 'access_token/abc.def', '4111.1111.1111.1111', ...unsafeSafeTextFixtures,
+    ]) {
       await expect(database.query(`
         insert into public.secure_items (workspace_id, title, purpose, owner, external_url)
         values ($1, 'Unsafe summary', $2, 'Команда', 'https://vault.bitwarden.com/#/items/example')
@@ -465,6 +759,7 @@ describe('private file and secure-item schema runtime', () => {
       'https://vault.bitwarden.com/#/items/password%25252Fhunter2',
       'https://vault.bitwarden.com/#/items/4111_1111_1111_1111',
       'https://vault.bitwarden.com/#/items/%252561%252563%252563%252565%252573%252573%25255f%252574%25256f%25256b%252565%25256e%252fabc.def',
+      ...unsafeSafeUrlFixtures,
     ]) {
       await expect(database.query(`
         insert into public.secure_items (workspace_id, title, purpose, owner, external_url)
@@ -476,6 +771,30 @@ describe('private file and secure-item schema runtime', () => {
       values ($1, 'Benign UUID', 'Пароль хранится в Bitwarden', 'Команда',
         'https://vault.bitwarden.com/#/vault/item/123e4567-e89b-12d3-a456-426614174000')
     `, [owner.workspace_id])).resolves.toBeDefined();
+  });
+
+  it('matches the application canonical Safe fixture matrix in SQL', async () => {
+    const database = await createDatabase();
+    for (const value of unsafeSafeTextFixtures) {
+      expect((await database.query<{ safe: boolean }>(
+        'select private.secure_item_text_is_safe($1) as safe', [value],
+      )).rows).toEqual([{ safe: false }]);
+    }
+    for (const value of safeSafeTextFixtures) {
+      expect((await database.query<{ safe: boolean }>(
+        'select private.secure_item_text_is_safe($1) as safe', [value],
+      )).rows).toEqual([{ safe: true }]);
+    }
+    for (const value of unsafeSafeUrlFixtures) {
+      expect((await database.query<{ safe: boolean }>(
+        'select private.secure_item_url_is_safe($1) as safe', [value],
+      )).rows).toEqual([{ safe: false }]);
+    }
+    for (const value of safeSafeUrlFixtures) {
+      expect((await database.query<{ safe: boolean }>(
+        'select private.secure_item_url_is_safe($1) as safe', [value],
+      )).rows).toEqual([{ safe: true }]);
+    }
   });
 
   it('rejects cross-workspace cleanup references and globally duplicated opaque object names', async () => {

@@ -288,6 +288,20 @@ describe('actual-byte file validation', () => {
     expect(key).not.toMatch(/quarantine|ready|33333333/iu);
   });
 
+  it('accepts legitimate comparison prose during complete TXT validation', async () => {
+    const comparison = Buffer.from('Диапазон: 2 < 3 и 5 > 4.\n', 'utf8');
+    await expect(validateFile({
+      name: 'notes.txt', declaredMime: 'text/plain', declaredSize: comparison.length, bytes: comparison,
+    })).resolves.toMatchObject({ bytes: comparison, mimeType: 'text/plain' });
+  });
+
+  it('accepts legitimate comparison prose during TXT preflight', () => {
+    const headerBytes = Buffer.from('Диапазон: 2 < 3 и 5 > 4.\n', 'utf8');
+    expect(() => validateUpload({
+      name: 'notes.txt', declaredMime: 'text/plain', size: headerBytes.length, headerBytes,
+    })).not.toThrow();
+  });
+
   it('rejects an HTML fragment anywhere in the TXT preflight window', () => {
     const headerBytes = Buffer.from('Обычный текст перед фрагментом.\n<strong>HTML</strong>\n', 'utf8');
     expect(() => validateUpload({
@@ -296,6 +310,10 @@ describe('actual-byte file validation', () => {
   });
 
   it.each([
+    '<!-- hidden -->',
+    '<!doctype html>',
+    '<?xml version="1.0"?>',
+    '<strong>HTML</strong>',
     '<svg/onload=alert(1)>',
     '<img/src=x onerror=alert(1)>',
     '<details/open/ontoggle=alert(1)>',

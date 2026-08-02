@@ -14,11 +14,16 @@ import type {
 const FILE_BUCKET = 'workspace-files';
 const UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/iu;
 
-type Result = { data: unknown; error: { message?: string } | null };
+type ResultError = { message?: string; status?: number | string; statusCode?: number | string };
+type Result = { data: unknown; error: ResultError | null };
 
 function dataOrThrow(result: Result): unknown {
   if (result.error) throw new Error('Private file backend operation failed.');
   return result.data;
+}
+
+function isMissingStorageObject(error: ResultError | null): boolean {
+  return error !== null && Number(error.statusCode ?? error.status) === 404;
 }
 
 function storedAttachment(value: unknown): StoredAttachment {
@@ -80,6 +85,15 @@ export function createSupabaseFileBackend(client: SupabaseClient): FileBackend {
       const result = await client.from('attachments').delete()
         .eq('workspace_id', workspaceId).eq('id', attachmentId).eq('state', 'quarantine') as Result;
       dataOrThrow(result);
+    },
+
+    async retireExpiredQuarantine(workspaceId, attachmentId, storagePath) {
+      const result = await client.rpc('retire_expired_quarantine_attachment', {
+        p_workspace_id: workspaceId,
+        p_attachment_id: attachmentId,
+        p_expected_storage_path: storagePath,
+      }) as Result;
+      if (dataOrThrow(result) !== true) throw new Error('Expired quarantine was not retired.');
     },
 
     async expireQuarantine(workspaceId, attachmentId) {
@@ -181,8 +195,8 @@ export function createSupabaseFileBackend(client: SupabaseClient): FileBackend {
     },
 
     async removeObject(storagePath) {
-      const result = await bucket.remove([storagePath]);
-      dataOrThrow(result as Result);
+      const result = await bucket.remove([storagePath]) as Result;
+      if (result.error && !isMissingStorageObject(result.error)) dataOrThrow(result);
     },
 
     async createSignedDownloadUrl(storagePath, expiresIn, downloadName) {
