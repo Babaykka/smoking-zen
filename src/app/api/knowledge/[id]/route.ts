@@ -3,7 +3,7 @@ import { z } from 'zod';
 import { ConflictError } from '@/data/workspace-repository';
 import { knowledgePatchSchema } from '@/domain/schemas';
 import { ServerConfigurationError } from '@/server/env';
-import { apiResponse, hasSameOrigin, readJsonObject } from '@/server/http';
+import { apiResponse, hasSameOrigin, readJsonObject, WORKSPACE_MAX_JSON_BYTES } from '@/server/http';
 import { createDefaultKnowledgeContactRouteDependencies, type KnowledgeContactRouteDependencies } from '@/server/knowledge-contact-api';
 
 type RouteContext = { params: Promise<{ id: string }> };
@@ -20,7 +20,7 @@ export function createKnowledgeItemHandler(dependencies: KnowledgeContactRouteDe
     if (!actor) return apiResponse(requestId, 401, null, { code: 'session_invalid', message: 'Требуется авторизация.' });
     const { id } = await context.params;
     if (!id || id.length > 200) return apiResponse(requestId, 400, null, { code: 'invalid_request', message: 'Некорректный запрос.' });
-    const body = await readJsonObject(request);
+    const body = await readJsonObject(request, WORKSPACE_MAX_JSON_BYTES);
     try {
       if (request.method === 'PATCH') {
         const restore = restoreSchema.safeParse(body);
@@ -37,6 +37,7 @@ export function createKnowledgeItemHandler(dependencies: KnowledgeContactRouteDe
       return apiResponse(requestId, 405, null, { code: 'method_not_allowed', message: 'Метод не поддерживается.' });
     } catch (error) {
       if (error instanceof ConflictError) return apiResponse(requestId, 409, { expectedVersion: error.expectedVersion, actualVersion: error.actualVersion }, { code: 'version_conflict', message: error.message });
+      if (error instanceof z.ZodError) return apiResponse(requestId, 400, null, { code: 'invalid_request', message: error.issues[0]?.message ?? 'Некорректный запрос.' });
       return apiResponse(requestId, 500, null, { code: 'internal_error', message: 'Не удалось выполнить запрос.' });
     }
   };

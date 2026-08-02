@@ -1,10 +1,11 @@
 import { z } from 'zod';
 
+import { MAX_SEARCH_QUERY_LENGTH } from '@/domain/search';
 import { ServerConfigurationError } from '@/server/env';
 import { apiResponse, hasSameOrigin, readJsonObject } from '@/server/http';
 import { createDefaultKnowledgeContactRouteDependencies, type KnowledgeContactRouteDependencies } from '@/server/knowledge-contact-api';
 
-const searchSchema = z.object({ query: z.string().trim().min(1, 'Введите поисковый запрос.').max(120, 'Поисковый запрос слишком длинный.') }).strict();
+const searchSchema = z.object({ query: z.string().trim().min(1, 'Введите поисковый запрос.').max(MAX_SEARCH_QUERY_LENGTH, 'Поисковый запрос слишком длинный.') }).strict();
 
 export function createSearchHandler(dependencies: KnowledgeContactRouteDependencies) {
   return async function searchHandler(request: Request): Promise<Response> {

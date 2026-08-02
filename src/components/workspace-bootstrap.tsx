@@ -1,7 +1,7 @@
 'use client';
 
 import { createClient } from '@supabase/supabase-js';
-import { useEffect, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 
 import { AppShell, type ViewKey } from '@/components/app-shell';
 import { createApiRepository } from '@/data/api-repository';
@@ -13,7 +13,7 @@ import { TaskWorkspace } from '@/features/tasks/task-workspace';
 import { KnowledgeWorkspace } from '@/features/knowledge/knowledge-workspace';
 import { PeopleWorkspace } from '@/features/people/people-workspace';
 import { GlobalSearch } from '@/features/search/global-search';
-import type { SearchResult, WorkspaceSnapshot } from '@/domain/types';
+import type { SearchNavigationTarget, SearchResult, WorkspaceSnapshot } from '@/domain/types';
 import { WorkspaceProvider } from '@/providers/workspace-provider';
 
 export type BrowserProductionConfig = { supabaseUrl: string; supabasePublishableKey: string };
@@ -52,22 +52,27 @@ function emptyWorkspace(workspaceId: string): WorkspaceSnapshot {
 function WorkspaceApplication({ gateway, mode }: { gateway: WorkspaceGateway; mode: 'demo' | 'production' }) {
   const [activeView, setActiveView] = useState<ViewKey>('today');
   const [createRequest, setCreateRequest] = useState(0);
-  const [searchTarget, setSearchTarget] = useState<SearchResult | null>(null);
+  const [searchTarget, setSearchTarget] = useState<(SearchResult & SearchNavigationTarget) | null>(null);
+  const searchRequestKey = useRef(0);
   const openSearchResult = (result: SearchResult) => {
-    setSearchTarget(result);
+    setSearchTarget({ ...result, requestKey: ++searchRequestKey.current });
     setActiveView(result.entity === 'task' ? 'tasks' : result.entity === 'knowledge' ? 'knowledge' : 'people');
   };
+  const consumeSearchTarget = useCallback((requestKey: number) => {
+    setSearchTarget((current) => current?.requestKey === requestKey ? null : current);
+  }, []);
+  const navigate = (view: ViewKey) => { setSearchTarget(null); setActiveView(view); };
   return (
     <WorkspaceProvider gateway={gateway}>
-      <AppShell activeView={activeView} onCreate={() => setCreateRequest((value) => value + 1)} onNavigate={setActiveView}>
+      <AppShell activeView={activeView} onCreate={() => setCreateRequest((value) => value + 1)} onNavigate={navigate}>
         {mode === 'demo' && <div className="demo-banner" role="status">Демо-режим: рабочие данные не подключены.</div>}
         <GlobalSearch onOpen={openSearchResult} />
         {activeView === 'today' || activeView === 'tasks' ? (
-          <TaskWorkspace activeView={activeView} createRequest={createRequest} searchTargetId={searchTarget?.entity === 'task' ? searchTarget.id : undefined} />
+          <TaskWorkspace activeView={activeView} createRequest={createRequest} onSearchTargetConsumed={consumeSearchTarget} searchTarget={searchTarget?.entity === 'task' ? searchTarget : undefined} />
         ) : activeView === 'knowledge' ? (
-          <KnowledgeWorkspace searchTargetId={searchTarget?.entity === 'knowledge' ? searchTarget.id : undefined} />
+          <KnowledgeWorkspace onSearchTargetConsumed={consumeSearchTarget} searchTarget={searchTarget?.entity === 'knowledge' ? searchTarget : undefined} />
         ) : activeView === 'people' ? (
-          <PeopleWorkspace searchTargetId={searchTarget?.entity === 'contact' ? searchTarget.id : undefined} />
+          <PeopleWorkspace onSearchTargetConsumed={consumeSearchTarget} searchTarget={searchTarget?.entity === 'contact' ? searchTarget : undefined} />
         ) : (
           <section aria-labelledby="view-title" className="workspace-loading">
             <p className="workspace-loading__eyebrow">Smoking Zen</p>

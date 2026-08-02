@@ -6,6 +6,7 @@ import { ConflictError } from '@/data/workspace-repository';
 import {
   contactInputSchema,
   knowledgeInputSchema,
+  mergeKnowledgePatch,
   type ContactInput,
   type ContactPatchInput,
   type KnowledgeInput,
@@ -118,10 +119,11 @@ export function createSupabaseKnowledgeContactStore(
       const current = await currentKnowledge(workspaceId, id);
       if (!current || current.deleted_at !== null) return conflictOrMissing(currentKnowledge, workspaceId, id, expectedVersion);
       if (Number(current.version) !== expectedVersion) throw new ConflictError(expectedVersion, Number(current.version));
-      const merged = knowledgeInputSchema.parse({
-        title: current.title, body: current.body, kind: current.kind, linkUrl: current.link_url,
-        sectionId: current.section_id, attachments: [], ...input,
-      });
+      const merged = mergeKnowledgePatch({
+        title: String(current.title), body: String(current.body ?? ''), kind: current.kind as KnowledgeItem['kind'],
+        linkUrl: current.link_url === null ? null : String(current.link_url),
+        sectionId: current.section_id === null ? null : String(current.section_id), attachments: [],
+      }, input);
       const result = await createActorClient(actorUserId).from('knowledge_items').update({
         title: merged.title, body: merged.body, kind: merged.kind, link_url: merged.linkUrl, section_id: merged.sectionId,
       }).eq('workspace_id', workspaceId).eq('id', id).eq('version', expectedVersion).is('deleted_at', null).select('*').maybeSingle() as DataResult;

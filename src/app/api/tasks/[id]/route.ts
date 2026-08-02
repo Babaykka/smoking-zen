@@ -3,7 +3,7 @@ import { z } from 'zod';
 import { ConflictError } from '@/data/workspace-repository';
 import { taskPatchSchema } from '@/domain/schemas';
 import { ServerConfigurationError } from '@/server/env';
-import { apiResponse, hasSameOrigin, readJsonObject } from '@/server/http';
+import { apiResponse, hasSameOrigin, readJsonObject, WORKSPACE_MAX_JSON_BYTES } from '@/server/http';
 import { createDefaultTaskRouteDependencies, type TaskRouteDependencies } from '@/server/task-api';
 
 type RouteContext = { params: Promise<{ id: string }> };
@@ -22,7 +22,7 @@ export function createTaskItemHandler(dependencies: TaskRouteDependencies) {
     if (!id || id.length > 200) return apiResponse(requestId, 400, null, { code: 'invalid_request', message: 'Некорректный запрос.' });
 
     try {
-      const body = await readJsonObject(request);
+      const body = await readJsonObject(request, WORKSPACE_MAX_JSON_BYTES);
       if (request.method === 'PATCH') {
         const restore = restoreSchema.safeParse(body);
         if (restore.success) return apiResponse(requestId, 200, await dependencies.store.restoreTask(actor.workspaceId, id, restore.data.expectedVersion, actor.userId), null);

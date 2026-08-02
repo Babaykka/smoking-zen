@@ -5,13 +5,14 @@ import { useEffect, useMemo, useRef, useState, type FormEvent } from 'react';
 import { SafeMarkdown } from '@/components/safe-markdown';
 import { ConflictError } from '@/data/workspace-repository';
 import { matchesTaskFilter, type TaskFilter } from '@/domain/filters';
-import type { Priority, Task } from '@/domain/types';
+import type { Priority, SearchNavigationTarget, Task } from '@/domain/types';
 import { useWorkspace } from '@/providers/workspace-provider';
 
 export type TaskWorkspaceProps = {
   activeView: 'today' | 'tasks';
   createRequest: number;
-  searchTargetId?: string;
+  searchTarget?: SearchNavigationTarget;
+  onSearchTargetConsumed?: (requestKey: number) => void;
   now?: Date;
 };
 
@@ -52,7 +53,7 @@ function draftFrom(task: Task): TaskDraft {
   };
 }
 
-export function TaskWorkspace({ activeView, createRequest, now = new Date(), searchTargetId }: TaskWorkspaceProps) {
+export function TaskWorkspace({ activeView, createRequest, now = new Date(), searchTarget, onSearchTargetConsumed }: TaskWorkspaceProps) {
   const { repository, snapshot } = useWorkspace();
   const [quickOpen, setQuickOpen] = useState(false);
   const [acknowledgedCreateRequest, setAcknowledgedCreateRequest] = useState(createRequest);
@@ -68,6 +69,8 @@ export function TaskWorkspace({ activeView, createRequest, now = new Date(), sea
   const [commentError, setCommentError] = useState('');
   const [priorityFilters, setPriorityFilters] = useState<Priority[]>([]);
   const [statusFilters, setStatusFilters] = useState<string[]>([]);
+  const tasksRef = useRef(snapshot.tasks);
+  useEffect(() => { tasksRef.current = snapshot.tasks; }, [snapshot.tasks]);
 
   const quickVisible = quickOpen || createRequest > acknowledgedCreateRequest;
 
@@ -94,10 +97,14 @@ export function TaskWorkspace({ activeView, createRequest, now = new Date(), sea
   };
 
   useEffect(() => {
-    const task = snapshot.tasks.find((item) => item.id === searchTargetId);
-    const timer = window.setTimeout(() => { if (task) openTask(task); }, 0);
+    if (!searchTarget) return;
+    const timer = window.setTimeout(() => {
+      const task = tasksRef.current.find((item) => item.id === searchTarget.id);
+      if (task) openTask(task);
+      onSearchTargetConsumed?.(searchTarget.requestKey);
+    }, 0);
     return () => window.clearTimeout(timer);
-  }, [searchTargetId, snapshot.tasks]);
+  }, [onSearchTargetConsumed, searchTarget]);
 
   const createTask = async (event: FormEvent) => {
     event.preventDefault();

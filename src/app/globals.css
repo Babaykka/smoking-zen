@@ -149,6 +149,187 @@ a:focus-visible {
   font-size: 0.875rem;
 }
 
+.global-search {
+  position: relative;
+  z-index: 20;
+  width: min(100%, 38rem);
+  margin-bottom: 1.5rem;
+}
+
+.global-search__label,
+.contact-form label {
+  display: grid;
+  gap: 0.4rem;
+  color: var(--muted);
+  font-size: 0.8rem;
+  font-weight: 700;
+}
+
+.global-search__input,
+.contact-form input,
+.contact-form select,
+.contact-form textarea {
+  width: 100%;
+  min-width: 0;
+  min-height: 2.75rem;
+  padding: 0.65rem 0.75rem;
+  border: 1px solid var(--border);
+  border-radius: 0.625rem;
+  background: var(--surface);
+  color: var(--text);
+  font: inherit;
+}
+
+.global-search__results {
+  position: absolute;
+  top: calc(100% + 0.4rem);
+  right: 0;
+  left: 0;
+  max-height: min(28rem, 65vh);
+  overflow-y: auto;
+  padding: 0.5rem;
+  border: 1px solid var(--border);
+  border-radius: 0.75rem;
+  background: var(--surface);
+  box-shadow: 0 0.75rem 2rem color-mix(in srgb, #000 18%, transparent);
+}
+
+.global-search__group {
+  display: grid;
+  gap: 0.25rem;
+}
+
+.global-search__group + .global-search__group {
+  margin-top: 0.65rem;
+}
+
+.global-search__group h2 {
+  margin: 0;
+  padding: 0.4rem 0.5rem;
+  color: var(--muted);
+  font-size: 0.75rem;
+  text-transform: uppercase;
+}
+
+.global-search__group button {
+  min-height: 2.75rem;
+  padding: 0.55rem 0.65rem;
+  border: 0;
+  border-radius: 0.5rem;
+  background: transparent;
+  color: var(--text);
+  cursor: pointer;
+  font: inherit;
+  text-align: left;
+}
+
+.global-search__group button[aria-selected='true'] {
+  background: color-mix(in srgb, var(--accent) 14%, var(--surface));
+}
+
+.people-workspace {
+  display: grid;
+  gap: 1.25rem;
+  min-width: 0;
+}
+
+.people-tabs {
+  display: flex;
+  gap: 0.35rem;
+  width: fit-content;
+  padding: 0.25rem;
+  border: 1px solid var(--border);
+  border-radius: 0.75rem;
+  background: var(--surface);
+}
+
+.people-tabs button,
+.contact-card > button {
+  min-height: 2.75rem;
+  padding: 0.55rem 0.75rem;
+  border: 0;
+  border-radius: 0.5rem;
+  background: transparent;
+  color: var(--text);
+  cursor: pointer;
+  font: inherit;
+  font-weight: 650;
+}
+
+.people-tabs button[aria-selected='true'] {
+  background: color-mix(in srgb, var(--accent) 15%, var(--surface));
+}
+
+.people-panel,
+.contact-groups,
+.people-team {
+  display: grid;
+  gap: 0.75rem;
+  min-width: 0;
+}
+
+.people-card,
+.contact-card,
+.contact-form {
+  margin: 0;
+  padding: 0.9rem;
+  border: 1px solid var(--border);
+  border-radius: 0.75rem;
+  background: var(--surface);
+}
+
+.contact-group {
+  display: grid;
+  gap: 0.5rem;
+}
+
+.contact-group h2 {
+  margin: 0.5rem 0 0;
+  font-size: 1rem;
+}
+
+.contact-card {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 0.75rem;
+}
+
+.contact-card > button {
+  min-width: 0;
+  overflow-wrap: anywhere;
+  text-align: left;
+}
+
+.contact-actions,
+.contact-form__actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.45rem;
+}
+
+.contact-action {
+  display: inline-flex;
+  align-items: center;
+  min-height: 2.75rem;
+  padding: 0.45rem 0.65rem;
+  border: 1px solid var(--border);
+  border-radius: 0.5rem;
+  color: var(--tg-theme-link-color);
+  text-decoration: none;
+}
+
+.contact-form {
+  display: grid;
+  gap: 0.75rem;
+}
+
+.workspace-error {
+  grid-column: 1 / -1;
+  margin: 0;
+  color: #b63636;
+}
+
 .workspace-loading {
   max-width: 42rem;
   padding: 2rem;
@@ -498,5 +679,13 @@ a:focus-visible {
 
   .quick-task__row input {
     flex-basis: 100%;
+  }
+
+  .global-search {
+    width: 100%;
+  }
+
+  .contact-card {
+    grid-template-columns: 1fr;
   }
 }

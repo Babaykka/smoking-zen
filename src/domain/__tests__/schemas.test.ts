@@ -7,6 +7,7 @@ import {
   contactInputSchema,
   contactPatchSchema,
   knowledgeInputSchema,
+  mergeKnowledgePatch,
   knowledgePatchSchema,
   prioritySchema,
   safeMetadataSchema,
@@ -55,6 +56,39 @@ describe('workspace schemas', () => {
     expect(contactInputSchema.safeParse({ name: 'Телефон', methods: [{ kind: 'phone', value: '+1234567890123456' }] }).success).toBe(false);
     expect(contactInputSchema.safeParse({ name: 'Телеграм', methods: [{ kind: 'telegram', value: '@ilya' }] }).success).toBe(false);
     expect(contactInputSchema.safeParse({ name: 'Телеграм', methods: [{ kind: 'telegram', value: '@ilya_test' }] }).success).toBe(true);
+  });
+
+  it('rejects raw credentials and PAN values in every contact method without blocking E.164 phones', () => {
+    expect(contactInputSchema.safeParse({ name: 'PAN phone', methods: [{ kind: 'phone', value: '378282246310005' }] }).success).toBe(false);
+    expect(contactInputSchema.safeParse({ name: 'PAN Telegram', methods: [{ kind: 'telegram', value: '378282246310005' }] }).success).toBe(false);
+    expect(contactInputSchema.safeParse({ name: 'PAN WhatsApp', methods: [{ kind: 'whatsapp', value: '378282246310005' }] }).success).toBe(false);
+    expect(contactInputSchema.safeParse({ name: 'Credential phone', methods: [{ kind: 'phone', value: 'password: 1234567' }] }).success).toBe(false);
+    expect(contactInputSchema.safeParse({ name: 'Credential Telegram', methods: [{ kind: 'telegram', value: 'token=1234567' }] }).success).toBe(false);
+    expect(contactInputSchema.safeParse({ name: 'Credential WhatsApp', methods: [{ kind: 'whatsapp', value: 'password: 1234567' }] }).success).toBe(false);
+    expect(contactInputSchema.safeParse({ name: 'Confirmation phone', methods: [{ kind: 'phone', value: 'confirmation code: 1234567' }] }).success).toBe(false);
+    expect(contactInputSchema.safeParse({ name: 'Confirmation Telegram', methods: [{ kind: 'telegram', value: 'confirmation code: 1234567' }] }).success).toBe(false);
+    expect(contactInputSchema.safeParse({ name: 'Confirmation WhatsApp', methods: [{ kind: 'whatsapp', value: 'confirmation code: 1234567' }] }).success).toBe(false);
+    expect(contactInputSchema.safeParse({ name: 'E.164 13', methods: [{ kind: 'phone', value: '+1234567890123' }] }).success).toBe(true);
+    expect(contactInputSchema.safeParse({ name: 'E.164 15', methods: [{ kind: 'phone', value: '+378282246310005' }] }).success).toBe(true);
+  });
+
+  it('requires deterministic knowledge patch transitions', () => {
+    const note = { title: 'Заметка', body: '', kind: 'note' as const, linkUrl: null, sectionId: null, attachments: [] };
+    const link = { ...note, kind: 'link' as const, linkUrl: 'https://example.com/old' };
+    expect(() => mergeKnowledgePatch(note, { kind: 'link' })).toThrow();
+    expect(() => mergeKnowledgePatch(note, { linkUrl: 'https://example.com/guide' })).toThrow();
+    expect(mergeKnowledgePatch(note, { kind: 'link', linkUrl: 'https://example.com/guide' })).toMatchObject({
+      kind: 'link', linkUrl: 'https://example.com/guide',
+    });
+    expect(mergeKnowledgePatch(link, { linkUrl: 'https://example.com/new' })).toMatchObject({
+      kind: 'link', linkUrl: 'https://example.com/new',
+    });
+    expect(mergeKnowledgePatch(link, { kind: 'note' })).toMatchObject({ kind: 'note', linkUrl: null });
+    expect(knowledgePatchSchema.safeParse({ kind: 'link' }).success).toBe(true);
+    expect(knowledgePatchSchema.safeParse({ linkUrl: 'https://example.com/guide' }).success).toBe(true);
+    expect(knowledgePatchSchema.safeParse({ kind: 'link', linkUrl: 'https://example.com/guide' }).success).toBe(true);
+    expect(knowledgePatchSchema.safeParse({ kind: 'note' }).success).toBe(true);
+    expect(knowledgePatchSchema.safeParse({ kind: 'note', linkUrl: null }).success).toBe(true);
   });
 
   it('exposes the exact eight canonical sections in the demo seed', () => {

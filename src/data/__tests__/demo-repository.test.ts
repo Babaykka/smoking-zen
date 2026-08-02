@@ -183,6 +183,22 @@ describe('demo workspace repository', () => {
     expect(repository.search('very-private')).toEqual([]);
   });
 
+  it('matches production merged-state validation for knowledge patches', () => {
+    const invalidRepository = createRepository();
+    const note = invalidRepository.snapshot().knowledge.find((item) => item.kind === 'instruction')!;
+    expect(() => invalidRepository.updateKnowledge(note.id, { linkUrl: 'https://example.com/guide' }, note.version)).toThrow();
+    expect(invalidRepository.snapshot().knowledge.find((item) => item.id === note.id)).toMatchObject({ version: note.version, linkUrl: null });
+
+    const validRepository = createRepository();
+    const current = validRepository.snapshot().knowledge.find((item) => item.kind === 'instruction')!;
+    const linked = validRepository.updateKnowledge(current.id, { kind: 'link', linkUrl: 'https://example.com/guide' }, current.version);
+    const relinked = validRepository.updateKnowledge(linked.id, { linkUrl: 'https://example.com/new' }, linked.version);
+    const converted = validRepository.updateKnowledge(relinked.id, { kind: 'note' }, relinked.version);
+    expect(linked).toMatchObject({ kind: 'link', linkUrl: 'https://example.com/guide' });
+    expect(relinked).toMatchObject({ kind: 'link', linkUrl: 'https://example.com/new' });
+    expect(converted).toMatchObject({ kind: 'note', linkUrl: null });
+  });
+
   it('notifies subscribers in mutation order with immutable snapshots', () => {
     const repository = createRepository();
     const received: string[][] = [];

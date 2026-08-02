@@ -3,7 +3,7 @@ import { z } from 'zod';
 import { ConflictError } from '@/data/workspace-repository';
 import { contactPatchSchema } from '@/domain/schemas';
 import { ServerConfigurationError } from '@/server/env';
-import { apiResponse, hasSameOrigin, readJsonObject } from '@/server/http';
+import { apiResponse, hasSameOrigin, readJsonObject, WORKSPACE_MAX_JSON_BYTES } from '@/server/http';
 import { createDefaultKnowledgeContactRouteDependencies, type KnowledgeContactRouteDependencies } from '@/server/knowledge-contact-api';
 
 type RouteContext = { params: Promise<{ id: string }> };
@@ -20,7 +20,7 @@ export function createContactItemHandler(dependencies: KnowledgeContactRouteDepe
     if (!actor) return apiResponse(requestId, 401, null, { code: 'session_invalid', message: 'Требуется авторизация.' });
     const { id } = await context.params;
     if (!id || id.length > 200) return apiResponse(requestId, 400, null, { code: 'invalid_request', message: 'Некорректный запрос.' });
-    const body = await readJsonObject(request);
+    const body = await readJsonObject(request, WORKSPACE_MAX_JSON_BYTES);
     try {
       if (request.method === 'PATCH') {
         const restore = restoreSchema.safeParse(body);

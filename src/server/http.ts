@@ -4,6 +4,8 @@ import { SESSION_COOKIE_NAME, type SessionCookie } from '@/server/session';
 
 export type ApiError = { code: string; message: string };
 export type ApiEnvelope<T> = { data: T | null; error: ApiError | null; requestId: string };
+export const DEFAULT_MAX_JSON_BYTES = 20_000;
+export const WORKSPACE_MAX_JSON_BYTES = 128 * 1024;
 
 export function apiResponse<T>(
   requestId: string,
@@ -42,8 +44,10 @@ export function hasSameOrigin(request: Request, expectedOrigin: string): boolean
   }
 }
 
-export async function readJsonObject(request: Request): Promise<Record<string, unknown> | null> {
-  const maximumBytes = 20_000;
+export async function readJsonObject(
+  request: Request,
+  maximumBytes = DEFAULT_MAX_JSON_BYTES,
+): Promise<Record<string, unknown> | null> {
   const contentLength = request.headers.get('content-length');
   if (contentLength && Number(contentLength) > maximumBytes) return null;
   if (!request.body) return null;

@@ -1,6 +1,7 @@
 // @vitest-environment node
 
 import { describe, expect, it, vi } from 'vitest';
+import { z } from 'zod';
 
 import { createContactItemHandler } from '@/app/api/contacts/[id]/route';
 import { createContactsHandler } from '@/app/api/contacts/route';
@@ -40,6 +41,14 @@ describe('knowledge, contact and search routes', () => {
     expect((await handler(request('/api/knowledge', 'POST', { title: 'Чужая', kind: 'note' }, 'https://evil.example'))).status).toBe(403);
   });
 
+  it('accepts the maximum Unicode knowledge body without widening auth request limits', async () => {
+    const api = store();
+    const handler = createKnowledgeHandler(dependencies(api));
+    const body = 'я'.repeat(30_000);
+    expect((await handler(request('/api/knowledge', 'POST', { title: 'Большой регламент', kind: 'note', body }))).status).toBe(201);
+    expect(api.createKnowledge).toHaveBeenCalledWith(actor.workspaceId, expect.objectContaining({ body }), actor.userId);
+  });
+
   it('keeps title-only patches non-defaulting and returns version conflicts', async () => {
     const api = store();
     const handler = createKnowledgeItemHandler(dependencies(api));
@@ -48,6 +57,21 @@ describe('knowledge, contact and search routes', () => {
     expect(api.updateKnowledge).toHaveBeenCalledWith(actor.workspaceId, 'knowledge-bowl', { title: 'Новое имя' }, 1, actor.userId);
     vi.mocked(api.updateKnowledge).mockRejectedValueOnce(new ConflictError(1, 2));
     expect((await handler(request('/api/knowledge/knowledge-bowl', 'PATCH', { input: { title: 'Ещё раз' }, expectedVersion: 1 }), context)).status).toBe(409);
+  });
+
+  it('returns stable 400 responses for invalid knowledge transitions and store validation', async () => {
+    const api = store();
+    const handler = createKnowledgeItemHandler(dependencies(api));
+    const context = { params: Promise.resolve({ id: 'knowledge-bowl' }) };
+    const invalidTransition = new z.ZodError([{ code: 'custom', path: ['linkUrl'], message: 'Некорректный переход типа.' }]);
+    vi.mocked(api.updateKnowledge).mockRejectedValueOnce(invalidTransition).mockRejectedValueOnce(invalidTransition);
+    expect((await handler(request('/api/knowledge/knowledge-bowl', 'PATCH', { input: { kind: 'link' }, expectedVersion: 1 }), context)).status).toBe(400);
+    expect((await handler(request('/api/knowledge/knowledge-bowl', 'PATCH', { input: { linkUrl: 'https://example.com' }, expectedVersion: 1 }), context)).status).toBe(400);
+    expect((await handler(request('/api/knowledge/knowledge-bowl', 'PATCH', { input: { kind: 'link', linkUrl: 'https://example.com' }, expectedVersion: 1 }), context)).status).toBe(200);
+    vi.mocked(api.updateKnowledge).mockRejectedValueOnce(new z.ZodError([{ code: 'custom', path: ['kind'], message: 'Некорректный переход типа.' }]));
+    const validation = await handler(request('/api/knowledge/knowledge-bowl', 'PATCH', { input: { kind: 'note' }, expectedVersion: 1 }), context);
+    expect(validation.status).toBe(400);
+    expect(await validation.json()).toMatchObject({ error: { code: 'invalid_request' } });
   });
 
   it('uses atomic contact mutation through the actor workspace and supports delete/restore', async () => {

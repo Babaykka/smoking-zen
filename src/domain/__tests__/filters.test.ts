@@ -57,4 +57,45 @@ describe('workspace filtering and search', () => {
       { entity: 'contact', id: 'contact-1', title: 'Поставщик табака' },
     ]);
   });
+
+  it('matches the bounded production search contract and excludes method values and link URLs', () => {
+    const tasks = Array.from({ length: 25 }, (_, index) => ({ ...task, id: `task-${index}`, title: `Смена ${index} needle` }));
+    const privateFieldsContact = { ...contact, name: 'Мастер', methods: [{ kind: 'phone' as const, value: '+79990000000' }] };
+    const linkedKnowledge = { ...knowledge, title: 'Внешний документ', body: '', kind: 'link' as const, linkUrl: 'https://private.example/needle' };
+
+    expect(searchWorkspace({ tasks, knowledge: [linkedKnowledge], contacts: [privateFieldsContact] }, 'needle')).toHaveLength(20);
+    expect(searchWorkspace({ tasks: [], knowledge: [linkedKnowledge], contacts: [privateFieldsContact] }, 'private.example')).toEqual([]);
+    expect(searchWorkspace({ tasks: [], knowledge: [], contacts: [privateFieldsContact] }, '79990000000')).toEqual([]);
+    expect(searchWorkspace({ tasks, knowledge: [], contacts: [] }, 'x'.repeat(121))).toEqual([]);
+  });
+
+  it('orders all entity types together by most recent activity before applying the result limit', () => {
+    const olderTask = { ...task, title: 'Общий запрос — задача', updatedAt: '2026-08-01T08:00:00.000Z' };
+    const newestKnowledge = { ...knowledge, title: 'Общий запрос — материал', updatedAt: '2026-08-03T08:00:00.000Z' };
+    const middleContact = { ...contact, name: 'Общий запрос — контакт', updatedAt: '2026-08-02T08:00:00.000Z' };
+    expect(searchWorkspace({ tasks: [olderTask], knowledge: [newestKnowledge], contacts: [middleContact] }, 'общий запрос')).toEqual([
+      { entity: 'knowledge', id: 'knowledge-1', title: 'Общий запрос — материал' },
+      { entity: 'contact', id: 'contact-1', title: 'Общий запрос — контакт' },
+      { entity: 'task', id: 'task-1', title: 'Общий запрос — задача' },
+    ]);
+  });
+
+  it('treats SQL wildcard characters literally and resolves timestamp ties deterministically', () => {
+    const percentTask = { ...task, id: 'task-percent', title: 'Скидка 10%' };
+    const underscoreTask = { ...task, id: 'task-underscore', title: 'Код A_B' };
+    const tiedContact = { ...contact, id: 'contact-tie', name: 'tie marker' };
+    const tiedKnowledge = { ...knowledge, id: 'knowledge-tie', title: 'tie marker' };
+    const tiedTask = { ...task, id: 'task-tie', title: 'tie marker' };
+    expect(searchWorkspace({ tasks: [percentTask, underscoreTask], knowledge: [], contacts: [] }, '%')).toEqual([
+      { entity: 'task', id: 'task-percent', title: 'Скидка 10%' },
+    ]);
+    expect(searchWorkspace({ tasks: [percentTask, underscoreTask], knowledge: [], contacts: [] }, '_')).toEqual([
+      { entity: 'task', id: 'task-underscore', title: 'Код A_B' },
+    ]);
+    expect(searchWorkspace({ tasks: [tiedTask], knowledge: [tiedKnowledge], contacts: [tiedContact] }, 'tie marker')).toEqual([
+      { entity: 'task', id: 'task-tie', title: 'tie marker' },
+      { entity: 'knowledge', id: 'knowledge-tie', title: 'tie marker' },
+      { entity: 'contact', id: 'contact-tie', title: 'tie marker' },
+    ]);
+  });
 });

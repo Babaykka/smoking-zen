@@ -1,6 +1,6 @@
 import { commentInputSchema } from '@/domain/schemas';
 import { ServerConfigurationError } from '@/server/env';
-import { apiResponse, hasSameOrigin, readJsonObject } from '@/server/http';
+import { apiResponse, hasSameOrigin, readJsonObject, WORKSPACE_MAX_JSON_BYTES } from '@/server/http';
 import { createDefaultTaskRouteDependencies, type TaskRouteDependencies } from '@/server/task-api';
 
 export function createCommentsHandler(dependencies: TaskRouteDependencies) {
@@ -10,7 +10,7 @@ export function createCommentsHandler(dependencies: TaskRouteDependencies) {
     if (!hasSameOrigin(request, dependencies.appOrigin)) return apiResponse(requestId, 403, null, { code: 'origin_denied', message: 'Запрос отклонён.' });
     const actor = await dependencies.authenticate(request);
     if (!actor) return apiResponse(requestId, 401, null, { code: 'session_invalid', message: 'Требуется авторизация.' });
-    const body = await readJsonObject(request);
+    const body = await readJsonObject(request, WORKSPACE_MAX_JSON_BYTES);
     const parsed = commentInputSchema.safeParse(body && { ...body, authorId: actor.membershipId });
     if (!parsed.success) return apiResponse(requestId, 400, null, { code: 'invalid_request', message: parsed.error.issues[0]?.message ?? 'Некорректный запрос.' });
     try {

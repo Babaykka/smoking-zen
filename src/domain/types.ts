@@ -123,3 +123,8 @@ export type SearchResult = {
   id: string;
   title: string;
 };
+
+export type SearchNavigationTarget = {
+  id: string;
+  requestKey: number;
+};

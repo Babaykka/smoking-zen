@@ -162,4 +162,28 @@ describe('TaskWorkspace', () => {
     expect(screen.getByLabelText('Название')).toHaveValue('   ');
     expect(repository.snapshot().tasks[0]?.title).toBe('Проверить запас кокосового угля');
   });
+
+  it('consumes keyed task navigation once, preserves drafts on refetch, and can reopen the same task', async () => {
+    const repository = createDemoRepository({ loadPersisted: false });
+    const gateway = createDemoGateway(repository);
+    const consumed = vi.fn();
+    const rendered = render(
+      <WorkspaceProvider gateway={gateway}>
+        <TaskWorkspace activeView="tasks" createRequest={0} onSearchTargetConsumed={consumed} searchTarget={{ id: 'task-check-coals', requestKey: 1 }} />
+      </WorkspaceProvider>,
+    );
+    expect(await screen.findByLabelText('Название')).toHaveValue('Проверить запас кокосового угля');
+    expect(consumed).toHaveBeenCalledWith(1);
+    fireEvent.change(screen.getByLabelText('Название'), { target: { value: 'Несохранённая задача' } });
+    await gateway.createTask({ title: 'Событие Realtime' });
+    expect(screen.getByLabelText('Название')).toHaveValue('Несохранённая задача');
+    fireEvent.click(screen.getByRole('button', { name: 'Закрыть' }));
+    rendered.rerender(
+      <WorkspaceProvider gateway={gateway}>
+        <TaskWorkspace activeView="tasks" createRequest={0} onSearchTargetConsumed={consumed} searchTarget={{ id: 'task-check-coals', requestKey: 2 }} />
+      </WorkspaceProvider>,
+    );
+    expect(await screen.findByLabelText('Название')).toHaveValue('Проверить запас кокосового угля');
+    expect(consumed).toHaveBeenLastCalledWith(2);
+  });
 });

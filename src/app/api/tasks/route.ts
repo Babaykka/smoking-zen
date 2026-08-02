@@ -1,7 +1,7 @@
 import { ConflictError } from '@/data/workspace-repository';
 import { taskInputSchema } from '@/domain/schemas';
 import { ServerConfigurationError } from '@/server/env';
-import { apiResponse, hasSameOrigin, readJsonObject } from '@/server/http';
+import { apiResponse, hasSameOrigin, readJsonObject, WORKSPACE_MAX_JSON_BYTES } from '@/server/http';
 import { createDefaultTaskRouteDependencies, type TaskRouteDependencies } from '@/server/task-api';
 
 export function createTasksHandler(dependencies: TaskRouteDependencies) {
@@ -16,7 +16,7 @@ export function createTasksHandler(dependencies: TaskRouteDependencies) {
       }
       if (request.method !== 'POST') return apiResponse(requestId, 405, null, { code: 'method_not_allowed', message: 'Метод не поддерживается.' });
       if (!hasSameOrigin(request, dependencies.appOrigin)) return apiResponse(requestId, 403, null, { code: 'origin_denied', message: 'Запрос отклонён.' });
-      const body = await readJsonObject(request);
+      const body = await readJsonObject(request, WORKSPACE_MAX_JSON_BYTES);
       const parsed = taskInputSchema.safeParse(body);
       if (!parsed.success) return apiResponse(requestId, 400, null, { code: 'invalid_request', message: parsed.error.issues[0]?.message ?? 'Некорректный запрос.' });
       const task = await dependencies.store.createTask(actor.workspaceId, parsed.data, actor.userId);

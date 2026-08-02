@@ -27,7 +27,13 @@ const REQUIRED_SECTIONS = [
 
 const databases: PGlite[] = [];
 
-async function createDatabase(options: { seedRounds?: number } = {}) {
+async function applyMigration(database: PGlite, filename: string) {
+  const migration = (await readFile(filename, 'utf8'))
+    .replace('create extension if not exists pgcrypto with schema extensions;', '');
+  await database.exec(migration);
+}
+
+async function createDatabase(options: { seedRounds?: number; migrations?: string[]; migrationRounds?: number } = {}) {
   const database = new PGlite();
   databases.push(database);
   await database.exec(`
@@ -69,12 +75,8 @@ async function createDatabase(options: { seedRounds?: number } = {}) {
     alter default privileges in schema public grant execute on functions to anon, authenticated, service_role;
   `);
 
-  for (let round = 0; round < 2; round += 1) {
-    for (const filename of MIGRATIONS) {
-      const migration = (await readFile(filename, 'utf8'))
-        .replace('create extension if not exists pgcrypto with schema extensions;', '');
-      await database.exec(migration);
-    }
+  for (let round = 0; round < (options.migrationRounds ?? 2); round += 1) {
+    for (const filename of options.migrations ?? MIGRATIONS) await applyMigration(database, filename);
   }
   for (let round = 0; round < (options.seedRounds ?? 0); round += 1) {
     await database.exec(await readFile('supabase/seed.sql', 'utf8'));
@@ -185,6 +187,154 @@ describe('Supabase schema runtime security', () => {
 
     expect(sections.rows.map(({ name }) => name)).toEqual(REQUIRED_SECTIONS);
     expect(statuses.rows.map(({ name }) => name)).toEqual(['Новая', 'В работе', 'Ждёт', 'Готово']);
+  });
+
+  it('initializes fresh production workspaces and backfills existing workspaces idempotently without a seed', async () => {
+    const database = await createDatabase({ migrationRounds: 1 });
+    const [owner] = await bootstrapOwner(database);
+    const taxonomyBefore = await database.query<{ entity: string; id: string; name: string; position: number; version: number }>(`
+      select 'section' as entity, id, name, position, version from public.sections where workspace_id = $1 and deleted_at is null
+      union all
+      select 'status', id, name, position, version from public.task_statuses where workspace_id = $1 and deleted_at is null
+      order by entity, position
+    `, [owner!.workspace_id]);
+    const [sameOwner] = await bootstrapOwner(database);
+    expect(owner).toBeDefined();
+    expect(sameOwner).toMatchObject({ workspace_id: owner!.workspace_id, membership_id: owner!.membership_id });
+    const sections = await database.query<{ name: string }>(
+      'select name from public.sections where workspace_id = $1 and deleted_at is null order by position',
+      [owner!.workspace_id],
+    );
+    const statuses = await database.query<{ name: string }>(
+      'select name from public.task_statuses where workspace_id = $1 and deleted_at is null order by position',
+      [owner!.workspace_id],
+    );
+    expect(sections.rows.map(({ name }) => name)).toEqual(REQUIRED_SECTIONS);
+    expect(statuses.rows.map(({ name }) => name)).toEqual(['Новая', 'В работе', 'Ждёт', 'Готово']);
+
+    await applyMigration(database, MIGRATIONS[5]!);
+    expect((await database.query('select 1 from public.sections where workspace_id = $1 and deleted_at is null', [owner!.workspace_id])).rows).toHaveLength(8);
+    expect((await database.query('select 1 from public.task_statuses where workspace_id = $1 and deleted_at is null', [owner!.workspace_id])).rows).toHaveLength(4);
+    const taxonomyAfter = await database.query<{ entity: string; id: string; name: string; position: number; version: number }>(`
+      select 'section' as entity, id, name, position, version from public.sections where workspace_id = $1 and deleted_at is null
+      union all
+      select 'status', id, name, position, version from public.task_statuses where workspace_id = $1 and deleted_at is null
+      order by entity, position
+    `, [owner!.workspace_id]);
+    expect(taxonomyAfter.rows).toEqual(taxonomyBefore.rows);
+    expect((await database.query<{ allowed: boolean }>(
+      "select has_function_privilege('service_role', 'public.bootstrap_telegram_user(text,text,text,text,text,text,text)', 'execute') as allowed",
+    )).rows[0]?.allowed).toBe(true);
+    const helperPrivileges = await database.query<{ anon: boolean; authenticated: boolean; service: boolean }>(`
+      select
+        has_function_privilege('anon', 'private.ensure_workspace_taxonomy(uuid)', 'execute') as anon,
+        has_function_privilege('authenticated', 'private.ensure_workspace_taxonomy(uuid)', 'execute') as authenticated,
+        has_function_privilege('service_role', 'private.ensure_workspace_taxonomy(uuid)', 'execute') as service
+    `);
+    expect(helperPrivileges.rows).toEqual([{ anon: false, authenticated: false, service: false }]);
+  });
+
+  it('reconciles conflicting legacy taxonomy positions and archives extras idempotently', async () => {
+    const database = await createDatabase({ migrations: MIGRATIONS.slice(0, 5) });
+    const workspaceId = '10000000-0000-4000-8000-000000000098';
+    const legacyStatusId = '40000000-0000-4000-8000-000000000098';
+    const legacySectionId = '50000000-0000-4000-8000-000000000098';
+    await database.query('insert into public.workspaces (id, name) values ($1, $2)', [workspaceId, 'Conflicting taxonomy']);
+    await database.query(`
+      insert into public.task_statuses (id, workspace_id, name, position) values
+        ($2, $1, 'Legacy status', 1),
+        ('40000000-0000-4000-8000-000000000091', $1, 'Новая', 2),
+        ('40000000-0000-4000-8000-000000000092', $1, 'В работе', 3),
+        ('40000000-0000-4000-8000-000000000093', $1, 'Ждёт', 4),
+        ('40000000-0000-4000-8000-000000000094', $1, 'Готово', 5)
+    `, [workspaceId, legacyStatusId]);
+    await database.query(`
+      insert into public.sections (id, workspace_id, name, position) values
+        ($2, $1, 'Legacy section', 1),
+        ('50000000-0000-4000-8000-000000000091', $1, 'Открытие', 2)
+    `, [workspaceId, legacySectionId]);
+
+    await applyMigration(database, MIGRATIONS[5]!);
+    const afterFirst = await database.query<{ entity: string; id: string; name: string; position: number; version: number; deleted_at: string | null }>(`
+      select 'section' as entity, id, name, position, version, deleted_at from public.sections where workspace_id = $1
+      union all
+      select 'status', id, name, position, version, deleted_at from public.task_statuses where workspace_id = $1
+      order by entity, name
+    `, [workspaceId]);
+    await applyMigration(database, MIGRATIONS[5]!);
+    const afterSecond = await database.query<{ entity: string; id: string; name: string; position: number; version: number; deleted_at: string | null }>(`
+      select 'section' as entity, id, name, position, version, deleted_at from public.sections where workspace_id = $1
+      union all
+      select 'status', id, name, position, version, deleted_at from public.task_statuses where workspace_id = $1
+      order by entity, name
+    `, [workspaceId]);
+    expect(afterSecond.rows).toEqual(afterFirst.rows);
+    expect((await database.query<{ name: string }>('select name from public.task_statuses where workspace_id = $1 and deleted_at is null order by position', [workspaceId])).rows.map(({ name }) => name)).toEqual(['Новая', 'В работе', 'Ждёт', 'Готово']);
+    expect((await database.query<{ name: string }>('select name from public.sections where workspace_id = $1 and deleted_at is null order by position', [workspaceId])).rows.map(({ name }) => name)).toEqual(REQUIRED_SECTIONS);
+    expect((await database.query<{ deleted: boolean }>('select deleted_at is not null as deleted from public.task_statuses where id = $1', [legacyStatusId])).rows).toEqual([{ deleted: true }]);
+    expect((await database.query<{ deleted: boolean }>('select deleted_at is not null as deleted from public.sections where id = $1', [legacySectionId])).rows).toEqual([{ deleted: true }]);
+  });
+
+  it('upgrades populated legacy link rows before enforcing link consistency', async () => {
+    const database = await createDatabase({ migrations: MIGRATIONS.slice(0, 5) });
+    const workspaceId = '10000000-0000-4000-8000-000000000099';
+    const knowledgeId = '70000000-0000-4000-8000-000000000099';
+    await database.query('insert into public.workspaces (id, name) values ($1, $2)', [workspaceId, 'Legacy']);
+    await database.query(
+      "insert into public.knowledge_items (id, workspace_id, title, body, kind) values ($1, $2, 'Старая ссылка', 'URL был в тексте', 'link')",
+      [knowledgeId, workspaceId],
+    );
+
+    await applyMigration(database, MIGRATIONS[5]!);
+    const afterFirstUpgrade = await database.query<{ title: string; body: string; kind: string; link_url: string | null; version: number }>(
+      'select title, body, kind, link_url, version from public.knowledge_items where id = $1', [knowledgeId],
+    );
+    await applyMigration(database, MIGRATIONS[5]!);
+    const upgraded = await database.query<{ title: string; body: string; kind: string; link_url: string | null; version: number }>(
+      'select title, body, kind, link_url, version from public.knowledge_items where id = $1', [knowledgeId],
+    );
+    expect(upgraded.rows).toEqual([{ title: 'Старая ссылка', body: 'URL был в тексте', kind: 'note', link_url: null, version: 2 }]);
+    expect(upgraded.rows).toEqual(afterFirstUpgrade.rows);
+    expect((await database.query('select 1 from public.sections where workspace_id = $1 and deleted_at is null', [workspaceId])).rows).toHaveLength(8);
+    expect((await database.query('select 1 from public.task_statuses where workspace_id = $1 and deleted_at is null', [workspaceId])).rows).toHaveLength(4);
+  });
+
+  it('keeps production search field-safe, globally newest-first, and bounded to twenty results', async () => {
+    const database = await createDatabase({ seedRounds: 1 });
+    const workspaceId = '10000000-0000-4000-8000-000000000001';
+    const statusId = '40000000-0000-4000-8000-000000000001';
+    await database.query(`
+      insert into public.tasks (workspace_id, title, description, status_id, updated_at)
+      select $1, 'needle task ' || value, '', $2, timestamptz '2026-08-01 00:00:00+00' + value * interval '1 minute'
+      from generate_series(1, 25) as value
+    `, [workspaceId, statusId]);
+    const contact = await database.query<{ id: string }>(`
+      insert into public.contacts (workspace_id, name, category, notes, updated_at)
+      values ($1, 'needle contact', 'other', 'public operational note', '2026-08-03T00:00:00Z')
+      returning id
+    `, [workspaceId]);
+    await database.query(`
+      insert into public.contact_methods (workspace_id, contact_id, kind, value, position)
+      values ($1, $2, 'telegram', 'private_only_handle', 1)
+    `, [workspaceId, contact.rows[0]!.id]);
+    await database.query(`
+      insert into public.knowledge_items (workspace_id, title, body, kind, link_url, updated_at)
+      values ($1, 'needle knowledge', 'public guide', 'note', null, '2026-08-04T00:00:00Z')
+    `, [workspaceId]);
+
+    const results = await database.query<{ entity: string; title: string }>(
+      'select entity, title from public.search_workspace($1, $2, 100)', [workspaceId, 'needle'],
+    );
+    expect(results.rows).toHaveLength(20);
+    expect(results.rows.slice(0, 2)).toEqual([
+      { entity: 'knowledge', title: 'needle knowledge' },
+      { entity: 'contact', title: 'needle contact' },
+    ]);
+    expect((await database.query('select * from public.search_workspace($1, $2, 20)', [workspaceId, 'private_only_handle'])).rows).toEqual([]);
+    expect((await database.query('select * from public.search_workspace($1, $2, 20)', [workspaceId, 'example.com'])).rows).toEqual([]);
+    expect((await database.query('select * from public.search_workspace($1, $2, 20)', [workspaceId, '%'])).rows).toEqual([]);
+    expect((await database.query('select * from public.search_workspace($1, $2, 20)', [workspaceId, '_'])).rows).toEqual([]);
+    expect((await database.query('select * from public.search_workspace($1, $2, 20)', [workspaceId, 'x'.repeat(121)])).rows).toEqual([]);
   });
 
   it('keeps contact and contact methods atomic, workspace-scoped, and recoverable together', async () => {

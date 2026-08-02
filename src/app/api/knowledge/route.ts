@@ -1,7 +1,7 @@
 import { ConflictError } from '@/data/workspace-repository';
 import { knowledgeInputSchema } from '@/domain/schemas';
 import { ServerConfigurationError } from '@/server/env';
-import { apiResponse, hasSameOrigin, readJsonObject } from '@/server/http';
+import { apiResponse, hasSameOrigin, readJsonObject, WORKSPACE_MAX_JSON_BYTES } from '@/server/http';
 import { createDefaultKnowledgeContactRouteDependencies, type KnowledgeContactRouteDependencies } from '@/server/knowledge-contact-api';
 
 export function createKnowledgeHandler(dependencies: KnowledgeContactRouteDependencies) {
@@ -11,7 +11,7 @@ export function createKnowledgeHandler(dependencies: KnowledgeContactRouteDepend
     if (!actor) return apiResponse(requestId, 401, null, { code: 'session_invalid', message: 'Требуется авторизация.' });
     if (request.method !== 'POST') return apiResponse(requestId, 405, null, { code: 'method_not_allowed', message: 'Метод не поддерживается.' });
     if (!hasSameOrigin(request, dependencies.appOrigin)) return apiResponse(requestId, 403, null, { code: 'origin_denied', message: 'Запрос отклонён.' });
-    const parsed = knowledgeInputSchema.safeParse(await readJsonObject(request));
+    const parsed = knowledgeInputSchema.safeParse(await readJsonObject(request, WORKSPACE_MAX_JSON_BYTES));
     if (!parsed.success) return apiResponse(requestId, 400, null, { code: 'invalid_request', message: parsed.error.issues[0]?.message ?? 'Некорректный запрос.' });
     try {
       return apiResponse(requestId, 201, await dependencies.store.createKnowledge(actor.workspaceId, parsed.data, actor.userId), null);

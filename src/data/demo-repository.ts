@@ -2,6 +2,7 @@ import {
   commentInputSchema,
   contactInputSchema,
   knowledgeInputSchema,
+  mergeKnowledgePatch,
   secureItemInputSchema,
   taskInputSchema,
   type CommentInput,
@@ -202,7 +203,9 @@ export function createDemoRepository(options: RepositoryOptions = {}): Workspace
     return { ...parsed, statusId: parsed.statusId ?? current?.statusId ?? 'status-new' };
   };
   const toComment = (input: Partial<CommentInput>, current?: Comment): Omit<Comment, keyof RecordMetadata> => ({ ...commentInputSchema.parse({ ...(current ? withoutMetadata(current) : {}), ...input }) });
-  const toKnowledge = (input: Partial<KnowledgeInput>, current?: KnowledgeItem): Omit<KnowledgeItem, keyof RecordMetadata> => ({ ...knowledgeInputSchema.parse({ ...(current ? withoutMetadata(current) : {}), ...input }) });
+  const toKnowledge = (input: Partial<KnowledgeInput>, current?: KnowledgeItem): Omit<KnowledgeItem, keyof RecordMetadata> => ({
+    ...(current ? mergeKnowledgePatch(withoutMetadata(current), input) : knowledgeInputSchema.parse(input)),
+  });
   const toContact = (input: Partial<ContactInput>, current?: Contact): Omit<Contact, keyof RecordMetadata> => ({ ...contactInputSchema.parse({ ...(current ? withoutMetadata(current) : {}), ...input }) });
   const toSecureItem = (input: Partial<SecureItemInput>, current?: SecureItemLink): Omit<SecureItemLink, keyof RecordMetadata> => ({ ...secureItemInputSchema.parse({ ...(current ? withoutMetadata(current) : {}), ...input }) });
 

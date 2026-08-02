@@ -20,7 +20,7 @@ const idSchema = (label: string) => z
 
 const nullableIdSchema = idSchema('Значение').nullable().optional();
 const optionalTextSchema = z.string({ error: 'Заметка должна быть текстом.' }).trim().max(10_000, 'Заметка слишком длинная.').optional();
-const secretLikeText = /(?:\b(?:password|passphrase|secret|token|pin|cvv|cvc|otp)\b|пароль|секрет|токен|пин|(?:код\s*)?подтвержден\p{L}*)(?:\s*(?:[:=]|[-–—])\s*|\s+(?=\S*(?:\d|[._~+/=-])))\S+/iu;
+const secretLikeText = /(?:\b(?:password|passphrase|secret|token|pin|cvv|cvc|otp)\b|confirmation\s+code|пароль|секрет|токен|пин|(?:код\s*)?подтвержден\p{L}*)(?:\s*(?:[:=]|[-–—])\s*|\s+(?=\S*(?:\d|[._~+/=-])))\S+/iu;
 
 export function containsSecretLikeText(value: string): boolean {
   return secretLikeText.test(value) || /\d(?:[ -]*\d){12,18}/.test(value);
@@ -30,6 +30,28 @@ const safeFreeText = (schema: z.ZodString) => schema.refine(
   (value) => !containsSecretLikeText(value),
   'Секретные данные и реквизиты карт хранить нельзя.',
 );
+
+function passesLuhn(value: string): boolean {
+  let sum = 0;
+  let double = false;
+  for (let index = value.length - 1; index >= 0; index -= 1) {
+    let digit = Number(value[index]);
+    if (double) {
+      digit *= 2;
+      if (digit > 9) digit -= 9;
+    }
+    sum += digit;
+    double = !double;
+  }
+  return sum % 10 === 0;
+}
+
+function containsContactSecret(kind: ContactMethodKind, value: string): boolean {
+  if (secretLikeText.test(value)) return true;
+  const digits = value.replace(/\D/g, '');
+  if (digits.length < 13 || digits.length > 19 || /^(\d)\1+$/.test(digits) || !passesLuhn(digits)) return false;
+  return !(kind === 'phone' && /^\+[\d\s().-]+$/.test(value.trim()) && digits.length <= 15);
+}
 
 const safeKnowledgeUrlSchema = z.string({ error: 'Укажите корректную HTTPS-ссылку.' }).trim().max(2_000, 'Ссылка слишком длинная.').refine((value) => {
   try {
@@ -124,6 +146,22 @@ export const knowledgePatchSchema = z.object({
   attachments: z.array(attachmentInputSchema, { error: 'Вложения должны быть списком.' }).max(20, 'Можно добавить не более 20 вложений.').optional(),
 }, { error: 'Изменения материала должны быть объектом.' }).strict();
 
+export function mergeKnowledgePatch(
+  current: z.input<typeof knowledgeInputSchema>,
+  input: z.input<typeof knowledgePatchSchema>,
+): z.output<typeof knowledgeInputSchema> {
+  const patch = knowledgePatchSchema.parse(input);
+  const targetKind = patch.kind ?? current.kind;
+  if (patch.linkUrl != null && targetKind !== 'link') {
+    throw new z.ZodError([{
+      code: 'custom',
+      message: 'Адрес ссылки доступен только для материала типа «Ссылка».',
+      path: ['linkUrl'],
+    }]);
+  }
+  return knowledgeInputSchema.parse({ ...current, ...patch });
+}
+
 export const contactMethodSchema = z
   .object({
     kind: z.enum(['phone', 'telegram', 'whatsapp'] satisfies [ContactMethodKind, ...ContactMethodKind[]], { error: 'Выберите способ связи.' }),
@@ -131,6 +169,10 @@ export const contactMethodSchema = z
   }, { error: 'Способ связи должен быть объектом.' })
   .strict()
   .transform((method, context) => {
+    if (containsContactSecret(method.kind, method.value)) {
+      context.addIssue({ code: 'custom', message: 'Секретные данные и реквизиты карт хранить нельзя.', path: ['value'] });
+      return z.NEVER;
+    }
     const value = normalizeContactMethod(method.kind, method.value);
     if (!value) {
       context.addIssue({ code: 'custom', message: 'Укажите корректный способ связи.', path: ['value'] });

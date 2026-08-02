@@ -35,4 +35,22 @@ describe('GlobalSearch', () => {
 
     expect(screen.queryByText('Старая выдача')).toBeNull();
   });
+
+  it('uses keyboard navigation through grouped results and exposes styled combobox semantics', async () => {
+    vi.useFakeTimers();
+    const gateway = createDemoGateway(createDemoRepository({ loadPersisted: false }));
+    gateway.search = vi.fn().mockResolvedValue([
+      { entity: 'task', id: 'task-1', title: 'Задача' },
+      { entity: 'knowledge', id: 'knowledge-1', title: 'Материал' },
+    ]);
+    const open = vi.fn();
+    render(<WorkspaceProvider gateway={gateway}><GlobalSearch onOpen={open} /></WorkspaceProvider>);
+    const input = screen.getByRole('combobox', { name: 'Поиск по штабу' });
+    expect(input).toHaveClass('global-search__input');
+    fireEvent.change(input, { target: { value: 'поиск' } });
+    await act(async () => { await vi.advanceTimersByTimeAsync(275); });
+    fireEvent.keyDown(input, { key: 'ArrowDown' });
+    fireEvent.keyDown(input, { key: 'Enter' });
+    expect(open).toHaveBeenCalledWith({ entity: 'knowledge', id: 'knowledge-1', title: 'Материал' });
+  });
 });
