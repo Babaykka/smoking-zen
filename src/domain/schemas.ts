@@ -23,6 +23,7 @@ const optionalTextSchema = z.string({ error: 'Заметка должна быт
 const SAFE_SCAN_ZERO_WIDTH = /[\u200b\u200c\u200d\u2060\ufeff]/gu;
 const SAFE_SCAN_SEPARATORS = /[\p{Pd}+:\/_\.=]+/gu;
 const SAFE_SCAN_WHITESPACE = /[\u0009-\u000d\u0020\u00a0\u1680\u2000-\u200a\u2028\u2029\u202f\u205f\u3000]+/gu;
+const SAFE_URL_RAW_WHITESPACE = /[\u0009-\u000d\u0020\u00a0\u1680\u2000-\u200a\u2028\u2029\u202f\u205f\u3000\ufeff]/u;
 const secretLikeText = /(?:^|[^\p{L}\p{N}])(?:password|passphrase|secret|token|credential|pin|cvv|cvc|otp|confirmation(?:[ /]+code)?|пароль|секрет|токен|пин|(?:код[ /]*)?подтвержден\p{L}*)(?:(?: *\/+ *)\S+| +(?=\S*(?:\d|[/~]))\S+)/iu;
 const completeCardLikeText = /\d(?:[ /]*\d){12,18}/u;
 
@@ -260,6 +261,7 @@ function containsUrlSecret(value: string): boolean {
 }
 
 export function isAllowedBitwardenUrl(value: string, selfHostedOrigins: readonly string[] = []): boolean {
+  if (SAFE_URL_RAW_WHITESPACE.test(value)) return false;
   const origins = allowedBitwardenOrigins(selfHostedOrigins);
   try {
     const url = new URL(value);

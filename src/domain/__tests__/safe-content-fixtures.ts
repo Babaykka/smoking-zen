@@ -19,6 +19,9 @@ const unsafeWhitespaceUrlFixtures = canonicalSafeWhitespaceFixtures.map((whitesp
   return `https://vault.bitwarden.com/?item=${encodeURIComponent(secret)}`;
 });
 
+const unsafeLiteralWhitespaceUrlFixtures = canonicalSafeWhitespaceFixtures.map((whitespace) =>
+  `https://vault.bitwarden.com/#/items/example${whitespace}path`);
+
 export const unsafeSafeTextFixtures = [
   ...unicodeDashPunctuationFixtures.map((separator) => `password${separator}hunter2`),
   ...unsafeWhitespaceTextFixtures,
@@ -43,6 +46,7 @@ export const unsafeSafeUrlFixtures = [
   ...unicodeDashPunctuationFixtures.map((separator) =>
     `https://vault.bitwarden.com/#/items/${encodeURIComponent(`password${separator}hunter2`)}`),
   ...unsafeWhitespaceUrlFixtures,
+  ...unsafeLiteralWhitespaceUrlFixtures,
   'https://vault.bitwarden.com/?item=pass%E2%80%8Bword%2Fhunter2',
   'https://vault.bitwarden.com/#/items/pass%25E2%2580%258Bword%252Fhunter2',
   'https://vault.bitwarden.com/#/items/4111+1111+1111+1111',
@@ -60,5 +64,7 @@ export const unsafeSafeUrlFixtures = [
 export const safeSafeUrlFixtures = [
   'https://vault.bitwarden.com/#/items/example',
   'https://vault.bitwarden.com/#/vault/item/123e4567-e89b-12d3-a456-426614174000',
+  'https://vault.bitwarden.com/#/items/example%20path',
+  'https://vault.bitwarden.com/#/items/example%E1%9A%80path',
   'https://vault.bitwarden.com/?item=%25252525252541',
 ] as const;

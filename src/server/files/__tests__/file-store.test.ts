@@ -515,6 +515,21 @@ describe('private file lifecycle store', () => {
       .toHaveBeenCalledWith('queue-retired-quarantine', cleanupLeaseId);
   });
 
+  it('does not finish a cleanup lease when the Storage removal fails', async () => {
+    const fileBackend = backend({
+      listQueuedObjects: vi.fn().mockResolvedValue([
+        { id: 'queue-failed-remove', workspaceId, storagePath: quarantineObjectId },
+      ]),
+      removeObject: vi.fn().mockRejectedValue(new Error('provider unavailable')),
+    });
+    const store = createPrivateFileStore(fileBackend);
+
+    await expect(store.cleanupExpiredUploads(new Date('2026-08-02T12:00:00.000Z'), 20))
+      .resolves.toEqual({ removed: 0, failed: 1 });
+    expect(fileBackend.prepareQueuedObjectRemoval).toHaveBeenCalledWith('queue-failed-remove');
+    expect(fileBackend.finishQueuedObjectRemoval).not.toHaveBeenCalled();
+  });
+
   it('retires a full expired batch so a newer row is processed without failures on the next bounded sweep', async () => {
     const active = Array.from({ length: 21 }, (_, index): StoredAttachment => ({
       ...quarantine,
@@ -537,6 +552,9 @@ describe('private file lifecycle store', () => {
     await expect(store.cleanupExpiredUploads(now, 20)).resolves.toEqual({ removed: 20, failed: 0 });
     await expect(store.cleanupExpiredUploads(now, 20)).resolves.toEqual({ removed: 1, failed: 0 });
     expect(retireQuarantine).toHaveBeenCalledTimes(21);
+    expect(retireQuarantine.mock.calls.map(([, id]) => id)).toEqual(
+      Array.from({ length: 21 }, (_, index) => `expired-${String(index).padStart(2, '0')}`),
+    );
     expect(active).toEqual([]);
     expect(fileBackend.deleteQuarantine).not.toHaveBeenCalled();
   });

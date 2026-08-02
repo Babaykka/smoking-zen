@@ -163,7 +163,7 @@ export function createSupabaseFileBackend(client: SupabaseClient): FileBackend {
 
     async listExpiredQuarantines(now, limit) {
       const result = await client.from('attachments').select(ATTACHMENT_COLUMNS)
-        .eq('state', 'quarantine').lte('quarantine_expires_at', now)
+        .eq('state', 'quarantine').is('deleted_at', null).lte('quarantine_expires_at', now)
         .order('quarantine_expires_at').limit(limit) as Result;
       const data = dataOrThrow(result);
       return (Array.isArray(data) ? data : []).map(storedAttachment);

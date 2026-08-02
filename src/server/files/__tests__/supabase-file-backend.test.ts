@@ -16,6 +16,45 @@ function backendWithArmResult(data: unknown) {
 }
 
 describe('Supabase private-file backend', () => {
+  it('lists only live expired quarantine rows so bounded cleanup batches advance past retired metadata', async () => {
+    const limit = vi.fn().mockResolvedValue({
+      data: [{
+        id: attachmentId,
+        workspace_id: workspaceId,
+        task_id: null,
+        knowledge_item_id: null,
+        name: 'expired.txt',
+        mime_type: 'text/plain',
+        size_bytes: 16,
+        storage_path: '33333333-3333-4333-8333-333333333333',
+        state: 'quarantine',
+        sha256: null,
+        quarantine_expires_at: '2026-08-02T11:59:59.000Z',
+        completed_at: null,
+      }],
+      error: null,
+    });
+    const order = vi.fn(() => ({ limit }));
+    const lte = vi.fn(() => ({ order }));
+    const is = vi.fn(() => ({ lte }));
+    const eq = vi.fn(() => ({ is, lte }));
+    const select = vi.fn(() => ({ eq }));
+    const from = vi.fn(() => ({ select }));
+    const client = {
+      from,
+      storage: { from: vi.fn(() => ({})) },
+    } as unknown as SupabaseClient;
+    const backend = createSupabaseFileBackend(client);
+
+    await expect(backend.listExpiredQuarantines('2026-08-02T12:00:00.000Z', 20))
+      .resolves.toEqual([expect.objectContaining({ id: attachmentId, state: 'quarantine' })]);
+    expect(from).toHaveBeenCalledWith('attachments');
+    expect(eq).toHaveBeenCalledWith('state', 'quarantine');
+    expect(is).toHaveBeenCalledWith('deleted_at', null);
+    expect(lte).toHaveBeenCalledWith('quarantine_expires_at', '2026-08-02T12:00:00.000Z');
+    expect(limit).toHaveBeenCalledWith(20);
+  });
+
   it('returns false when the database clock refuses to arm cleanup after quarantine expiry', async () => {
     const { backend } = backendWithArmResult(null);
 
