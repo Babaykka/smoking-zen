@@ -83,23 +83,21 @@ export function createSupabaseFileBackend(client: SupabaseClient): FileBackend {
       const storageResult = await bucket.remove([storagePath]);
       dataOrThrow(storageResult as Result);
       const result = await client.from('attachments').delete()
-        .eq('workspace_id', workspaceId).eq('id', attachmentId).eq('state', 'quarantine') as Result;
+        .eq('workspace_id', workspaceId).eq('id', attachmentId).eq('state', 'quarantine')
+        .eq('storage_path', storagePath) as Result;
       dataOrThrow(result);
     },
 
-    async retireExpiredQuarantine(workspaceId, attachmentId, storagePath) {
-      const result = await client.rpc('retire_expired_quarantine_attachment', {
+    async retireQuarantine(workspaceId, attachmentId, storagePath, reason) {
+      const result = await client.rpc('retire_quarantine_attachment', {
         p_workspace_id: workspaceId,
         p_attachment_id: attachmentId,
         p_expected_storage_path: storagePath,
+        p_reason: reason,
       }) as Result;
-      if (dataOrThrow(result) !== true) throw new Error('Expired quarantine was not retired.');
-    },
-
-    async expireQuarantine(workspaceId, attachmentId) {
-      const result = await client.from('attachments').update({ quarantine_expires_at: new Date(0).toISOString() })
-        .eq('workspace_id', workspaceId).eq('id', attachmentId).eq('state', 'quarantine') as Result;
-      dataOrThrow(result);
+      const retired = dataOrThrow(result);
+      if (typeof retired !== 'boolean') throw new Error('Quarantine retirement verdict was not returned.');
+      return retired;
     },
 
     async createSignedUploadUrl(storagePath) {
@@ -156,14 +154,16 @@ export function createSupabaseFileBackend(client: SupabaseClient): FileBackend {
         p_ready_path: storagePath,
       }) as Result;
       const queueId = dataOrThrow(result);
+      if (queueId === null) return false;
       if (typeof queueId !== 'string' || !UUID_PATTERN.test(queueId)) {
         throw new Error('Private file cleanup guard was not established.');
       }
+      return true;
     },
 
     async listExpiredQuarantines(now, limit) {
       const result = await client.from('attachments').select(ATTACHMENT_COLUMNS)
-        .eq('state', 'quarantine').is('deleted_at', null).lte('quarantine_expires_at', now)
+        .eq('state', 'quarantine').lte('quarantine_expires_at', now)
         .order('quarantine_expires_at').limit(limit) as Result;
       const data = dataOrThrow(result);
       return (Array.isArray(data) ? data : []).map(storedAttachment);

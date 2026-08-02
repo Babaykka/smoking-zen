@@ -36,19 +36,24 @@ export type ReadyAttachmentMutation = {
 };
 
 export type QueuedObject = { id: string; workspaceId: string; storagePath: string };
+export type QuarantineRetirementReason = 'expired' | 'parent_missing' | 'invalid_content';
 
 export interface FileBackend {
   parentExists(workspaceId: string, parent: AttachmentParent): Promise<boolean>;
   insertQuarantine(record: NewQuarantineAttachment): Promise<void>;
   deleteQuarantine(workspaceId: string, attachmentId: string, storagePath: string): Promise<void>;
-  retireExpiredQuarantine(workspaceId: string, attachmentId: string, storagePath: string): Promise<void>;
-  expireQuarantine(workspaceId: string, attachmentId: string): Promise<void>;
+  retireQuarantine(
+    workspaceId: string,
+    attachmentId: string,
+    storagePath: string,
+    reason: QuarantineRetirementReason,
+  ): Promise<boolean>;
   createSignedUploadUrl(storagePath: string): Promise<string>;
   getAttachment(workspaceId: string, attachmentId: string): Promise<StoredAttachment | null>;
   downloadObject(storagePath: string): Promise<Uint8Array>;
   uploadReadyObject(storagePath: string, bytes: Uint8Array, mimeType: string): Promise<void>;
   completeUpload(record: StoredAttachment, ready: ReadyAttachmentMutation): Promise<StoredAttachment>;
-  queueObjectCleanup(workspaceId: string, storagePath: string, attachmentId: string): Promise<void>;
+  queueObjectCleanup(workspaceId: string, storagePath: string, attachmentId: string): Promise<boolean>;
   listExpiredQuarantines(now: string, limit: number): Promise<StoredAttachment[]>;
   listQueuedObjects(now: string, limit: number): Promise<QueuedObject[]>;
   prepareQueuedObjectRemoval(id: string): Promise<string | null>;
@@ -128,15 +133,16 @@ function parentForAttachment(record: StoredAttachment): AttachmentParent | null 
   return null;
 }
 
-async function discardOrExpire(backend: FileBackend, record: StoredAttachment): Promise<void> {
+async function bestEffortRetire(
+  backend: FileBackend,
+  record: StoredAttachment,
+  reason: Exclude<QuarantineRetirementReason, 'expired'>,
+): Promise<void> {
   try {
-    await backend.deleteQuarantine(record.workspaceId, record.id, record.storagePath);
+    await backend.retireQuarantine(record.workspaceId, record.id, record.storagePath, reason);
   } catch {
-    try {
-      await backend.expireQuarantine(record.workspaceId, record.id);
-    } catch {
-      // The original safe validation error is more useful; the scheduled sweep will retry the row.
-    }
+    // Preserve the original safe error. The quarantine row and signed path remain
+    // durable for a later database-authorized retirement attempt.
   }
 }
 
@@ -181,11 +187,8 @@ export function createPrivateFileStore(backend: FileBackend, options: FileStoreO
         try {
           await backend.deleteQuarantine(workspaceId, id, storagePath);
         } catch {
-          try {
-            await backend.expireQuarantine(workspaceId, id);
-          } catch {
-            // Cleanup remains best-effort here; no signed URL was returned to the caller.
-          }
+          // No signed URL escaped. If hard deletion fails, metadata remains durable
+          // and the ordinary expiry sweep can retire it later.
         }
         throw new FileOperationError('Не удалось подготовить загрузку файла.');
       }
@@ -196,16 +199,24 @@ export function createPrivateFileStore(backend: FileBackend, options: FileStoreO
     async completeUpload(workspaceId, attachmentId) {
       const record = await backend.getAttachment(workspaceId, attachmentId);
       if (!record) throw new FileNotFoundError();
+      if (record.state === 'quarantine') {
+        let expired: boolean;
+        try {
+          expired = await backend.retireQuarantine(
+            workspaceId, record.id, record.storagePath, 'expired',
+          );
+        } catch {
+          throw new FileOperationError('Не удалось проверить срок загрузки файла.');
+        }
+        if (expired) throw new UploadExpiredError();
+      }
       const parent = parentForAttachment(record);
       if (!parent || !await backend.parentExists(workspaceId, parent)) {
-        if (record.state === 'quarantine') await discardOrExpire(backend, record);
+        if (record.state === 'quarantine') await bestEffortRetire(backend, record, 'parent_missing');
         throw new ParentNotFoundError();
       }
       if (record.state === 'ready') return publicAttachment(record);
-      if (!record.quarantineExpiresAt || Date.parse(record.quarantineExpiresAt) <= clock().getTime()) {
-        await discardOrExpire(backend, record);
-        throw new UploadExpiredError();
-      }
+      if (!record.quarantineExpiresAt) throw new FileOperationError('Не удалось завершить загрузку файла.');
 
       let uploadedBytes: Uint8Array;
       try {
@@ -224,7 +235,7 @@ export function createPrivateFileStore(backend: FileBackend, options: FileStoreO
         });
       } catch (error) {
         if (error instanceof FileValidationError) {
-          await discardOrExpire(backend, record);
+          await bestEffortRetire(backend, record, 'invalid_content');
           throw error;
         }
         throw new FileOperationError('Не удалось проверить загруженный файл.');
@@ -233,13 +244,22 @@ export function createPrivateFileStore(backend: FileBackend, options: FileStoreO
       // The ready object name is deterministic and opaque. It can be rediscovered after an
       // ambiguous provider response without exposing workspace or lifecycle semantics.
       const readyPath = record.id;
-      if (!record.quarantineExpiresAt) throw new FileOperationError('Не удалось завершить загрузку файла.');
-
       // Establish durable, delayed cleanup before attempting the external write. If the
       // provider commits and its response is lost, the object is still reconciliable.
+      let cleanupArmed: boolean;
       try {
-        await backend.queueObjectCleanup(workspaceId, readyPath, record.id);
+        cleanupArmed = await backend.queueObjectCleanup(workspaceId, readyPath, record.id);
       } catch {
+        throw new FileOperationError('Не удалось сохранить проверенный файл.');
+      }
+      if (!cleanupArmed) {
+        try {
+          if (await backend.retireQuarantine(workspaceId, record.id, record.storagePath, 'expired')) {
+            throw new UploadExpiredError();
+          }
+        } catch (error) {
+          if (error instanceof UploadExpiredError) throw error;
+        }
         throw new FileOperationError('Не удалось сохранить проверенный файл.');
       }
 
@@ -277,6 +297,13 @@ export function createPrivateFileStore(backend: FileBackend, options: FileStoreO
         } catch {
           // The pre-established cleanup row remains authoritative and reference-safe.
         }
+        try {
+          if (await backend.retireQuarantine(workspaceId, record.id, record.storagePath, 'expired')) {
+            throw new UploadExpiredError();
+          }
+        } catch (error) {
+          if (error instanceof UploadExpiredError) throw error;
+        }
         throw new FileOperationError('Не удалось завершить загрузку файла.');
       }
     },
@@ -305,8 +332,9 @@ export function createPrivateFileStore(backend: FileBackend, options: FileStoreO
 
       for (const record of expired) {
         try {
-          await backend.retireExpiredQuarantine(record.workspaceId, record.id, record.storagePath);
-          removed += 1;
+          if (await backend.retireQuarantine(
+            record.workspaceId, record.id, record.storagePath, 'expired',
+          )) removed += 1;
         } catch {
           failed += 1;
         }

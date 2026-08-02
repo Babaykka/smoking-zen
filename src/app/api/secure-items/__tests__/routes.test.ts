@@ -6,7 +6,7 @@ import { createSecureItemRevealHandler } from '@/app/api/secure-items/[id]/revea
 import { createSecureItemHandler } from '@/app/api/secure-items/[id]/route';
 import { createSecureItemsHandler } from '@/app/api/secure-items/route';
 import { ConflictError, RestoreExpiredError } from '@/data/workspace-repository';
-import { unsafeSafeUrlFixtures } from '@/domain/__tests__/safe-content-fixtures';
+import { unsafeSafeTextFixtures, unsafeSafeUrlFixtures } from '@/domain/__tests__/safe-content-fixtures';
 import type { SecureItemSummary } from '@/domain/types';
 import {
   SecureItemUrlNotAllowedError,
@@ -129,11 +129,8 @@ describe('secure-item routes', () => {
     expect(secureStore.createSecureItem).not.toHaveBeenCalled();
   });
 
-  it.each([
-    unsafeSafeUrlFixtures[1],
-    'https://vault.bitwarden.com/?4111.1111.1111.1111=x',
-    'https://vault.bitwarden.com/items/4111:1111:1111:1111',
-  ])('returns stable 400 for canonically unsafe create and update URLs before the database: %s', async (externalUrl) => {
+  it.each(unsafeSafeUrlFixtures)(
+    'returns stable 400 for every canonically unsafe create and update URL before the database: %s', async (externalUrl) => {
     const secureStore = store();
     const collection = createSecureItemsHandler(dependencies(secureStore));
     const created = await collection(request('https://app.example/api/secure-items', 'POST', { ...validInput, externalUrl }));
@@ -146,7 +143,25 @@ describe('secure-item routes', () => {
     }), { params: Promise.resolve({ id: itemId }) });
     expect(updated.status).toBe(400);
     expect(secureStore.updateSecureItem).not.toHaveBeenCalled();
-  });
+    },
+  );
+
+  it.each(unsafeSafeTextFixtures)(
+    'returns stable 400 for every canonically unsafe create and update summary before the database: %s', async (purpose) => {
+      const secureStore = store();
+      const collection = createSecureItemsHandler(dependencies(secureStore));
+      const created = await collection(request('https://app.example/api/secure-items', 'POST', { ...validInput, purpose }));
+      expect(created.status).toBe(400);
+      expect(secureStore.createSecureItem).not.toHaveBeenCalled();
+
+      const item = createSecureItemHandler(dependencies(secureStore));
+      const updated = await item(request(`https://app.example/api/secure-items/${itemId}`, 'PATCH', {
+        input: { purpose }, expectedVersion: 1,
+      }), { params: Promise.resolve({ id: itemId }) });
+      expect(updated.status).toBe(400);
+      expect(secureStore.updateSecureItem).not.toHaveBeenCalled();
+    },
+  );
 
   it('keeps update patches non-defaulting and maps stale versions without overwriting', async () => {
     const secureStore = store();

@@ -22,6 +22,7 @@ const nullableIdSchema = idSchema('Значение').nullable().optional();
 const optionalTextSchema = z.string({ error: 'Заметка должна быть текстом.' }).trim().max(10_000, 'Заметка слишком длинная.').optional();
 const SAFE_SCAN_ZERO_WIDTH = /[\u200b\u200c\u200d\u2060\ufeff]/gu;
 const SAFE_SCAN_SEPARATORS = /[\p{Pd}+:\/_\.=]+/gu;
+const SAFE_SCAN_WHITESPACE = /[\u0009-\u000d\u0020\u00a0\u1680\u2000-\u200a\u2028\u2029\u202f\u205f\u3000]+/gu;
 const secretLikeText = /(?:^|[^\p{L}\p{N}])(?:password|passphrase|secret|token|credential|pin|cvv|cvc|otp|confirmation(?:[ /]+code)?|пароль|секрет|токен|пин|(?:код[ /]*)?подтвержден\p{L}*)(?:(?: *\/+ *)\S+| +(?=\S*(?:\d|[/~]))\S+)/iu;
 const completeCardLikeText = /\d(?:[ /]*\d){12,18}/u;
 
@@ -32,7 +33,7 @@ function normalizeSafeText(value: string): string {
 export function normalizeSafeScanText(value: string): string {
   return normalizeSafeText(value)
     .replace(SAFE_SCAN_SEPARATORS, '/')
-    .replace(/\s+/gu, ' ');
+    .replace(SAFE_SCAN_WHITESPACE, ' ');
 }
 
 function containsCredentialLikeText(value: string): boolean {
@@ -266,13 +267,15 @@ export function isAllowedBitwardenUrl(value: string, selfHostedOrigins: readonly
     const pathname = decodeUrlComponent(url.pathname);
     const fragment = decodeUrlComponent(url.hash.slice(1));
     if (pathname === null || fragment === null || containsUrlSecret(pathname) || containsUrlSecret(fragment)) return false;
-    return [...url.searchParams.entries()].every(([key, queryValue]) => {
-      const decodedKey = decodeUrlComponent(key);
-      const decodedValue = decodeUrlComponent(queryValue);
-      return decodedKey !== null && decodedValue !== null
-        && !secretQueryKey.test(normalizeSafeText(decodedKey))
-        && !containsUrlSecret(decodedKey)
-        && !containsUrlSecret(decodedValue);
+    const decodedQuery = decodeUrlComponent(url.search.slice(1));
+    if (decodedQuery === null) return false;
+    return (decodedQuery === '' ? [] : decodedQuery.split('&')).every((entry) => {
+      const separator = entry.indexOf('=');
+      const key = separator === -1 ? entry : entry.slice(0, separator);
+      const queryValue = separator === -1 ? '' : entry.slice(separator + 1);
+      return !secretQueryKey.test(normalizeSafeText(key))
+        && !containsUrlSecret(key)
+        && !containsUrlSecret(queryValue);
     });
   } catch {
     return false;

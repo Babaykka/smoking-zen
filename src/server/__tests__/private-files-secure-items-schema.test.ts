@@ -25,6 +25,7 @@ const MIGRATIONS = [
   'supabase/migrations/0010_task6_ambiguous_file_cleanup.sql',
   'supabase/migrations/0011_task6_late_cleanup_safe_convergence.sql',
   'supabase/migrations/0012_task6_cleanup_retirement_canonical_safe.sql',
+  'supabase/migrations/0013_task6_quarantine_tombstones_safe_parity.sql',
 ];
 
 const databases: PGlite[] = [];
@@ -317,6 +318,9 @@ describe('private file and secure-item schema runtime', () => {
         id, workspace_id, task_id, name, mime_type, size_bytes, storage_path, created_by, quarantine_expires_at
       ) values ($1, $2, $3, 'first.txt', 'text/plain', 16, $4, $5, clock_timestamp() + interval '15 minutes')
     `, [attachmentId, owner.workspace_id, task.rows[0]!.id, quarantinePath, owner.user_id]);
+    const signedWindow = await database.query<{ expires_at: string }>(
+      'select quarantine_expires_at::text as expires_at from public.attachments where id = $1', [attachmentId],
+    );
 
     const armed = await database.query<{ queue_id: string }>(
       'select public.arm_attachment_ready_cleanup($1, $2, $3) as queue_id',
@@ -325,6 +329,18 @@ describe('private file and secure-item schema runtime', () => {
     await database.query(`select * from public.complete_attachment_upload(
       $1, $2, $3, $4, 'first.txt', 'text/plain', 16, repeat('d', 64)
     )`, [owner.workspace_id, attachmentId, quarantinePath, attachmentId]);
+    expect((await database.query<{ delayed_until_token_expiry: boolean; retained_for_24h: boolean }>(`
+      select
+        cleanup.remove_after >= $3::timestamptz as delayed_until_token_expiry,
+        cleanup.retain_until >= cleanup.remove_after + interval '24 hours' as retained_for_24h
+      from public.file_cleanup_queue as cleanup
+      join public.attachments as completed
+        on completed.workspace_id = cleanup.workspace_id and completed.id = cleanup.attachment_id
+      where cleanup.storage_path = $1 and completed.id = $2
+    `, [quarantinePath, attachmentId, signedWindow.rows[0]!.expires_at])).rows).toEqual([{
+      delayed_until_token_expiry: true,
+      retained_for_24h: true,
+    }]);
 
     const lease = await database.query<{ lease_id: string | null }>(
       'select public.prepare_file_cleanup_object($1)::text as lease_id', [armed.rows[0]!.queue_id],
@@ -472,6 +488,32 @@ describe('private file and secure-item schema runtime', () => {
     )).rows).toEqual([{ count: 0 }]);
   });
 
+  it('refreshes every database-clock lifecycle verdict after its blocking row locks', async () => {
+    const database = await createDatabase();
+    for (const signature of [
+      'private.ensure_quarantine_cleanup_guard(uuid,uuid,text,timestamp with time zone)',
+      'public.arm_attachment_ready_cleanup(uuid,uuid,text)',
+      'public.retire_quarantine_attachment(uuid,uuid,text,text)',
+      'public.complete_attachment_upload(uuid,uuid,text,text,text,text,bigint,text)',
+      'public.finish_file_cleanup_object(uuid,uuid)',
+    ]) {
+      const definition = (await database.query<{ definition: string }>(
+        'select pg_get_functiondef($1::regprocedure) as definition', [signature],
+      )).rows[0]!.definition.toLowerCase();
+      expect(definition.lastIndexOf('for update')).toBeGreaterThan(-1);
+      expect(definition.lastIndexOf('observed_at := clock_timestamp()'))
+        .toBeGreaterThan(definition.lastIndexOf('for update'));
+    }
+
+    const finish = (await database.query<{ definition: string }>(`
+      select pg_get_functiondef(
+        'public.finish_file_cleanup_object(uuid,uuid)'::regprocedure
+      ) as definition
+    `)).rows[0]!.definition.toLowerCase();
+    expect(finish.indexOf('lease_expires_at <= observed_at'))
+      .toBeGreaterThan(finish.indexOf('observed_at := clock_timestamp()'));
+  });
+
   it('returns one durable guard UUID when concurrent first-arm callers hit the insert conflict path', async () => {
     const database = await createDatabase();
     const owner = await bootstrapOwner(database);
@@ -531,6 +573,33 @@ describe('private file and secure-item schema runtime', () => {
       select count(*)::int as count from public.file_cleanup_queue
       where workspace_id = $1 and storage_path = $2
     `, [owner.workspace_id, attachmentId])).rows).toEqual([{ count: 1 }]);
+  });
+
+  it('returns no ready guard after the database quarantine expiry boundary', async () => {
+    const database = await createDatabase();
+    const owner = await bootstrapOwner(database);
+    const status = await database.query<{ id: string }>(
+      "select id from public.task_statuses where workspace_id = $1 and name = 'Новая'", [owner.workspace_id],
+    );
+    const task = await database.query<{ id: string }>(`
+      insert into public.tasks (workspace_id, title, status_id)
+      values ($1, 'Expired ready arm', $2) returning id
+    `, [owner.workspace_id, status.rows[0]!.id]);
+    const attachmentId = 'a0000000-0000-4000-8000-000000000017';
+    await database.query(`
+      insert into public.attachments (
+        id, workspace_id, task_id, name, mime_type, size_bytes, storage_path, created_by, quarantine_expires_at
+      ) values ($1, $2, $3, 'expired-arm.txt', 'text/plain', 16,
+        '10000000-0000-4000-8000-000000000017', $4, clock_timestamp() - interval '1 second')
+    `, [attachmentId, owner.workspace_id, task.rows[0]!.id, owner.user_id]);
+
+    expect((await database.query<{ queue_id: string | null }>(
+      'select public.arm_attachment_ready_cleanup($1, $2, $3)::text as queue_id',
+      [owner.workspace_id, attachmentId, attachmentId],
+    )).rows).toEqual([{ queue_id: null }]);
+    expect((await database.query<{ count: number }>(
+      'select count(*)::int as count from public.file_cleanup_queue where storage_path = $1', [attachmentId],
+    )).rows).toEqual([{ count: 0 }]);
   });
 
   it('rejects a global ready-path guard collision from another workspace without changing its scope', async () => {
@@ -670,6 +739,248 @@ describe('private file and secure-item schema runtime', () => {
     `)).rows).toEqual([{ anon: false, auth: false, service: true }]);
   });
 
+  it('authorizes reasoned quarantine retirement only through the service role and retains each signed path', async () => {
+    const database = await createDatabase();
+    const owner = await bootstrapOwner(database);
+    const status = await database.query<{ id: string }>(
+      "select id from public.task_statuses where workspace_id = $1 and name = 'Новая'", [owner.workspace_id],
+    );
+    const task = await database.query<{ id: string }>(`
+      insert into public.tasks (workspace_id, title, status_id)
+      values ($1, 'Reasoned retire', $2) returning id
+    `, [owner.workspace_id, status.rows[0]!.id]);
+    const expiredId = 'a0000000-0000-4000-8000-000000000018';
+    const parentId = 'a0000000-0000-4000-8000-000000000019';
+    const invalidId = 'a0000000-0000-4000-8000-000000000020';
+    const expiredPath = '10000000-0000-4000-8000-000000000018';
+    const parentPath = '10000000-0000-4000-8000-000000000019';
+    const invalidPath = '10000000-0000-4000-8000-000000000020';
+    await database.query(`
+      insert into public.attachments (
+        id, workspace_id, task_id, name, mime_type, size_bytes, storage_path, created_by, quarantine_expires_at
+      ) values
+        ($1, $2, $3, 'expired.txt', 'text/plain', 16, $4, $5, clock_timestamp() + interval '15 minutes'),
+        ($6, $2, $3, 'parent.txt', 'text/plain', 16, $7, $5, clock_timestamp() + interval '15 minutes'),
+        ($8, $2, $3, 'invalid.txt', 'text/plain', 16, $9, $5, clock_timestamp() + interval '15 minutes')
+    `, [
+      expiredId, owner.workspace_id, task.rows[0]!.id, expiredPath, owner.user_id,
+      parentId, parentPath, invalidId, invalidPath,
+    ]);
+
+    expect((await database.query<{ retired: boolean }>(`
+      select public.retire_quarantine_attachment($1, $2, $3, 'expired') as retired
+    `, [owner.workspace_id, expiredId, expiredPath])).rows).toEqual([{ retired: false }]);
+    await database.query('update public.tasks set deleted_at = clock_timestamp() where id = $1', [task.rows[0]!.id]);
+    expect((await database.query<{ retired: boolean }>(`
+      select public.retire_quarantine_attachment($1, $2, $3, 'parent_missing') as retired
+    `, [owner.workspace_id, parentId, parentPath])).rows).toEqual([{ retired: true }]);
+    expect((await database.query<{ retired: boolean }>(`
+      select public.retire_quarantine_attachment($1, $2, $3, 'invalid_content') as retired
+    `, [owner.workspace_id, invalidId, invalidPath])).rows).toEqual([{ retired: true }]);
+
+    expect((await database.query<{ storage_path: string; delayed: boolean; retained: boolean }>(`
+      select cleanup.storage_path,
+        cleanup.remove_after >= attachment.quarantine_expires_at as delayed,
+        cleanup.retain_until >= cleanup.remove_after + interval '24 hours' as retained
+      from public.file_cleanup_queue as cleanup
+      join public.attachments as attachment
+        on attachment.workspace_id = cleanup.workspace_id and attachment.id = cleanup.attachment_id
+      where cleanup.storage_path in ($1, $2)
+      order by cleanup.storage_path
+    `, [parentPath, invalidPath])).rows).toEqual([
+      { storage_path: parentPath, delayed: true, retained: true },
+      { storage_path: invalidPath, delayed: true, retained: true },
+    ]);
+    expect((await database.query<{ anon: boolean; auth: boolean; service: boolean }>(`
+      select
+        has_function_privilege('anon', 'public.retire_quarantine_attachment(uuid,uuid,text,text)', 'execute') as anon,
+        has_function_privilege('authenticated', 'public.retire_quarantine_attachment(uuid,uuid,text,text)', 'execute') as auth,
+        has_function_privilege('service_role', 'public.retire_quarantine_attachment(uuid,uuid,text,text)', 'execute') as service
+    `)).rows).toEqual([{ anon: false, auth: false, service: true }]);
+  });
+
+  it('retains an expired quarantine-path tombstone until a second remove catches an in-flight signed upload', async () => {
+    const database = await createDatabase();
+    const owner = await bootstrapOwner(database);
+    const status = await database.query<{ id: string }>(
+      "select id from public.task_statuses where workspace_id = $1 and name = 'Новая'", [owner.workspace_id],
+    );
+    const task = await database.query<{ id: string }>(`
+      insert into public.tasks (workspace_id, title, status_id)
+      values ($1, 'Late quarantine upload', $2) returning id
+    `, [owner.workspace_id, status.rows[0]!.id]);
+    const attachmentId = 'a0000000-0000-4000-8000-000000000016';
+    const quarantinePath = '10000000-0000-4000-8000-000000000016';
+    await database.query(`
+      insert into public.attachments (
+        id, workspace_id, task_id, name, mime_type, size_bytes, storage_path, created_by, quarantine_expires_at
+      ) values ($1, $2, $3, 'late-q.txt', 'text/plain', 16, $4, $5, clock_timestamp() - interval '1 second')
+    `, [attachmentId, owner.workspace_id, task.rows[0]!.id, quarantinePath, owner.user_id]);
+
+    // The provider accepted the signed upload before expiry, but its commit is still in flight.
+    const storedObjects = new Set<string>([quarantinePath]);
+    await database.query(
+      'select public.retire_expired_quarantine_attachment($1, $2, $3)',
+      [owner.workspace_id, attachmentId, quarantinePath],
+    );
+    const queue = await database.query<{ id: string }>(`
+      select id::text from public.file_cleanup_queue where storage_path = $1
+    `, [quarantinePath]);
+    const firstLease = await database.query<{ lease_id: string }>(
+      'select public.prepare_file_cleanup_object($1)::text as lease_id', [queue.rows[0]!.id],
+    );
+    storedObjects.delete(quarantinePath);
+    const firstFinish = await database.query<{ removed: boolean }>(
+      'select public.finish_file_cleanup_object($1, $2) as removed',
+      [queue.rows[0]!.id, firstLease.rows[0]!.lease_id],
+    );
+
+    expect(firstFinish.rows).toEqual([{ removed: false }]);
+    expect((await database.query<{ count: number }>(
+      'select count(*)::int as count from public.file_cleanup_queue where id = $1', [queue.rows[0]!.id],
+    )).rows).toEqual([{ count: 1 }]);
+
+    const afterFirstSweep = await database.query<{ remove_after: string; retain_until: string }>(`
+      select remove_after::text, retain_until::text
+      from public.file_cleanup_queue where id = $1
+    `, [queue.rows[0]!.id]);
+    await applyMigration(database, MIGRATIONS.at(-1)!);
+    expect((await database.query(`
+      select remove_after::text, retain_until::text
+      from public.file_cleanup_queue where id = $1
+    `, [queue.rows[0]!.id])).rows).toEqual(afterFirstSweep.rows);
+
+    // The already-authorized provider write lands after the first successful remove.
+    storedObjects.add(quarantinePath);
+    await database.query(`
+      update public.file_cleanup_queue
+      set remove_after = clock_timestamp() - interval '1 second',
+          retain_until = clock_timestamp() - interval '1 second'
+      where id = $1
+    `, [queue.rows[0]!.id]);
+    const secondLease = await database.query<{ lease_id: string }>(
+      'select public.prepare_file_cleanup_object($1)::text as lease_id', [queue.rows[0]!.id],
+    );
+    storedObjects.delete(quarantinePath);
+    expect((await database.query<{ removed: boolean }>(
+      'select public.finish_file_cleanup_object($1, $2) as removed',
+      [queue.rows[0]!.id, secondLease.rows[0]!.lease_id],
+    )).rows).toEqual([{ removed: true }]);
+    expect(storedObjects.has(quarantinePath)).toBe(false);
+  });
+
+  it('backfills retained tombstones for signed quarantine paths created before 0013 and reapplies without churn', async () => {
+    const migration0013 = MIGRATIONS.at(-1)!;
+    const database = await createDatabase(MIGRATIONS.slice(0, -1), false);
+    const owner = await bootstrapOwner(database);
+    const status = await database.query<{ id: string }>(
+      "select id from public.task_statuses where workspace_id = $1 and name = 'Новая'", [owner.workspace_id],
+    );
+    const task = await database.query<{ id: string }>(`
+      insert into public.tasks (workspace_id, title, status_id)
+      values ($1, 'Legacy signed quarantine', $2) returning id
+    `, [owner.workspace_id, status.rows[0]!.id]);
+    const attachmentId = 'a0000000-0000-4000-8000-000000000021';
+    const quarantinePath = '10000000-0000-4000-8000-000000000021';
+    await database.query(`
+      insert into public.attachments (
+        id, workspace_id, task_id, name, mime_type, size_bytes, storage_path, created_by,
+        quarantine_expires_at, deleted_at
+      ) values ($1, $2, $3, 'legacy-signed.txt', 'text/plain', 16, $4, $5,
+        clock_timestamp() + interval '15 minutes', clock_timestamp())
+    `, [attachmentId, owner.workspace_id, task.rows[0]!.id, quarantinePath, owner.user_id]);
+
+    await applyMigration(database, migration0013);
+    const first = await database.query<{
+      id: string; delayed: boolean; retained: boolean; version: number; updated_at: string;
+    }>(`
+      select cleanup.id::text,
+        cleanup.remove_after >= attachment.quarantine_expires_at as delayed,
+        cleanup.retain_until >= cleanup.remove_after + interval '24 hours' as retained,
+        attachment.version, attachment.updated_at::text
+      from public.attachments as attachment
+      join public.file_cleanup_queue as cleanup
+        on cleanup.workspace_id = attachment.workspace_id
+       and cleanup.attachment_id = attachment.id
+       and cleanup.storage_path = attachment.storage_path
+      where attachment.id = $1
+    `, [attachmentId]);
+    expect(first.rows).toHaveLength(1);
+    expect(first.rows[0]).toMatchObject({ delayed: true, retained: true });
+
+    await applyMigration(database, migration0013);
+    expect((await database.query(`
+      select cleanup.id::text,
+        cleanup.remove_after >= attachment.quarantine_expires_at as delayed,
+        cleanup.retain_until >= cleanup.remove_after + interval '24 hours' as retained,
+        attachment.version, attachment.updated_at::text
+      from public.attachments as attachment
+      join public.file_cleanup_queue as cleanup
+        on cleanup.workspace_id = attachment.workspace_id
+       and cleanup.attachment_id = attachment.id
+       and cleanup.storage_path = attachment.storage_path
+      where attachment.id = $1
+    `, [attachmentId])).rows).toEqual(first.rows);
+  });
+
+  it('extends a pre-0013 completed quarantine-path row from the derived 125-minute signed window', async () => {
+    const migration0013 = MIGRATIONS.at(-1)!;
+    const database = await createDatabase(MIGRATIONS.slice(0, -1), false);
+    const owner = await bootstrapOwner(database);
+    const status = await database.query<{ id: string }>(
+      "select id from public.task_statuses where workspace_id = $1 and name = 'Новая'", [owner.workspace_id],
+    );
+    const task = await database.query<{ id: string }>(`
+      insert into public.tasks (workspace_id, title, status_id)
+      values ($1, 'Legacy completed quarantine', $2) returning id
+    `, [owner.workspace_id, status.rows[0]!.id]);
+    const attachmentId = 'a0000000-0000-4000-8000-000000000022';
+    const quarantinePath = '10000000-0000-4000-8000-000000000022';
+    await database.query(`
+      insert into public.attachments (
+        id, workspace_id, task_id, name, mime_type, size_bytes, storage_path, created_by,
+        quarantine_expires_at
+      ) values ($1, $2, $3, 'legacy-completed.txt', 'text/plain', 16, $4, $5,
+        clock_timestamp() + interval '15 minutes')
+    `, [attachmentId, owner.workspace_id, task.rows[0]!.id, quarantinePath, owner.user_id]);
+    await database.query('select public.arm_attachment_ready_cleanup($1, $2, $3)', [
+      owner.workspace_id, attachmentId, attachmentId,
+    ]);
+    await database.query(`select * from public.complete_attachment_upload(
+      $1, $2, $3, $4, 'legacy-completed.txt', 'text/plain', 16, $5
+    )`, [owner.workspace_id, attachmentId, quarantinePath, attachmentId, 'a'.repeat(64)]);
+    expect((await database.query<{ retain_until: string | null }>(`
+      select retain_until::text from public.file_cleanup_queue where storage_path = $1
+    `, [quarantinePath])).rows).toEqual([{ retain_until: null }]);
+
+    await applyMigration(database, migration0013);
+    const first = await database.query<{
+      delayed: boolean; retained: boolean; version: number; updated_at: string;
+    }>(`
+      select cleanup.remove_after >= attachment.created_at + interval '125 minutes' as delayed,
+        cleanup.retain_until >= cleanup.remove_after + interval '24 hours' as retained,
+        attachment.version, attachment.updated_at::text
+      from public.attachments as attachment
+      join public.file_cleanup_queue as cleanup
+        on cleanup.workspace_id = attachment.workspace_id
+       and cleanup.attachment_id = attachment.id
+      where attachment.id = $1 and cleanup.storage_path = $2
+    `, [attachmentId, quarantinePath]);
+    expect(first.rows).toEqual([expect.objectContaining({ delayed: true, retained: true })]);
+
+    await applyMigration(database, migration0013);
+    expect((await database.query(`
+      select cleanup.remove_after >= attachment.created_at + interval '125 minutes' as delayed,
+        cleanup.retain_until >= cleanup.remove_after + interval '24 hours' as retained,
+        attachment.version, attachment.updated_at::text
+      from public.attachments as attachment
+      join public.file_cleanup_queue as cleanup
+        on cleanup.workspace_id = attachment.workspace_id
+       and cleanup.attachment_id = attachment.id
+      where attachment.id = $1 and cleanup.storage_path = $2
+    `, [attachmentId, quarantinePath])).rows).toEqual(first.rows);
+  });
+
   it('reapplies 0010 without mutating an existing legacy attachment version or timestamp', async () => {
     const migration0010 = 'supabase/migrations/0010_task6_ambiguous_file_cleanup.sql';
     const before0010 = MIGRATIONS.slice(0, MIGRATIONS.indexOf(migration0010));
@@ -739,6 +1050,36 @@ describe('private file and secure-item schema runtime', () => {
         or not private.secure_item_url_is_safe(external_url)
     `);
     expect(unsafe.rows).toEqual([{ count: 0 }]);
+  });
+
+  it('converges OGHAM-disguised credentials and PANs when upgrading from 0012 without repeat churn', async () => {
+    const migration0013 = MIGRATIONS.at(-1)!;
+    const database = await createDatabase(MIGRATIONS.slice(0, -1), false);
+    const owner = await bootstrapOwner(database);
+    await database.query(`
+      insert into public.secure_items (workspace_id, title, purpose, owner, external_url)
+      values
+        ($1, 'Legacy OGHAM credential', $2, 'Команда', 'https://vault.bitwarden.com/#/items/example'),
+        ($1, 'Legacy OGHAM PAN', 'Политика паролей', $3, 'https://vault.bitwarden.com/#/items/example')
+    `, [owner.workspace_id, 'password\u1680hunter2', '4111\u16801111\u16801111\u16801111']);
+
+    await applyMigration(database, migration0013);
+    const first = await database.query<{
+      title: string; purpose: string; owner: string; version: number; updated_at: string;
+    }>(`
+      select title, purpose, owner, version, updated_at::text
+      from public.secure_items where workspace_id = $1 order by title
+    `, [owner.workspace_id]);
+    expect(first.rows).toEqual([
+      expect.objectContaining({ title: 'Legacy OGHAM PAN', owner: 'Команда' }),
+      expect.objectContaining({ title: 'Legacy OGHAM credential', purpose: 'Ссылка на запись в Bitwarden' }),
+    ]);
+
+    await applyMigration(database, migration0013);
+    expect((await database.query(`
+      select title, purpose, owner, version, updated_at::text
+      from public.secure_items where workspace_id = $1 order by title
+    `, [owner.workspace_id])).rows).toEqual(first.rows);
   });
 
   it('rejects unsafe fresh Safe summaries and nested encoded URLs while preserving benign UUID routes', async () => {

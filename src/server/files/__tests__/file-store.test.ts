@@ -41,8 +41,7 @@ function backend(overrides: Partial<FileBackend> = {}): FileBackend {
     parentExists: vi.fn().mockResolvedValue(true),
     insertQuarantine: vi.fn().mockResolvedValue(undefined),
     deleteQuarantine: vi.fn().mockResolvedValue(undefined),
-    retireExpiredQuarantine: vi.fn().mockResolvedValue(undefined),
-    expireQuarantine: vi.fn().mockResolvedValue(undefined),
+    retireQuarantine: vi.fn().mockResolvedValue(false),
     createSignedUploadUrl: vi.fn().mockImplementation(async (storagePath: string) =>
       `https://storage.example/storage/v1/object/upload/sign/workspace-files/${storagePath}?token=ephemeral`),
     getAttachment: vi.fn().mockResolvedValue(quarantine),
@@ -59,7 +58,7 @@ function backend(overrides: Partial<FileBackend> = {}): FileBackend {
       quarantineExpiresAt: null,
       completedAt: '2026-08-02T12:00:00.000Z',
     })),
-    queueObjectCleanup: vi.fn().mockResolvedValue(undefined),
+    queueObjectCleanup: vi.fn().mockResolvedValue(true),
     listExpiredQuarantines: vi.fn().mockResolvedValue([]),
     listQueuedObjects: vi.fn().mockResolvedValue([]),
     prepareQueuedObjectRemoval: vi.fn().mockResolvedValue(cleanupLeaseId),
@@ -119,6 +118,30 @@ describe('private file lifecycle store', () => {
       parent: { type: 'task', id: quarantine.taskId! }, file: preflight(),
     })).rejects.toThrow('Не удалось подготовить загрузку файла.');
     expect(fileBackend.deleteQuarantine).toHaveBeenCalledWith(workspaceId, attachmentId, quarantineObjectId);
+    expect(fileBackend.retireQuarantine).not.toHaveBeenCalled();
+  });
+
+  it('uses the database expiry verdict when the application clock is far ahead', async () => {
+    const fileBackend = backend({ retireQuarantine: vi.fn().mockResolvedValue(false) });
+    const store = createPrivateFileStore(fileBackend, { clock: () => new Date('2036-08-02T12:00:00.000Z') });
+
+    await expect(store.completeUpload(workspaceId, attachmentId)).resolves.toEqual({
+      id: attachmentId, name: quarantine.name, mimeType: quarantine.mimeType, size: bytes.length,
+    });
+    expect(fileBackend.retireQuarantine).toHaveBeenCalledWith(
+      workspaceId, attachmentId, quarantine.storagePath, 'expired',
+    );
+    expect(fileBackend.deleteQuarantine).not.toHaveBeenCalled();
+  });
+
+  it('uses the database expiry verdict when the application clock is far behind', async () => {
+    const fileBackend = backend({ retireQuarantine: vi.fn().mockResolvedValue(true) });
+    const store = createPrivateFileStore(fileBackend, { clock: () => new Date('2016-08-02T12:00:00.000Z') });
+
+    await expect(store.completeUpload(workspaceId, attachmentId)).rejects.toBeInstanceOf(UploadExpiredError);
+    expect(fileBackend.parentExists).not.toHaveBeenCalled();
+    expect(fileBackend.downloadObject).not.toHaveBeenCalled();
+    expect(fileBackend.deleteQuarantine).not.toHaveBeenCalled();
   });
 
   it('validates every uploaded byte, writes a new ready object, and atomically queues the quarantine object for cleanup', async () => {
@@ -247,7 +270,7 @@ describe('private file lifecycle store', () => {
     const readyWriteStarted = new Promise<void>((resolve) => { markReadyWriteStarted = resolve; });
     const readyWriteCanCommit = new Promise<void>((resolve) => { releaseReadyWrite = resolve; });
     const fileBackend = backend({
-      queueObjectCleanup: vi.fn().mockImplementation(async () => { queued = true; }),
+      queueObjectCleanup: vi.fn().mockImplementation(async () => { queued = true; return true; }),
       listQueuedObjects: vi.fn().mockImplementation(async (now: string) => {
         sweepTime = Date.parse(now);
         return queued && queueDueAt <= sweepTime
@@ -342,30 +365,76 @@ describe('private file lifecycle store', () => {
     expect(queued).toBe(false);
   });
 
-  it('denies completion and discards quarantine when the parent was deleted after signing', async () => {
-    const fileBackend = backend({ parentExists: vi.fn().mockResolvedValue(false) });
+  it('soft-retires without Storage deletion when the parent disappears during an in-flight signed upload', async () => {
+    const retireQuarantine = vi.fn().mockImplementation(async (
+      _workspace: string, _attachment: string, _path: string, reason: string,
+    ) => reason === 'parent_missing');
+    const fileBackend = backend({ parentExists: vi.fn().mockResolvedValue(false), retireQuarantine });
     const store = createPrivateFileStore(fileBackend, { idFactory: idFactory() });
 
     await expect(store.completeUpload(workspaceId, attachmentId)).rejects.toBeInstanceOf(ParentNotFoundError);
     expect(fileBackend.parentExists).toHaveBeenCalledWith(workspaceId, { type: 'task', id: quarantine.taskId });
-    expect(fileBackend.deleteQuarantine).toHaveBeenCalledWith(workspaceId, attachmentId, quarantine.storagePath);
+    expect(retireQuarantine).toHaveBeenLastCalledWith(
+      workspaceId, attachmentId, quarantine.storagePath, 'parent_missing',
+    );
+    expect(fileBackend.deleteQuarantine).not.toHaveBeenCalled();
+    expect(fileBackend.removeObject).not.toHaveBeenCalled();
     expect(fileBackend.downloadObject).not.toHaveBeenCalled();
     expect(fileBackend.uploadReadyObject).not.toHaveBeenCalled();
   });
 
-  it('discards invalid uploaded bytes and leaves a failed cleanup discoverable without leaking its path', async () => {
+  it('soft-retires invalid uploaded bytes without deleting an in-flight signed-upload path', async () => {
     const invalidBytes = Buffer.from('<html>secret</html>');
-    const deleteQuarantine = vi.fn().mockRejectedValue(new Error('storage unavailable at private/key'));
+    const retireQuarantine = vi.fn().mockImplementation(async (
+      _workspace: string, _attachment: string, _path: string, reason: string,
+    ) => reason === 'invalid_content');
     const fileBackend = backend({
       getAttachment: vi.fn().mockResolvedValue({ ...quarantine, size: invalidBytes.length }),
       downloadObject: vi.fn().mockResolvedValue(invalidBytes),
-      deleteQuarantine,
+      retireQuarantine,
     });
     const store = createPrivateFileStore(fileBackend, { idFactory: idFactory() });
 
     await expect(store.completeUpload(workspaceId, attachmentId)).rejects.toThrow(/HTML|TXT/iu);
-    expect(deleteQuarantine).toHaveBeenCalledWith(workspaceId, attachmentId, quarantine.storagePath);
-    expect(fileBackend.expireQuarantine).toHaveBeenCalledWith(workspaceId, attachmentId);
+    expect(retireQuarantine).toHaveBeenLastCalledWith(
+      workspaceId, attachmentId, quarantine.storagePath, 'invalid_content',
+    );
+    expect(fileBackend.deleteQuarantine).not.toHaveBeenCalled();
+    expect(fileBackend.removeObject).not.toHaveBeenCalled();
+  });
+
+  it('retains invalid quarantine metadata when the retirement RPC is unavailable', async () => {
+    const invalidBytes = Buffer.from('<html>secret</html>');
+    const fileBackend = backend({
+      getAttachment: vi.fn().mockResolvedValue({ ...quarantine, size: invalidBytes.length }),
+      downloadObject: vi.fn().mockResolvedValue(invalidBytes),
+      retireQuarantine: vi.fn()
+        .mockResolvedValueOnce(false)
+        .mockRejectedValueOnce(new Error('database unavailable')),
+    });
+    const store = createPrivateFileStore(fileBackend);
+
+    await expect(store.completeUpload(workspaceId, attachmentId)).rejects.toThrow(/HTML|TXT/iu);
+    expect(fileBackend.deleteQuarantine).not.toHaveBeenCalled();
+    expect(fileBackend.removeObject).not.toHaveBeenCalled();
+  });
+
+  it('retires safely when database expiry races validation and ready-cleanup arming', async () => {
+    const retireQuarantine = vi.fn()
+      .mockResolvedValueOnce(false)
+      .mockResolvedValueOnce(true);
+    const fileBackend = backend({
+      retireQuarantine,
+      queueObjectCleanup: vi.fn().mockResolvedValue(false),
+    });
+    const store = createPrivateFileStore(fileBackend);
+
+    await expect(store.completeUpload(workspaceId, attachmentId)).rejects.toBeInstanceOf(UploadExpiredError);
+    expect(retireQuarantine).toHaveBeenNthCalledWith(
+      2, workspaceId, attachmentId, quarantine.storagePath, 'expired',
+    );
+    expect(fileBackend.uploadReadyObject).not.toHaveBeenCalled();
+    expect(fileBackend.deleteQuarantine).not.toHaveBeenCalled();
   });
 
   it('never signs a download unless the row is ready and always uses exactly 60 seconds', async () => {
@@ -411,6 +480,7 @@ describe('private file lifecycle store', () => {
     const expired = { ...quarantine, quarantineExpiresAt: '2026-08-02T11:59:59.000Z' };
     const fileBackend = backend({
       getAttachment: vi.fn().mockResolvedValue(expired),
+      retireQuarantine: vi.fn().mockResolvedValue(true),
       listExpiredQuarantines: vi.fn().mockResolvedValue([expired]),
       listQueuedObjects: vi.fn().mockResolvedValue([{ id: 'queue-1', workspaceId, storagePath: quarantineObjectId }]),
     });
@@ -418,7 +488,9 @@ describe('private file lifecycle store', () => {
 
     await expect(store.completeUpload(workspaceId, attachmentId)).rejects.toBeInstanceOf(UploadExpiredError);
     const cleanup = await store.cleanupExpiredUploads(new Date('2026-08-02T12:00:00.000Z'), 20);
-    expect(fileBackend.retireExpiredQuarantine).toHaveBeenCalledWith(workspaceId, attachmentId, quarantine.storagePath);
+    expect(fileBackend.retireQuarantine).toHaveBeenCalledWith(
+      workspaceId, attachmentId, quarantine.storagePath, 'expired',
+    );
     expect(fileBackend.removeObject).toHaveBeenCalledWith(quarantineObjectId);
     expect(fileBackend.finishQueuedObjectRemoval).toHaveBeenCalledWith('queue-1', cleanupLeaseId);
     expect(cleanup).toEqual({ removed: 2, failed: 0 });
@@ -429,7 +501,7 @@ describe('private file lifecycle store', () => {
     let retired = false;
     const fileBackend = backend({
       listExpiredQuarantines: vi.fn().mockResolvedValue([expired]),
-      retireExpiredQuarantine: vi.fn().mockImplementation(async () => { retired = true; }),
+      retireQuarantine: vi.fn().mockImplementation(async () => { retired = true; return true; }),
       listQueuedObjects: vi.fn().mockImplementation(async () => retired
         ? [{ id: 'queue-retired-quarantine', workspaceId, storagePath: expired.storagePath }]
         : []),
@@ -450,20 +522,21 @@ describe('private file lifecycle store', () => {
       storagePath: `quarantine-${String(index).padStart(2, '0')}`,
       quarantineExpiresAt: new Date(Date.UTC(2026, 7, 2, 10, index)).toISOString(),
     }));
-    const retireExpiredQuarantine = vi.fn().mockImplementation(async (_workspace: string, id: string) => {
+    const retireQuarantine = vi.fn().mockImplementation(async (_workspace: string, id: string) => {
       const index = active.findIndex((record) => record.id === id);
       if (index >= 0) active.splice(index, 1);
+      return true;
     });
     const fileBackend = backend({
       listExpiredQuarantines: vi.fn().mockImplementation(async (_now: string, limit: number) => active.slice(0, limit)),
-      retireExpiredQuarantine,
+      retireQuarantine,
     });
     const store = createPrivateFileStore(fileBackend);
     const now = new Date('2026-08-02T12:00:00.000Z');
 
     await expect(store.cleanupExpiredUploads(now, 20)).resolves.toEqual({ removed: 20, failed: 0 });
     await expect(store.cleanupExpiredUploads(now, 20)).resolves.toEqual({ removed: 1, failed: 0 });
-    expect(retireExpiredQuarantine).toHaveBeenCalledTimes(21);
+    expect(retireQuarantine).toHaveBeenCalledTimes(21);
     expect(active).toEqual([]);
     expect(fileBackend.deleteQuarantine).not.toHaveBeenCalled();
   });
@@ -474,10 +547,11 @@ describe('private file lifecycle store', () => {
     let attempts = 0;
     const fileBackend = backend({
       listExpiredQuarantines: vi.fn().mockImplementation(async () => retired ? [] : [expired]),
-      retireExpiredQuarantine: vi.fn().mockImplementation(async () => {
+      retireQuarantine: vi.fn().mockImplementation(async () => {
         attempts += 1;
         if (attempts === 1) throw new Error('database response lost');
         retired = true;
+        return true;
       }),
     });
     const store = createPrivateFileStore(fileBackend);
