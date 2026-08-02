@@ -12,20 +12,30 @@ export const demoSeed: WorkspaceSnapshot = {
     { id: 'status-done', workspaceId, name: 'Готово', position: 4, version: 1, createdAt, updatedAt: createdAt, deletedAt: null },
   ],
   sections: [
-    { id: 'section-operations', workspaceId, name: 'Операции', position: 1, version: 1, createdAt, updatedAt: createdAt, deletedAt: null },
-    { id: 'section-knowledge', workspaceId, name: 'База знаний', position: 2, version: 1, createdAt, updatedAt: createdAt, deletedAt: null },
+    { id: 'section-opening', workspaceId, name: 'Открытие', position: 1, version: 1, createdAt, updatedAt: createdAt, deletedAt: null },
+    { id: 'section-repair', workspaceId, name: 'Ремонт и техника', position: 2, version: 1, createdAt, updatedAt: createdAt, deletedAt: null },
+    { id: 'section-stock', workspaceId, name: 'Закупки и склад', position: 3, version: 1, createdAt, updatedAt: createdAt, deletedAt: null },
+    { id: 'section-service', workspaceId, name: 'Зал и сервис', position: 4, version: 1, createdAt, updatedAt: createdAt, deletedAt: null },
+    { id: 'section-people', workspaceId, name: 'Персонал', position: 5, version: 1, createdAt, updatedAt: createdAt, deletedAt: null },
+    { id: 'section-marketing', workspaceId, name: 'Маркетинг', position: 6, version: 1, createdAt, updatedAt: createdAt, deletedAt: null },
+    { id: 'section-documents', workspaceId, name: 'Документы и финансы', position: 7, version: 1, createdAt, updatedAt: createdAt, deletedAt: null },
+    { id: 'section-safety', workspaceId, name: 'Безопасность и санитария', position: 8, version: 1, createdAt, updatedAt: createdAt, deletedAt: null },
   ],
   tasks: [
     {
       id: 'task-check-coals', workspaceId, title: 'Проверить запас кокосового угля', description: 'Сверить остаток перед вечерней сменой.', priority: 2,
-      statusId: 'status-new', sectionId: 'section-operations', assigneeId: 'member-alina', dueAt: '2026-08-02T15:00:00.000Z', attachments: [],
+      statusId: 'status-new', sectionId: 'section-stock', assigneeId: 'member-alina', dueAt: '2026-08-02T15:00:00.000Z', attachments: [],
       version: 1, createdAt, updatedAt: createdAt, deletedAt: null,
     },
   ],
   comments: [],
   knowledge: [
     {
-      id: 'knowledge-bowl', workspaceId, title: 'Плотная забивка чаши', body: 'Перед подачей проверьте тягу и чистоту колбы.', kind: 'instruction', sectionId: 'section-knowledge', attachments: [],
+      id: 'knowledge-bowl', workspaceId, title: 'Плотная забивка чаши', body: 'Перед подачей проверьте тягу и чистоту колбы.', kind: 'instruction', linkUrl: null, sectionId: 'section-documents', attachments: [],
+      version: 1, createdAt, updatedAt: createdAt, deletedAt: null,
+    },
+    {
+      id: 'knowledge-guide', workspaceId, title: 'Регламент санитарной обработки', body: 'Откройте официальный регламент перед сменой.', kind: 'link', linkUrl: 'https://example.com/sanitary-guide', sectionId: 'section-safety', attachments: [],
       version: 1, createdAt, updatedAt: createdAt, deletedAt: null,
     },
   ],
@@ -38,6 +48,7 @@ export const demoSeed: WorkspaceSnapshot = {
   members: [
     { id: 'member-owner', workspaceId, name: 'Алексей', role: 'owner', active: true, version: 1, createdAt, updatedAt: createdAt, deletedAt: null },
     { id: 'member-alina', workspaceId, name: 'Алина', role: 'member', active: true, version: 1, createdAt, updatedAt: createdAt, deletedAt: null },
+    { id: 'member-ilya', workspaceId, name: 'Илья', role: 'member', active: false, version: 1, createdAt, updatedAt: createdAt, deletedAt: null },
   ],
   secureItems: [
     {

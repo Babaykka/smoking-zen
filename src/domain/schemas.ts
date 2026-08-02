@@ -31,6 +31,29 @@ const safeFreeText = (schema: z.ZodString) => schema.refine(
   'Секретные данные и реквизиты карт хранить нельзя.',
 );
 
+const safeKnowledgeUrlSchema = z.string({ error: 'Укажите корректную HTTPS-ссылку.' }).trim().max(2_000, 'Ссылка слишком длинная.').refine((value) => {
+  try {
+    const url = new URL(value);
+    return url.protocol === 'https:' && !url.username && !url.password &&
+      [...url.searchParams.keys()].every((key) => !/(?:token|signature|credential|secret|password|x-amz-)/iu.test(key));
+  } catch {
+    return false;
+  }
+}, 'Укажите корректную HTTPS-ссылку.');
+
+function normalizeContactMethod(kind: ContactMethodKind, value: string): string | null {
+  if (kind === 'phone') {
+    const normalized = value.replace(/[\s().-]/g, '');
+    return /^\+?\d{7,15}$/.test(normalized) ? `+${normalized.replace(/^\+/, '')}` : null;
+  }
+  if (kind === 'telegram') {
+    const username = value.replace(/^@/, '');
+    return /^[A-Za-z0-9_]{5,32}$/.test(username) ? username : null;
+  }
+  const digits = value.replace(/\D/g, '');
+  return /^\d{7,15}$/.test(digits) ? digits : null;
+}
+
 export const attachmentInputSchema = z
   .object({
     id: idSchema('Идентификатор файла'),
@@ -77,32 +100,63 @@ export const commentInputSchema = z
 
 export const knowledgeInputSchema = z
   .object({
-    title: z.string({ error: 'Название материала должно быть текстом.' }).trim().min(1, 'Введите название материала.').max(280, 'Название материала слишком длинное.'),
-    body: z.string({ error: 'Содержание должно быть текстом.' }).trim().max(30_000, 'Содержание слишком длинное.').default(''),
+    title: safeFreeText(z.string({ error: 'Название материала должно быть текстом.' }).trim().min(1, 'Введите название материала.').max(280, 'Название материала слишком длинное.')),
+    body: safeFreeText(z.string({ error: 'Содержание должно быть текстом.' }).trim().max(30_000, 'Содержание слишком длинное.')).default(''),
     kind: z.enum(['note', 'instruction', 'document', 'link'] satisfies [KnowledgeKind, ...KnowledgeKind[]], { error: 'Выберите тип материала.' }),
+    linkUrl: safeKnowledgeUrlSchema.nullable().optional().default(null),
     sectionId: nullableIdSchema.default(null),
     attachments: z.array(attachmentInputSchema, { error: 'Вложения должны быть списком.' }).max(20, 'Можно добавить не более 20 вложений.').default([]),
   }, { error: 'Материал должен быть объектом.' })
-  .strict();
+  .strict()
+  .superRefine((item, context) => {
+    if (item.kind === 'link' && !item.linkUrl) {
+      context.addIssue({ code: 'custom', message: 'Для ссылки укажите HTTPS-адрес.', path: ['linkUrl'] });
+    }
+  })
+  .transform((item) => item.kind === 'link' ? item : { ...item, linkUrl: null });
+
+export const knowledgePatchSchema = z.object({
+  title: safeFreeText(z.string({ error: 'Название материала должно быть текстом.' }).trim().min(1, 'Введите название материала.').max(280, 'Название материала слишком длинное.')).optional(),
+  body: safeFreeText(z.string({ error: 'Содержание должно быть текстом.' }).trim().max(30_000, 'Содержание слишком длинное.')).optional(),
+  kind: z.enum(['note', 'instruction', 'document', 'link'] satisfies [KnowledgeKind, ...KnowledgeKind[]], { error: 'Выберите тип материала.' }).optional(),
+  linkUrl: safeKnowledgeUrlSchema.nullable().optional(),
+  sectionId: nullableIdSchema,
+  attachments: z.array(attachmentInputSchema, { error: 'Вложения должны быть списком.' }).max(20, 'Можно добавить не более 20 вложений.').optional(),
+}, { error: 'Изменения материала должны быть объектом.' }).strict();
 
 export const contactMethodSchema = z
   .object({
     kind: z.enum(['phone', 'telegram', 'whatsapp'] satisfies [ContactMethodKind, ...ContactMethodKind[]], { error: 'Выберите способ связи.' }),
     value: z.string({ error: 'Контакт должен быть текстом.' }).trim().min(1, 'Введите контакт.').max(300, 'Контакт слишком длинный.'),
   }, { error: 'Способ связи должен быть объектом.' })
-  .strict();
+  .strict()
+  .transform((method, context) => {
+    const value = normalizeContactMethod(method.kind, method.value);
+    if (!value) {
+      context.addIssue({ code: 'custom', message: 'Укажите корректный способ связи.', path: ['value'] });
+      return z.NEVER;
+    }
+    return { ...method, value };
+  });
 
 export const contactInputSchema = z
   .object({
-    name: z.string({ error: 'Имя контакта должно быть текстом.' }).trim().min(1, 'Введите имя контакта.').max(280, 'Имя контакта слишком длинное.'),
-    category: z.enum(['supplier', 'contractor', 'partner', 'other'] satisfies [
+    name: safeFreeText(z.string({ error: 'Имя контакта должно быть текстом.' }).trim().min(1, 'Введите имя контакта.').max(280, 'Имя контакта слишком длинное.')),
+    category: z.enum(['supplier', 'service', 'landlord', 'cleaning', 'other'] satisfies [
       ContactCategory,
       ...ContactCategory[],
     ], { error: 'Выберите категорию контакта.' }).default('other'),
-    notes: optionalTextSchema.default(''),
+    notes: optionalTextSchema.refine((value) => value === undefined || !containsSecretLikeText(value), 'Секретные данные и реквизиты карт хранить нельзя.').default(''),
     methods: z.array(contactMethodSchema, { error: 'Способы связи должны быть списком.' }).min(1, 'Добавьте хотя бы один способ связи.').max(10, 'Можно добавить не более 10 способов связи.'),
   }, { error: 'Контакт должен быть объектом.' })
   .strict();
+
+export const contactPatchSchema = z.object({
+  name: safeFreeText(z.string({ error: 'Имя контакта должно быть текстом.' }).trim().min(1, 'Введите имя контакта.').max(280, 'Имя контакта слишком длинное.')).optional(),
+  category: z.enum(['supplier', 'service', 'landlord', 'cleaning', 'other'] satisfies [ContactCategory, ...ContactCategory[]], { error: 'Выберите категорию контакта.' }).optional(),
+  notes: optionalTextSchema.refine((value) => value === undefined || !containsSecretLikeText(value), 'Секретные данные и реквизиты карт хранить нельзя.'),
+  methods: z.array(contactMethodSchema, { error: 'Способы связи должны быть списком.' }).min(1, 'Добавьте хотя бы один способ связи.').max(10, 'Можно добавить не более 10 способов связи.').optional(),
+}, { error: 'Изменения контакта должны быть объектом.' }).strict();
 
 const safeMetadataValueSchema = z.union([
   z.string({ error: 'Значение метаданных должно быть строкой, числом, логическим значением или пустым.' }).max(2_000, 'Значение метаданных слишком длинное.'),
@@ -161,13 +215,17 @@ export type TaskInput = z.input<typeof taskInputSchema>;
 export type TaskPatchInput = z.input<typeof taskPatchSchema>;
 export type CommentInput = z.input<typeof commentInputSchema>;
 export type KnowledgeInput = z.input<typeof knowledgeInputSchema>;
+export type KnowledgePatchInput = z.input<typeof knowledgePatchSchema>;
 export type ContactInput = z.input<typeof contactInputSchema>;
+export type ContactPatchInput = z.input<typeof contactPatchSchema>;
 export type SecureItemInput = z.input<typeof secureItemInputSchema>;
 export type ParsedTaskInput = z.output<typeof taskInputSchema>;
 export type ParsedTaskPatchInput = z.output<typeof taskPatchSchema>;
 export type ParsedCommentInput = z.output<typeof commentInputSchema>;
 export type ParsedKnowledgeInput = z.output<typeof knowledgeInputSchema>;
+export type ParsedKnowledgePatchInput = z.output<typeof knowledgePatchSchema>;
 export type ParsedContactInput = z.output<typeof contactInputSchema>;
+export type ParsedContactPatchInput = z.output<typeof contactPatchSchema>;
 export type ParsedSecureItemInput = z.output<typeof secureItemInputSchema>;
 
 export const DEFAULT_PRIORITY: Priority = 3;

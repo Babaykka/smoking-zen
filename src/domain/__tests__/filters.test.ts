@@ -31,6 +31,7 @@ const knowledge: KnowledgeItem = {
   title: 'Инструкция по чаше',
   body: 'Используйте плотную забивку.',
   kind: 'instruction',
+  linkUrl: null,
   sectionId: 'section-knowledge',
   attachments: [],
 };

@@ -5,13 +5,71 @@ import {
   attachmentInputSchema,
   commentInputSchema,
   contactInputSchema,
+  contactPatchSchema,
+  knowledgeInputSchema,
+  knowledgePatchSchema,
   prioritySchema,
   safeMetadataSchema,
   secureItemInputSchema,
   taskInputSchema,
 } from '@/domain/schemas';
+import { demoSeed } from '@/data/demo-seed';
 
 describe('workspace schemas', () => {
+  it('keeps knowledge and contact patches non-defaulting while validating secret-safe fields', () => {
+    expect(knowledgePatchSchema.parse({ title: 'Новый заголовок' })).toEqual({ title: 'Новый заголовок' });
+    expect(contactPatchSchema.parse({ name: 'Новый контакт' })).toEqual({ name: 'Новый контакт' });
+    expect(knowledgePatchSchema.safeParse({ body: 'token=abc.def.ghi' }).success).toBe(false);
+    expect(contactPatchSchema.safeParse({ notes: 'Карта 4242 4242 4242 4242' }).success).toBe(false);
+    expect(knowledgePatchSchema.safeParse({ body: 'Пароль хранится в Bitwarden; токены не пишем в заметках.' }).success).toBe(true);
+  });
+
+  it('allows only explicit safe knowledge links and normalized contact methods', () => {
+    expect(knowledgeInputSchema.parse({
+      title: 'Регламент', kind: 'link', linkUrl: 'https://example.com/guide',
+    }).linkUrl).toBe('https://example.com/guide');
+    expect(knowledgeInputSchema.safeParse({ title: 'Опасно', kind: 'link', linkUrl: 'javascript:alert(1)' }).success).toBe(false);
+    expect(knowledgeInputSchema.safeParse({ title: 'Опасно', kind: 'link', linkUrl: 'data:text/html,hello' }).success).toBe(false);
+    expect(knowledgeInputSchema.safeParse({ title: 'Опасно', kind: 'link', linkUrl: 'https://user:pass@example.com' }).success).toBe(false);
+    expect(knowledgeInputSchema.safeParse({ title: 'Опасно', kind: 'link', linkUrl: 'https://example.com/?token=abc' }).success).toBe(false);
+    expect(knowledgeInputSchema.safeParse({ title: 'Опасно', kind: 'link', linkUrl: 'https://storage.example.com/?X-Amz-Signature=private' }).success).toBe(false);
+    expect(contactInputSchema.parse({
+      name: 'Илья',
+      methods: [
+        { kind: 'phone', value: '+7 (999) 000-00-00' },
+        { kind: 'telegram', value: '@ilya_test' },
+        { kind: 'whatsapp', value: '+7 (999) 000-00-00' },
+      ],
+    }).methods).toEqual([
+      { kind: 'phone', value: '+79990000000' },
+      { kind: 'telegram', value: 'ilya_test' },
+      { kind: 'whatsapp', value: '79990000000' },
+    ]);
+    expect(contactInputSchema.safeParse({ name: 'Илья', methods: [{ kind: 'telegram', value: 'javascript:alert(1)' }] }).success).toBe(false);
+  });
+
+  it('keeps link URLs and contact method validation type-specific', () => {
+    expect(knowledgeInputSchema.safeParse({ title: 'Ссылка', kind: 'link' }).success).toBe(false);
+    expect(knowledgeInputSchema.parse({ title: 'Заметка', kind: 'note', linkUrl: 'https://example.com' }).linkUrl).toBeNull();
+    expect(contactInputSchema.safeParse({ name: 'Телефон', methods: [{ kind: 'phone', value: '+123456789012345' }] }).success).toBe(true);
+    expect(contactInputSchema.safeParse({ name: 'Телефон', methods: [{ kind: 'phone', value: '+1234567890123456' }] }).success).toBe(false);
+    expect(contactInputSchema.safeParse({ name: 'Телеграм', methods: [{ kind: 'telegram', value: '@ilya' }] }).success).toBe(false);
+    expect(contactInputSchema.safeParse({ name: 'Телеграм', methods: [{ kind: 'telegram', value: '@ilya_test' }] }).success).toBe(true);
+  });
+
+  it('exposes the exact eight canonical sections in the demo seed', () => {
+    expect(demoSeed.sections.map((section) => section.name)).toEqual([
+      'Открытие',
+      'Ремонт и техника',
+      'Закупки и склад',
+      'Зал и сервис',
+      'Персонал',
+      'Маркетинг',
+      'Документы и финансы',
+      'Безопасность и санитария',
+    ]);
+  });
+
   it.each([1, 2, 3, 4, 5])('accepts priority P%s', (priority) => {
     expect(prioritySchema.parse(priority)).toBe(priority);
   });
@@ -206,7 +264,7 @@ describe('workspace schemas', () => {
         name: 'Илья',
         methods: [
           { kind: 'phone', value: '+79990000000' },
-          { kind: 'telegram', value: '@ilya' },
+          { kind: 'telegram', value: '@ilya_test' },
           { kind: 'whatsapp', value: '+79990000000' },
         ],
       }),

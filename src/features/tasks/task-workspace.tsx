@@ -1,7 +1,8 @@
 'use client';
 
-import { useEffect, useMemo, useRef, useState, type FormEvent, type ReactNode } from 'react';
+import { useEffect, useMemo, useRef, useState, type FormEvent } from 'react';
 
+import { SafeMarkdown } from '@/components/safe-markdown';
 import { ConflictError } from '@/data/workspace-repository';
 import { matchesTaskFilter, type TaskFilter } from '@/domain/filters';
 import type { Priority, Task } from '@/domain/types';
@@ -10,6 +11,7 @@ import { useWorkspace } from '@/providers/workspace-provider';
 export type TaskWorkspaceProps = {
   activeView: 'today' | 'tasks';
   createRequest: number;
+  searchTargetId?: string;
   now?: Date;
 };
 
@@ -38,33 +40,6 @@ export function orderTodayTasks(tasks: Task[], now: Date): Task[] {
   });
 }
 
-function inlineMarkdown(value: string): ReactNode[] {
-  return value.split(/(\*\*[^*]+\*\*)/g).filter(Boolean).map((part, index) =>
-    part.startsWith('**') && part.endsWith('**')
-      ? <strong key={index}>{part.slice(2, -2)}</strong>
-      : <span key={index}>{part}</span>,
-  );
-}
-
-export function SafeMarkdown({ value }: { value: string }) {
-  return (
-    <div className="task-markdown">
-      {value.split('\n').map((line, index) => {
-        const checklist = /^\s*- \[([ xX])\]\s+(.*)$/.exec(line);
-        if (checklist) {
-          return (
-            <label className="task-markdown__check" key={index}>
-              <input checked={checklist[1]?.toLowerCase() === 'x'} disabled readOnly type="checkbox" />
-              <span>{inlineMarkdown(checklist[2] ?? '')}</span>
-            </label>
-          );
-        }
-        return <p key={index}>{inlineMarkdown(line)}</p>;
-      })}
-    </div>
-  );
-}
-
 function draftFrom(task: Task): TaskDraft {
   return {
     title: task.title,
@@ -77,7 +52,7 @@ function draftFrom(task: Task): TaskDraft {
   };
 }
 
-export function TaskWorkspace({ activeView, createRequest, now = new Date() }: TaskWorkspaceProps) {
+export function TaskWorkspace({ activeView, createRequest, now = new Date(), searchTargetId }: TaskWorkspaceProps) {
   const { repository, snapshot } = useWorkspace();
   const [quickOpen, setQuickOpen] = useState(false);
   const [acknowledgedCreateRequest, setAcknowledgedCreateRequest] = useState(createRequest);
@@ -117,6 +92,12 @@ export function TaskWorkspace({ activeView, createRequest, now = new Date() }: T
     setConflictVersion(null);
     setDraftError('');
   };
+
+  useEffect(() => {
+    const task = snapshot.tasks.find((item) => item.id === searchTargetId);
+    const timer = window.setTimeout(() => { if (task) openTask(task); }, 0);
+    return () => window.clearTimeout(timer);
+  }, [searchTargetId, snapshot.tasks]);
 
   const createTask = async (event: FormEvent) => {
     event.preventDefault();

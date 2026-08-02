@@ -11,6 +11,7 @@ const MIGRATIONS = [
   'supabase/migrations/0003_task_realtime_actor.sql',
   'supabase/migrations/0004_realtime_scope_lockdown.sql',
   'supabase/migrations/0005_audit_immutability.sql',
+  'supabase/migrations/0006_knowledge_contacts_search.sql',
 ];
 const OWNER_TELEGRAM_ID = '4503599627370495';
 const REQUIRED_SECTIONS = [
@@ -184,6 +185,53 @@ describe('Supabase schema runtime security', () => {
 
     expect(sections.rows.map(({ name }) => name)).toEqual(REQUIRED_SECTIONS);
     expect(statuses.rows.map(({ name }) => name)).toEqual(['Новая', 'В работе', 'Ждёт', 'Готово']);
+  });
+
+  it('keeps contact and contact methods atomic, workspace-scoped, and recoverable together', async () => {
+    const database = await createDatabase({ seedRounds: 1 });
+    const workspaceId = '10000000-0000-4000-8000-000000000001';
+    const created = await database.query<{ id: string; version: number }>(
+      `select id, version from public.create_contact_with_methods($1, 'Мастер', 'service', '', $2::jsonb)`,
+      [workspaceId, JSON.stringify([{ kind: 'phone', value: '+79991234567' }])],
+    );
+    const contactId = created.rows[0]!.id;
+    await expect(database.query(
+      `select * from public.replace_contact_with_methods($1, $2, $3, 'Сломано', 'service', '', $4::jsonb)`,
+      [workspaceId, contactId, created.rows[0]!.version, JSON.stringify([{ kind: 'email', value: 'bad' }])],
+    )).rejects.toThrow(/invalid_contact_method/i);
+    const unchanged = await database.query<{ name: string; value: string }>(`
+      select c.name, m.value from public.contacts c join public.contact_methods m on m.contact_id = c.id
+      where c.id = $1 and c.deleted_at is null and m.deleted_at is null
+    `, [contactId]);
+    expect(unchanged.rows).toEqual([{ name: 'Мастер', value: '+79991234567' }]);
+
+    const deleted = await database.query<{ version: number }>(
+      'select version from public.set_contact_deleted($1, $2, $3, false)', [workspaceId, contactId, created.rows[0]!.version],
+    );
+    expect((await database.query('select 1 from public.contact_methods where contact_id = $1 and deleted_at is null', [contactId])).rows).toEqual([]);
+    await database.query('select * from public.set_contact_deleted($1, $2, $3, true)', [workspaceId, contactId, deleted.rows[0]!.version]);
+    expect((await database.query('select 1 from public.contact_methods where contact_id = $1 and deleted_at is null', [contactId])).rows).toHaveLength(1);
+  });
+
+  it('broadcasts contact changes only to the owning workspace and accepts only a same-workspace active audit actor', async () => {
+    const database = await createDatabase({ seedRounds: 1 });
+    const workspaceId = '10000000-0000-4000-8000-000000000001';
+    const actorId = '20000000-0000-4000-8000-000000000001';
+    await database.exec('delete from realtime.messages');
+    await database.query("select set_config('request.headers', $1, false)", [JSON.stringify({ 'x-smoking-zen-actor': actorId })]);
+    await database.query(
+      `select * from public.create_contact_with_methods($1, 'Клининг', 'cleaning', '', $2::jsonb)`,
+      [workspaceId, JSON.stringify([{ kind: 'whatsapp', value: '79991234567' }])],
+    );
+    const messages = await database.query<{ topic: string; payload: { entity: string } }>('select topic, payload from realtime.messages order by id');
+    expect(messages.rows).toEqual(expect.arrayContaining([
+      { topic: `workspace:${workspaceId}`, payload: { entity: 'contact', action: 'created' } },
+      { topic: `workspace:${workspaceId}`, payload: { entity: 'contact_method', action: 'created' } },
+    ]));
+    const event = await database.query<{ actor_user_id: string | null }>(`
+      select actor_user_id from public.audit_events where entity_type = 'contact' order by occurred_at desc limit 1
+    `);
+    expect(event.rows[0]?.actor_user_id).toBe(actorId);
   });
 
   it('rejects cross-workspace event, outbox, and delivery relationships', async () => {

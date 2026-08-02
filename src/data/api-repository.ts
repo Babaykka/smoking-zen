@@ -1,7 +1,7 @@
 import { ConflictError, type WorkspaceListener } from '@/data/workspace-repository';
-import type { CommentInput, TaskInput, TaskPatchInput } from '@/domain/schemas';
+import type { CommentInput, ContactInput, ContactPatchInput, KnowledgeInput, KnowledgePatchInput, TaskInput, TaskPatchInput } from '@/domain/schemas';
 import type { WorkspaceGateway } from '@/data/workspace-gateway';
-import type { Comment, Task, WorkspaceSnapshot } from '@/domain/types';
+import type { Comment, Contact, KnowledgeItem, SearchResult, Task, WorkspaceSnapshot } from '@/domain/types';
 
 type ApiEnvelope<T> = { data: T | null; error: { code: string; message: string } | null; requestId: string };
 type RealtimeSubscriber = (workspaceId: string, listener: () => void) => () => void;
@@ -15,6 +15,26 @@ type ApiRepositoryOptions = {
 
 function clone<T>(value: T): T {
   return typeof structuredClone === 'function' ? structuredClone(value) : JSON.parse(JSON.stringify(value)) as T;
+}
+
+function mergeSnapshot(current: WorkspaceSnapshot, incoming: Partial<WorkspaceSnapshot>): WorkspaceSnapshot {
+  if (incoming.workspaceId !== undefined && incoming.workspaceId !== current.workspaceId) {
+    throw new Error('Сервер вернул данные другого рабочего пространства.');
+  }
+  return {
+    ...current,
+    ...incoming,
+    taskStatuses: incoming.taskStatuses ?? current.taskStatuses,
+    sections: incoming.sections ?? current.sections,
+    tasks: incoming.tasks ?? current.tasks,
+    comments: incoming.comments ?? current.comments,
+    knowledge: incoming.knowledge ?? current.knowledge,
+    contacts: incoming.contacts ?? current.contacts,
+    members: incoming.members ?? current.members,
+    secureItems: incoming.secureItems ?? current.secureItems,
+    auditEvents: incoming.auditEvents ?? current.auditEvents,
+    notificationDeliveries: incoming.notificationDeliveries ?? current.notificationDeliveries,
+  };
 }
 
 async function envelope<T>(response: Response): Promise<ApiEnvelope<T>> {
@@ -59,7 +79,7 @@ export function createApiRepository(options: ApiRepositoryOptions): WorkspaceGat
       const result = await envelope<WorkspaceSnapshot>(response);
       assertActive();
       if (!response.ok || !result.data) throw new Error(result.error?.message ?? 'Не удалось загрузить задачи.');
-      state = clone(result.data);
+      state = mergeSnapshot(state, result.data);
       hydrated = true;
       notify();
     })().finally(() => { hydration = null; });
@@ -70,14 +90,14 @@ export function createApiRepository(options: ApiRepositoryOptions): WorkspaceGat
     if (!disposed) void hydrate(true).catch(() => { /* Keep the last known safe snapshot and retry on the next event. */ });
   });
 
-  const request = async <T>(url: string, method: string, body: unknown): Promise<T> => {
+  const request = async <T>(url: string, method: string, body: unknown, signal?: AbortSignal): Promise<T> => {
     assertActive();
     const response = await fetcher(url, {
       method,
       credentials: 'same-origin',
       headers: { accept: 'application/json', 'content-type': 'application/json' },
       body: JSON.stringify(body),
-      ...(options.signal ? { signal: options.signal } : {}),
+      ...(signal ?? options.signal ? { signal: signal ?? options.signal } : {}),
     });
     assertActive();
     const result = await envelope<T>(response);
@@ -133,6 +153,57 @@ export function createApiRepository(options: ApiRepositoryOptions): WorkspaceGat
       state.comments.push(created);
       notify();
       return clone(created);
+    },
+    async createKnowledge(input: KnowledgeInput): Promise<KnowledgeItem> {
+      const created = await request<KnowledgeItem>('/api/knowledge', 'POST', input);
+      state.knowledge.push(created);
+      notify();
+      return clone(created);
+    },
+    async updateKnowledge(id: string, input: KnowledgePatchInput, expectedVersion: number): Promise<KnowledgeItem> {
+      const updated = await request<KnowledgeItem>(`/api/knowledge/${encodeURIComponent(id)}`, 'PATCH', { input, expectedVersion });
+      state.knowledge = state.knowledge.map((item) => item.id === id ? updated : item);
+      notify();
+      return clone(updated);
+    },
+    async deleteKnowledge(id: string, expectedVersion: number): Promise<KnowledgeItem> {
+      const deleted = await request<KnowledgeItem>(`/api/knowledge/${encodeURIComponent(id)}`, 'DELETE', { expectedVersion });
+      state.knowledge = state.knowledge.filter((item) => item.id !== id);
+      notify();
+      return clone(deleted);
+    },
+    async restoreKnowledge(id: string, expectedVersion: number): Promise<KnowledgeItem> {
+      const restored = await request<KnowledgeItem>(`/api/knowledge/${encodeURIComponent(id)}`, 'PATCH', { action: 'restore', expectedVersion });
+      state.knowledge.push(restored);
+      notify();
+      return clone(restored);
+    },
+    async createContact(input: ContactInput): Promise<Contact> {
+      const created = await request<Contact>('/api/contacts', 'POST', input);
+      state.contacts.push(created);
+      notify();
+      return clone(created);
+    },
+    async updateContact(id: string, input: ContactPatchInput, expectedVersion: number): Promise<Contact> {
+      const updated = await request<Contact>(`/api/contacts/${encodeURIComponent(id)}`, 'PATCH', { input, expectedVersion });
+      state.contacts = state.contacts.map((item) => item.id === id ? updated : item);
+      notify();
+      return clone(updated);
+    },
+    async deleteContact(id: string, expectedVersion: number): Promise<Contact> {
+      const deleted = await request<Contact>(`/api/contacts/${encodeURIComponent(id)}`, 'DELETE', { expectedVersion });
+      state.contacts = state.contacts.filter((item) => item.id !== id);
+      notify();
+      return clone(deleted);
+    },
+    async restoreContact(id: string, expectedVersion: number): Promise<Contact> {
+      const restored = await request<Contact>(`/api/contacts/${encodeURIComponent(id)}`, 'PATCH', { action: 'restore', expectedVersion });
+      state.contacts.push(restored);
+      notify();
+      return clone(restored);
+    },
+    async search(query: string, options?: { signal?: AbortSignal }): Promise<SearchResult[]> {
+      return query.trim() ? request<SearchResult[]>('/api/search', 'POST', { query }, options?.signal) : [];
     },
     pendingTaskInput: (id: string) => {
       const input = pendingTasks.get(id);

@@ -11,7 +11,9 @@ import type {
 import type {
   CommentInput,
   ContactInput,
+  ContactPatchInput,
   KnowledgeInput,
+  KnowledgePatchInput,
   SecureItemInput,
   TaskInput,
 } from '@/domain/schemas';
@@ -45,10 +47,10 @@ export interface WorkspaceRepository {
   updateComment(id: string, input: Partial<CommentInput>, expectedVersion: number): Comment;
   deleteComment(id: string, expectedVersion: number): Comment;
   createKnowledge(input: KnowledgeInput): KnowledgeItem;
-  updateKnowledge(id: string, input: Partial<KnowledgeInput>, expectedVersion: number): KnowledgeItem;
+  updateKnowledge(id: string, input: KnowledgePatchInput, expectedVersion: number): KnowledgeItem;
   deleteKnowledge(id: string, expectedVersion: number): KnowledgeItem;
   createContact(input: ContactInput): Contact;
-  updateContact(id: string, input: Partial<ContactInput>, expectedVersion: number): Contact;
+  updateContact(id: string, input: ContactPatchInput, expectedVersion: number): Contact;
   deleteContact(id: string, expectedVersion: number): Contact;
   createSecureItem(input: SecureItemInput): SecureItemLink;
   updateSecureItem(id: string, input: Partial<SecureItemInput>, expectedVersion: number): SecureItemLink;

@@ -5,7 +5,8 @@ on conflict (id) do update set name = excluded.name;
 insert into public.app_users (id, telegram_id, first_name, last_name, username, language_code)
 values
   ('20000000-0000-4000-8000-000000000001', '100000001', 'Алексей', 'Миронов', 'demo_alexey', 'ru'),
-  ('20000000-0000-4000-8000-000000000002', '100000002', 'Алина', 'Соколова', 'demo_alina', 'ru')
+  ('20000000-0000-4000-8000-000000000002', '100000002', 'Алина', 'Соколова', 'demo_alina', 'ru'),
+  ('20000000-0000-4000-8000-000000000003', '100000003', 'Илья', 'Власов', 'demo_ilya', 'ru')
 on conflict (id) do update set
   first_name = excluded.first_name,
   last_name = excluded.last_name,
@@ -15,7 +16,8 @@ on conflict (id) do update set
 insert into public.workspace_members (id, workspace_id, user_id, display_name, role, active)
 values
   ('30000000-0000-4000-8000-000000000001', '10000000-0000-4000-8000-000000000001', '20000000-0000-4000-8000-000000000001', 'Алексей Миронов', 'owner', true),
-  ('30000000-0000-4000-8000-000000000002', '10000000-0000-4000-8000-000000000001', '20000000-0000-4000-8000-000000000002', 'Алина Соколова', 'member', true)
+  ('30000000-0000-4000-8000-000000000002', '10000000-0000-4000-8000-000000000001', '20000000-0000-4000-8000-000000000002', 'Алина Соколова', 'member', true),
+  ('30000000-0000-4000-8000-000000000003', '10000000-0000-4000-8000-000000000001', '20000000-0000-4000-8000-000000000003', 'Илья Власов', 'member', false)
 on conflict (workspace_id, user_id) do update set
   display_name = excluded.display_name,
   role = excluded.role,
@@ -66,19 +68,31 @@ on conflict (id) do update set
   due_at = excluded.due_at,
   deleted_at = null;
 
-insert into public.knowledge_items (id, workspace_id, title, body, kind, section_id)
-values (
+insert into public.knowledge_items (id, workspace_id, title, body, kind, link_url, section_id)
+values
+(
   '70000000-0000-4000-8000-000000000001',
   '10000000-0000-4000-8000-000000000001',
   'Плотная забивка чаши',
   'Перед подачей проверьте тягу, чистоту колбы и равномерность прогрева.',
   'instruction',
+  null,
   '50000000-0000-4000-8000-000000000007'
+),
+(
+  '70000000-0000-4000-8000-000000000002',
+  '10000000-0000-4000-8000-000000000001',
+  'Санитарный регламент',
+  'Актуальная памятка по ежедневной санитарной обработке.',
+  'link',
+  'https://example.com/sanitary-guide',
+  '50000000-0000-4000-8000-000000000008'
 )
 on conflict (id) do update set
   title = excluded.title,
   body = excluded.body,
   kind = excluded.kind,
+  link_url = excluded.link_url,
   section_id = excluded.section_id,
   deleted_at = null;
 

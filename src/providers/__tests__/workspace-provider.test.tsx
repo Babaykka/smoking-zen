@@ -59,6 +59,8 @@ describe('WorkspaceProvider', () => {
       hydrate: vi.fn().mockResolvedValue(undefined),
       subscribe: vi.fn(() => unsubscribe),
       createTask: vi.fn(), updateTask: vi.fn(), deleteTask: vi.fn(), restoreTask: vi.fn(), createComment: vi.fn(),
+      createKnowledge: vi.fn(), updateKnowledge: vi.fn(), deleteKnowledge: vi.fn(), restoreKnowledge: vi.fn(),
+      createContact: vi.fn(), updateContact: vi.fn(), deleteContact: vi.fn(), restoreContact: vi.fn(), search: vi.fn(),
       dispose: vi.fn(),
     };
 

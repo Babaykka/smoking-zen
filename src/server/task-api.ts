@@ -4,7 +4,7 @@ import type { SupabaseClient } from '@supabase/supabase-js';
 
 import { ConflictError } from '@/data/workspace-repository';
 import type { CommentInput, TaskInput, TaskPatchInput } from '@/domain/schemas';
-import type { Comment, Priority, Section, Task, TaskStatus, WorkspaceMember, WorkspaceSnapshot } from '@/domain/types';
+import type { Comment, Contact, ContactMethod, KnowledgeItem, Priority, Section, Task, TaskStatus, WorkspaceMember, WorkspaceSnapshot } from '@/domain/types';
 import { requireProductionEnvironment } from '@/server/env';
 import { readSessionCookie } from '@/server/http';
 import { readSession } from '@/server/session';
@@ -71,6 +71,24 @@ function memberFromRow(value: unknown): WorkspaceMember {
   return { ...metadata(row), name: String(row.display_name), role: row.role === 'owner' ? 'owner' : 'member', active: Boolean(row.active) };
 }
 
+function knowledgeFromRow(value: unknown): KnowledgeItem {
+  const row = value as Record<string, unknown>;
+  return {
+    ...metadata(row), title: String(row.title), body: String(row.body ?? ''), kind: row.kind as KnowledgeItem['kind'],
+    linkUrl: row.link_url === null ? null : String(row.link_url), sectionId: row.section_id === null ? null : String(row.section_id), attachments: [],
+  };
+}
+
+function contactMethodFromRow(value: unknown): ContactMethod {
+  const row = value as Record<string, unknown>;
+  return { kind: row.kind as ContactMethod['kind'], value: String(row.value) };
+}
+
+function contactFromRow(value: unknown, methods: ContactMethod[]): Contact {
+  const row = value as Record<string, unknown>;
+  return { ...metadata(row), name: String(row.name), category: row.category as Contact['category'], notes: String(row.notes ?? ''), methods };
+}
+
 function taskPatch(input: TaskPatchInput): Record<string, unknown> {
   const patch: Record<string, unknown> = {};
   if ('title' in input) patch.title = input.title;
@@ -101,18 +119,29 @@ export function createSupabaseTaskStore(
   return {
     async getWorkspaceData(workspaceId) {
       const visible = (table: string) => client.from(table).select('*').eq('workspace_id', workspaceId).is('deleted_at', null);
-      const [tasksResult, commentsResult, statusesResult, sectionsResult, membersResult] = await Promise.all([
+      const [tasksResult, commentsResult, statusesResult, sectionsResult, membersResult, knowledgeResult, contactsResult, methodsResult] = await Promise.all([
         visible('tasks'), visible('comments'), visible('task_statuses').order('position'), visible('sections').order('position'), visible('workspace_members'),
+        visible('knowledge_items').order('updated_at', { ascending: false }), visible('contacts').order('name'), visible('contact_methods').order('position'),
       ]) as DataResult[];
       const tasks = assertResult(tasksResult) as unknown[];
       const comments = assertResult(commentsResult) as unknown[];
       const statuses = assertResult(statusesResult) as unknown[];
       const sections = assertResult(sectionsResult) as unknown[];
       const members = assertResult(membersResult) as unknown[];
+      const knowledge = assertResult(knowledgeResult) as unknown[];
+      const contacts = assertResult(contactsResult) as unknown[];
+      const methods = assertResult(methodsResult) as unknown[];
+      const methodsByContact = new Map<string, ContactMethod[]>();
+      for (const method of methods) {
+        const row = method as Record<string, unknown>;
+        const contactId = String(row.contact_id);
+        methodsByContact.set(contactId, [...(methodsByContact.get(contactId) ?? []), contactMethodFromRow(row)]);
+      }
       return {
         workspaceId,
         tasks: tasks.map(taskFromRow), comments: comments.map(commentFromRow), taskStatuses: statuses.map(statusFromRow),
-        sections: sections.map(sectionFromRow), members: members.map(memberFromRow), knowledge: [], contacts: [], secureItems: [],
+        sections: sections.map(sectionFromRow), members: members.map(memberFromRow), knowledge: knowledge.map(knowledgeFromRow),
+        contacts: contacts.map((contact) => contactFromRow(contact, methodsByContact.get(String((contact as Record<string, unknown>).id)) ?? [])), secureItems: [],
         auditEvents: [], notificationDeliveries: [],
       };
     },

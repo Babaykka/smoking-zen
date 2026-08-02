@@ -10,7 +10,10 @@ import { createRealtimeTokenManager, type RealtimeTokenManager } from '@/data/re
 import { subscribeWorkspaceRealtime, type WorkspaceRealtimeClient } from '@/data/realtime';
 import { createDemoGateway, type WorkspaceGateway } from '@/data/workspace-gateway';
 import { TaskWorkspace } from '@/features/tasks/task-workspace';
-import type { WorkspaceSnapshot } from '@/domain/types';
+import { KnowledgeWorkspace } from '@/features/knowledge/knowledge-workspace';
+import { PeopleWorkspace } from '@/features/people/people-workspace';
+import { GlobalSearch } from '@/features/search/global-search';
+import type { SearchResult, WorkspaceSnapshot } from '@/domain/types';
 import { WorkspaceProvider } from '@/providers/workspace-provider';
 
 export type BrowserProductionConfig = { supabaseUrl: string; supabasePublishableKey: string };
@@ -49,12 +52,22 @@ function emptyWorkspace(workspaceId: string): WorkspaceSnapshot {
 function WorkspaceApplication({ gateway, mode }: { gateway: WorkspaceGateway; mode: 'demo' | 'production' }) {
   const [activeView, setActiveView] = useState<ViewKey>('today');
   const [createRequest, setCreateRequest] = useState(0);
+  const [searchTarget, setSearchTarget] = useState<SearchResult | null>(null);
+  const openSearchResult = (result: SearchResult) => {
+    setSearchTarget(result);
+    setActiveView(result.entity === 'task' ? 'tasks' : result.entity === 'knowledge' ? 'knowledge' : 'people');
+  };
   return (
     <WorkspaceProvider gateway={gateway}>
       <AppShell activeView={activeView} onCreate={() => setCreateRequest((value) => value + 1)} onNavigate={setActiveView}>
-        {mode === 'demo' && <div className="demo-banner" role="status">Демо-режим · данные хранятся только в этом браузере</div>}
+        {mode === 'demo' && <div className="demo-banner" role="status">Демо-режим: рабочие данные не подключены.</div>}
+        <GlobalSearch onOpen={openSearchResult} />
         {activeView === 'today' || activeView === 'tasks' ? (
-          <TaskWorkspace activeView={activeView} createRequest={createRequest} />
+          <TaskWorkspace activeView={activeView} createRequest={createRequest} searchTargetId={searchTarget?.entity === 'task' ? searchTarget.id : undefined} />
+        ) : activeView === 'knowledge' ? (
+          <KnowledgeWorkspace searchTargetId={searchTarget?.entity === 'knowledge' ? searchTarget.id : undefined} />
+        ) : activeView === 'people' ? (
+          <PeopleWorkspace searchTargetId={searchTarget?.entity === 'contact' ? searchTarget.id : undefined} />
         ) : (
           <section aria-labelledby="view-title" className="workspace-loading">
             <p className="workspace-loading__eyebrow">Smoking Zen</p>

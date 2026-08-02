@@ -49,6 +49,32 @@ describe('API task repository', () => {
 
     expect(unsubscribe).toHaveBeenCalledOnce();
   });
+
+  it('merges a partial hydration without clearing existing knowledge or contacts and rejects a foreign workspace', async () => {
+    const fetcher = vi.fn().mockResolvedValue(new Response(JSON.stringify({
+      data: { workspaceId: demoSeed.workspaceId, tasks: [] }, error: null, requestId: 'request-partial',
+    }), { status: 200 }));
+    const repository = createApiRepository({ initialSnapshot: demoSeed, fetcher, realtime: () => () => {} });
+    await repository.hydrate();
+    expect(repository.snapshot().knowledge).toEqual(demoSeed.knowledge);
+    expect(repository.snapshot().contacts).toEqual(demoSeed.contacts);
+
+    const foreign = createApiRepository({ initialSnapshot: demoSeed, fetcher: vi.fn().mockResolvedValue(new Response(JSON.stringify({
+      data: { ...demoSeed, workspaceId: 'other-workspace' }, error: null, requestId: 'request-foreign',
+    }), { status: 200 })), realtime: () => () => {} });
+    await expect(foreign.hydrate()).rejects.toThrow('другого рабочего пространства');
+  });
+
+  it('sends search text only in a POST body and returns an empty result for a blank query', async () => {
+    const fetcher = vi.fn().mockResolvedValue(new Response(JSON.stringify({
+      data: [{ entity: 'contact', id: 'contact-coal', title: 'Поставщик угля' }], error: null, requestId: 'request-search',
+    }), { status: 200 }));
+    const repository = createApiRepository({ initialSnapshot: demoSeed, fetcher, realtime: () => () => {} });
+    await expect(repository.search('уголь')).resolves.toHaveLength(1);
+    expect(fetcher).toHaveBeenCalledWith('/api/search', expect.objectContaining({ method: 'POST', body: JSON.stringify({ query: 'уголь' }) }));
+    await expect(repository.search('   ')).resolves.toEqual([]);
+    expect(fetcher).toHaveBeenCalledOnce();
+  });
 });
 
 describe('workspace Realtime', () => {

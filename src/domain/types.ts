@@ -50,6 +50,7 @@ export type KnowledgeItem = RecordMetadata & {
   title: string;
   body: string;
   kind: KnowledgeKind;
+  linkUrl: string | null;
   sectionId: string | null;
   attachments: Attachment[];
 };
@@ -61,7 +62,7 @@ export type ContactMethod = {
   value: string;
 };
 
-export type ContactCategory = 'supplier' | 'contractor' | 'partner' | 'other';
+export type ContactCategory = 'supplier' | 'service' | 'landlord' | 'cleaning' | 'other';
 
 export type Contact = RecordMetadata & {
   name: string;
