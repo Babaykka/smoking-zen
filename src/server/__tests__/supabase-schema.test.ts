@@ -13,7 +13,10 @@ const MIGRATIONS = [
   'supabase/migrations/0005_audit_immutability.sql',
   'supabase/migrations/0006_knowledge_contacts_search.sql',
   'supabase/migrations/0007_task5_integrity.sql',
+  'supabase/migrations/0008_task5_taxonomy_recovery.sql',
 ];
+const HISTORICAL_TASK5_MIGRATION = 'src/server/__tests__/historical-0006-knowledge-contacts-search.sql';
+const TASK5_TAXONOMY_RECOVERY_MIGRATION = 'supabase/migrations/0008_task5_taxonomy_recovery.sql';
 const OWNER_TELEGRAM_ID = '4503599627370495';
 const REQUIRED_SECTIONS = [
   'Открытие',
@@ -400,6 +403,96 @@ describe('Supabase schema runtime security', () => {
     expect(restorePrivileges.rows).toEqual([{
       service_task: true, service_knowledge: true, authenticated_task: false, authenticated_knowledge: false,
     }]);
+  });
+
+  it('recovers only live-referenced custom taxonomy after historical 0006 and recorded 0007', async () => {
+    const database = await createDatabase({ migrations: MIGRATIONS.slice(0, 5), migrationRounds: 1 });
+    const workspaceId = '10000000-0000-4000-8000-000000000096';
+    const customStatusId = '40000000-0000-4000-8000-000000000095';
+    const deletedStatusId = '40000000-0000-4000-8000-000000000094';
+    const taskSectionId = '50000000-0000-4000-8000-000000000095';
+    const knowledgeSectionId = '50000000-0000-4000-8000-000000000094';
+    const deletedSectionId = '50000000-0000-4000-8000-000000000093';
+    await database.query('insert into public.workspaces (id, name) values ($1, $2)', [workspaceId, 'Historical Task 5']);
+    await database.query(`
+      insert into public.task_statuses (id, workspace_id, name, position, deleted_at) values
+        ($2, $1, 'На согласовании', 1, null),
+        ($3, $1, 'Отменено вручную', 20, clock_timestamp() - interval '1 day')
+    `, [workspaceId, customStatusId, deletedStatusId]);
+    await database.query(`
+      insert into public.sections (id, workspace_id, name, position, deleted_at) values
+        ($2, $1, 'Партнёры', 1, null),
+        ($3, $1, 'Инструкции франшизы', 2, null),
+        ($4, $1, 'Архивный раздел', 20, clock_timestamp() - interval '1 day')
+    `, [workspaceId, taskSectionId, knowledgeSectionId, deletedSectionId]);
+    await database.query(`
+      insert into public.tasks (workspace_id, title, status_id, section_id)
+      values ($1, 'Проверить партнёров', $2, $3)
+    `, [workspaceId, customStatusId, taskSectionId]);
+    await database.query(`
+      insert into public.knowledge_items (workspace_id, title, body, kind, section_id)
+      values ($1, 'Регламент франшизы', '', 'note', $2)
+    `, [workspaceId, knowledgeSectionId]);
+
+    await applyMigration(database, HISTORICAL_TASK5_MIGRATION);
+    expect((await database.query<{ name: string }>(`
+      select name from public.task_statuses
+      where id = $1 and deleted_at is not null
+      union all
+      select name from public.sections
+      where id in ($2, $3) and deleted_at is not null
+      order by name
+    `, [customStatusId, taskSectionId, knowledgeSectionId])).rows.map(({ name }) => name)).toEqual([
+      'Инструкции франшизы', 'На согласовании', 'Партнёры',
+    ]);
+
+    await applyMigration(database, MIGRATIONS[6]!);
+    expect((await database.query<{ count: number }>(`
+      select count(*)::int as count from (
+        select id from public.task_statuses where id = $1 and deleted_at is not null
+        union all
+        select id from public.sections where id in ($2, $3) and deleted_at is not null
+      ) referenced_customs
+    `, [customStatusId, taskSectionId, knowledgeSectionId])).rows).toEqual([{ count: 3 }]);
+
+    await applyMigration(database, TASK5_TAXONOMY_RECOVERY_MIGRATION);
+    const afterFirst = await database.query<{
+      entity: string; id: string; name: string; position: number; version: number; deleted_at: string | null;
+    }>(`
+      select 'section' as entity, id, name, position, version, deleted_at from public.sections where workspace_id = $1
+      union all
+      select 'status', id, name, position, version, deleted_at from public.task_statuses where workspace_id = $1
+      order by entity, name
+    `, [workspaceId]);
+    await applyMigration(database, TASK5_TAXONOMY_RECOVERY_MIGRATION);
+    const afterSecond = await database.query<{
+      entity: string; id: string; name: string; position: number; version: number; deleted_at: string | null;
+    }>(`
+      select 'section' as entity, id, name, position, version, deleted_at from public.sections where workspace_id = $1
+      union all
+      select 'status', id, name, position, version, deleted_at from public.task_statuses where workspace_id = $1
+      order by entity, name
+    `, [workspaceId]);
+
+    expect(afterSecond.rows).toEqual(afterFirst.rows);
+    expect((await database.query<{ name: string; active: boolean; task_ref: boolean }>(`
+      select s.name, s.deleted_at is null as active,
+        exists (select 1 from public.tasks t where t.status_id = s.id and t.deleted_at is null) as task_ref
+      from public.task_statuses s where s.id in ($1, $2) order by s.name
+    `, [customStatusId, deletedStatusId])).rows).toEqual([
+      { name: 'На согласовании', active: true, task_ref: true },
+      { name: 'Отменено вручную', active: false, task_ref: false },
+    ]);
+    expect((await database.query<{ name: string; active: boolean; task_ref: boolean; knowledge_ref: boolean }>(`
+      select s.name, s.deleted_at is null as active,
+        exists (select 1 from public.tasks t where t.section_id = s.id and t.deleted_at is null) as task_ref,
+        exists (select 1 from public.knowledge_items k where k.section_id = s.id and k.deleted_at is null) as knowledge_ref
+      from public.sections s where s.id in ($1, $2, $3) order by s.name
+    `, [taskSectionId, knowledgeSectionId, deletedSectionId])).rows).toEqual([
+      { name: 'Архивный раздел', active: false, task_ref: false, knowledge_ref: false },
+      { name: 'Инструкции франшизы', active: true, task_ref: false, knowledge_ref: true },
+      { name: 'Партнёры', active: true, task_ref: true, knowledge_ref: false },
+    ]);
   });
 
   it('upgrades populated legacy link rows before enforcing link consistency', async () => {

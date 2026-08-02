@@ -14,14 +14,16 @@ import { createSupabaseTaskStore } from '@/server/task-api';
 
 type RestoreState = 'missing' | 'not-deleted' | 'expired' | 'stale' | 'deleted';
 
-function clientFor(table: string, state: RestoreState): SupabaseClient {
+function clientFor(table: string, state: RestoreState, deletedAt?: string): SupabaseClient {
   const row = state === 'missing'
     ? null
     : {
         id: 'record-1',
         workspace_id: 'workspace-1',
         version: state === 'stale' ? 3 : 2,
-        deleted_at: state === 'not-deleted' ? null : state === 'expired' ? '2000-01-01T00:00:00.000Z' : new Date().toISOString(),
+        deleted_at: state === 'not-deleted'
+          ? null
+          : deletedAt ?? (state === 'expired' ? '2000-01-01T00:00:00.000Z' : new Date().toISOString()),
       };
   const from = vi.fn((selectedTable: string) => {
     const chain = {
@@ -43,23 +45,44 @@ describe('Supabase restore stores', () => {
     { state: 'not-deleted' as const, error: RestoreNotDeletedError },
     { state: 'expired' as const, error: RestoreExpiredError },
     { state: 'stale' as const, error: ConflictError },
-  ])('classifies $state before restoring task, knowledge, and contact records', async ({ state, error }) => {
-    const taskClient = clientFor('tasks', state);
-    const knowledgeClient = clientFor('knowledge_items', state);
+  ])('classifies a $state contact before its restore RPC', async ({ state, error }) => {
     const contactClient = clientFor('contacts', state);
-    const taskActor = vi.fn(() => taskClient);
-    const knowledgeActor = vi.fn(() => knowledgeClient);
     const contactActor = vi.fn(() => contactClient);
 
-    await expect(createSupabaseTaskStore(taskClient, taskActor).restoreTask('workspace-1', 'record-1', 2, 'actor-1'))
-      .rejects.toBeInstanceOf(error);
-    await expect(createSupabaseKnowledgeContactStore(knowledgeClient, knowledgeActor).restoreKnowledge('workspace-1', 'record-1', 2, 'actor-1'))
-      .rejects.toBeInstanceOf(error);
     await expect(createSupabaseKnowledgeContactStore(contactClient, contactActor).restoreContact('workspace-1', 'record-1', 2, 'actor-1'))
       .rejects.toBeInstanceOf(error);
-    expect(taskActor).not.toHaveBeenCalled();
-    expect(knowledgeActor).not.toHaveBeenCalled();
     expect(contactActor).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    { table: 'tasks', rpc: 'restore_task_record' },
+    { table: 'knowledge_items', rpc: 'restore_knowledge_record' },
+  ] as const)('restores $table through the database when the application clock is ahead', async (entity) => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date('2026-09-01T00:00:00.000Z'));
+    try {
+      const readClient = clientFor(entity.table, 'expired', '2026-08-01T00:00:00.000Z');
+      const restoredRow = {
+        id: 'record-1', workspace_id: 'workspace-1', version: 3,
+        created_at: '2026-08-01T00:00:00.000Z', updated_at: '2026-08-02T00:00:00.000Z', deleted_at: null,
+        title: 'Восстановленная запись', description: '', priority: 3,
+        status_id: 'status-1', section_id: null, assignee_id: null, due_at: null,
+        body: '', kind: 'note', link_url: null,
+      };
+      const actorClient = {
+        rpc: vi.fn(async () => ({ data: [restoredRow], error: null })),
+      } as unknown as SupabaseClient;
+      const restore = entity.table === 'tasks'
+        ? createSupabaseTaskStore(readClient, () => actorClient)
+            .restoreTask('workspace-1', 'record-1', 2, 'actor-1')
+        : createSupabaseKnowledgeContactStore(readClient, () => actorClient)
+            .restoreKnowledge('workspace-1', 'record-1', 2, 'actor-1');
+
+      await expect(restore).resolves.toMatchObject({ id: 'record-1', version: 3, deletedAt: null });
+      expect(actorClient.rpc).toHaveBeenCalledWith(entity.rpc, expect.any(Object));
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   it.each([

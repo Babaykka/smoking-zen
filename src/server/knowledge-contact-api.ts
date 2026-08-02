@@ -138,11 +138,6 @@ export function createSupabaseKnowledgeContactStore(
       return data ? knowledgeFromRow(data) : conflictOrMissing(currentKnowledge, workspaceId, id, expectedVersion);
     },
     async restoreKnowledge(workspaceId, id, expectedVersion, actorUserId) {
-      const current = await currentKnowledge(workspaceId, id);
-      assertRestorableRecord(current ? {
-        version: Number(current.version),
-        deletedAt: current.deleted_at === null ? null : String(current.deleted_at),
-      } : null, expectedVersion);
       const result = await createActorClient(actorUserId).rpc('restore_knowledge_record', {
         p_workspace_id: workspaceId, p_knowledge_id: id, p_expected_version: expectedVersion,
       }) as DataResult;
@@ -151,11 +146,6 @@ export function createSupabaseKnowledgeContactStore(
       const rows = assertResult(result) as unknown[];
       const row = rows[0];
       if (row) return knowledgeFromRow(row);
-      const latest = await currentKnowledge(workspaceId, id);
-      assertRestorableRecord(latest ? {
-        version: Number(latest.version),
-        deletedAt: latest.deleted_at === null ? null : String(latest.deleted_at),
-      } : null, expectedVersion);
       throw new Error('Не удалось восстановить запись.');
     },
     async createContact(workspaceId, input, actorUserId) {

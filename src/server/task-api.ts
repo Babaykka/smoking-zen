@@ -2,7 +2,7 @@ import 'server-only';
 
 import type { SupabaseClient } from '@supabase/supabase-js';
 
-import { assertRestorableRecord, ConflictError } from '@/data/workspace-repository';
+import { ConflictError } from '@/data/workspace-repository';
 import type { CommentInput, TaskInput, TaskPatchInput } from '@/domain/schemas';
 import type { Comment, Contact, ContactMethod, KnowledgeItem, Priority, Section, Task, TaskStatus, WorkspaceMember, WorkspaceSnapshot } from '@/domain/types';
 import { requireProductionEnvironment } from '@/server/env';
@@ -179,11 +179,6 @@ export function createSupabaseTaskStore(
     },
 
     async restoreTask(workspaceId, id, expectedVersion, actorUserId) {
-      const current = await currentTask(workspaceId, id);
-      assertRestorableRecord(current ? {
-        version: Number(current.version),
-        deletedAt: current.deleted_at === null ? null : String(current.deleted_at),
-      } : null, expectedVersion);
       const result = await createActorClient(actorUserId).rpc('restore_task_record', {
         p_workspace_id: workspaceId, p_task_id: id, p_expected_version: expectedVersion,
       }) as DataResult;
@@ -192,11 +187,6 @@ export function createSupabaseTaskStore(
       const rows = assertResult(result) as unknown[];
       const row = rows[0];
       if (row) return taskFromRow(row);
-      const latest = await currentTask(workspaceId, id);
-      assertRestorableRecord(latest ? {
-        version: Number(latest.version),
-        deletedAt: latest.deleted_at === null ? null : String(latest.deleted_at),
-      } : null, expectedVersion);
       throw new Error('Не удалось восстановить запись.');
     },
 
