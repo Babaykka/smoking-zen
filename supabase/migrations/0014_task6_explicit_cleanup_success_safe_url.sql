@@ -3,6 +3,24 @@
 alter table public.file_cleanup_queue
   add column if not exists first_remove_succeeded_at timestamptz;
 
+-- A completed retained quarantine cleanup needs durable evidence after its queue
+-- row is gone, otherwise a later migration reapply cannot distinguish it from
+-- a historical 0013 gap that still needs recovery.
+alter table public.attachments
+  add column if not exists quarantine_cleanup_completed_at timestamptz;
+
+alter table public.attachments
+  drop constraint if exists attachments_quarantine_cleanup_completed_check;
+alter table public.attachments
+  add constraint attachments_quarantine_cleanup_completed_check check (
+    quarantine_cleanup_completed_at is null
+    or (
+      state = 'quarantine'
+      and deleted_at is not null
+      and quarantine_expires_at is not null
+    )
+  );
+
 alter table public.file_cleanup_queue
   drop constraint if exists file_cleanup_queue_first_remove_success_check;
 alter table public.file_cleanup_queue
@@ -123,6 +141,7 @@ begin
       and deleted_at is not null
       and storage_path is not null
       and quarantine_expires_at is not null
+      and quarantine_cleanup_completed_at is null
     order by storage_path
   loop
     perform private.ensure_quarantine_cleanup_guard(
@@ -186,6 +205,19 @@ begin
       last_error_code = null
     where id = candidate.id;
     return false;
+  end if;
+
+  if candidate.retain_until is not null
+    and candidate.first_remove_succeeded_at is not null
+  then
+    update public.attachments
+    set quarantine_cleanup_completed_at = observed_at
+    where workspace_id = candidate.workspace_id
+      and id = candidate.attachment_id
+      and state = 'quarantine'
+      and deleted_at is not null
+      and storage_path = candidate.storage_path
+      and quarantine_cleanup_completed_at is null;
   end if;
 
   delete from public.file_cleanup_queue where id = candidate.id;

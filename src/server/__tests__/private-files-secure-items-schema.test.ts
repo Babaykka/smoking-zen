@@ -301,9 +301,16 @@ describe('private file and secure-item schema runtime', () => {
     expect((await database.query<{ count: number }>(
       'select count(*)::int as count from public.file_cleanup_queue where id = $1', [staleQueue.rows[0]!.id],
     )).rows).toEqual([{ count: 0 }]);
-    expect((await database.query<{ state: string; storage_path: string }>(
-      'select state, storage_path from public.attachments where id = $1', [attachmentId],
-    )).rows).toEqual([{ state: 'ready', storage_path: readyObject }]);
+    expect((await database.query<{
+      state: string; storage_path: string; quarantine_cleanup_completed_at: string | null;
+    }>(`
+      select state, storage_path, quarantine_cleanup_completed_at::text
+      from public.attachments where id = $1
+    `, [attachmentId])).rows).toEqual([{
+      state: 'ready',
+      storage_path: readyObject,
+      quarantine_cleanup_completed_at: null,
+    }]);
   });
 
   it('lets completion publish first and atomically cancel its unleased late-commit guard', async () => {
@@ -353,9 +360,56 @@ describe('private file and secure-item schema runtime', () => {
     expect((await database.query<{ count: number }>(
       'select count(*)::int as count from public.file_cleanup_queue where id = $1', [armed.rows[0]!.queue_id],
     )).rows).toEqual([{ count: 0 }]);
-    expect((await database.query<{ state: string }>(
-      'select state from public.attachments where id = $1', [attachmentId],
-    )).rows).toEqual([{ state: 'ready' }]);
+    expect((await database.query<{ state: string; quarantine_cleanup_completed_at: string | null }>(`
+      select state, quarantine_cleanup_completed_at::text
+      from public.attachments where id = $1
+    `, [attachmentId])).rows).toEqual([{
+      state: 'ready',
+      quarantine_cleanup_completed_at: null,
+    }]);
+
+    const oldQuarantineCleanup = await database.query<{ queue_id: string }>(`
+      select id::text as queue_id from public.file_cleanup_queue
+      where attachment_id = $1 and storage_path = $2
+    `, [attachmentId, quarantinePath]);
+    await database.query(`
+      update public.file_cleanup_queue
+      set remove_after = clock_timestamp() - interval '25 hours',
+          retain_until = clock_timestamp() - interval '1 hour'
+      where id = $1
+    `, [oldQuarantineCleanup.rows[0]!.queue_id]);
+    const firstOldPathLease = await database.query<{ lease_id: string }>(
+      'select public.prepare_file_cleanup_object($1)::text as lease_id',
+      [oldQuarantineCleanup.rows[0]!.queue_id],
+    );
+    expect((await database.query<{ removed: boolean }>(
+      'select public.finish_file_cleanup_object($1, $2) as removed',
+      [oldQuarantineCleanup.rows[0]!.queue_id, firstOldPathLease.rows[0]!.lease_id],
+    )).rows).toEqual([{ removed: false }]);
+    await database.query(`
+      update public.file_cleanup_queue
+      set first_remove_succeeded_at = clock_timestamp() - interval '25 hours',
+          remove_after = clock_timestamp() - interval '1 second',
+          retain_until = clock_timestamp() - interval '1 second'
+      where id = $1
+    `, [oldQuarantineCleanup.rows[0]!.queue_id]);
+    const secondOldPathLease = await database.query<{ lease_id: string }>(
+      'select public.prepare_file_cleanup_object($1)::text as lease_id',
+      [oldQuarantineCleanup.rows[0]!.queue_id],
+    );
+    expect((await database.query<{ removed: boolean }>(
+      'select public.finish_file_cleanup_object($1, $2) as removed',
+      [oldQuarantineCleanup.rows[0]!.queue_id, secondOldPathLease.rows[0]!.lease_id],
+    )).rows).toEqual([{ removed: true }]);
+    expect((await database.query<{ quarantine_cleanup_completed_at: string | null }>(`
+      select quarantine_cleanup_completed_at::text
+      from public.attachments where id = $1
+    `, [attachmentId])).rows).toEqual([{ quarantine_cleanup_completed_at: null }]);
+    await expect(database.query(`
+      update public.attachments
+      set quarantine_cleanup_completed_at = clock_timestamp()
+      where id = $1
+    `, [attachmentId])).rejects.toThrow(/attachments_quarantine_cleanup_completed_check/iu);
   });
 
   it('blocks completion after cleanup prepare commits and re-arms the token-matched tombstone after remove', async () => {
@@ -434,6 +488,11 @@ describe('private file and secure-item schema runtime', () => {
         id, workspace_id, task_id, name, mime_type, size_bytes, storage_path, created_by, quarantine_expires_at
       ) values ($1, $2, $3, 'stale.txt', 'text/plain', 16, $4, $5, clock_timestamp() + interval '15 minutes')
     `, [attachmentId, owner.workspace_id, task.rows[0]!.id, quarantinePath, owner.user_id]);
+    await expect(database.query(`
+      update public.attachments
+      set quarantine_cleanup_completed_at = clock_timestamp()
+      where id = $1
+    `, [attachmentId])).rejects.toThrow(/attachments_quarantine_cleanup_completed_check/iu);
     const armed = await database.query<{ queue_id: string }>(
       'select public.arm_attachment_ready_cleanup($1, $2, $3) as queue_id',
       [owner.workspace_id, attachmentId, attachmentId],
@@ -478,6 +537,10 @@ describe('private file and secure-item schema runtime', () => {
         first_remove_succeeded_at::text
       from public.file_cleanup_queue where id = $1
     `, [armed.rows[0]!.queue_id])).rows).toEqual(beforeStaleFinish.rows);
+    expect((await database.query<{ quarantine_cleanup_completed_at: string | null }>(`
+      select quarantine_cleanup_completed_at::text
+      from public.attachments where id = $1
+    `, [attachmentId])).rows).toEqual([{ quarantine_cleanup_completed_at: null }]);
 
     const reclaimed = await database.query<{ lease_id: string }>(
       'select public.prepare_file_cleanup_object($1)::text as lease_id', [armed.rows[0]!.queue_id],
@@ -491,6 +554,10 @@ describe('private file and secure-item schema runtime', () => {
       'select public.finish_file_cleanup_object($1, $2) as removed',
       [armed.rows[0]!.queue_id, reclaimed.rows[0]!.lease_id],
     )).rows).toEqual([{ removed: false }]);
+    expect((await database.query<{ quarantine_cleanup_completed_at: string | null }>(`
+      select quarantine_cleanup_completed_at::text
+      from public.attachments where id = $1
+    `, [attachmentId])).rows).toEqual([{ quarantine_cleanup_completed_at: null }]);
     expect((await database.query<{ recorded: boolean; live_lease: boolean }>(`
       select first_remove_succeeded_at is not null as recorded,
         lease_id is not null as live_lease
@@ -519,6 +586,10 @@ describe('private file and secure-item schema runtime', () => {
     expect((await database.query<{ count: number }>(
       'select count(*)::int as count from public.file_cleanup_queue where id = $1', [armed.rows[0]!.queue_id],
     )).rows).toEqual([{ count: 0 }]);
+    expect((await database.query<{ quarantine_cleanup_completed_at: string | null }>(`
+      select quarantine_cleanup_completed_at::text
+      from public.attachments where id = $1
+    `, [attachmentId])).rows).toEqual([{ quarantine_cleanup_completed_at: null }]);
   });
 
   it('refreshes every database-clock lifecycle verdict after its blocking row locks', async () => {
@@ -1163,6 +1234,14 @@ describe('private file and secure-item schema runtime', () => {
         retained: true,
       });
     }
+    expect((await database.query<{ quarantine_cleanup_completed_at: string | null }>(`
+      select quarantine_cleanup_completed_at::text
+      from public.attachments
+      where id in ($1, $2, $3)
+      order by id
+    `, cases.map(({ attachmentId }) => attachmentId))).rows).toEqual(
+      cases.map(() => ({ quarantine_cleanup_completed_at: null })),
+    );
 
     await applyMigration(database, MIGRATION_0014);
     expect((await database.query(`
@@ -1228,6 +1307,14 @@ describe('private file and secure-item schema runtime', () => {
       expect(row).toMatchObject({ delayed: true, lease_id: null });
       expect(row.first_remove_succeeded_at).not.toBeNull();
     }
+    expect((await database.query<{ quarantine_cleanup_completed_at: string | null }>(`
+      select quarantine_cleanup_completed_at::text
+      from public.attachments
+      where id in ($1, $2, $3)
+      order by id
+    `, cases.map(({ attachmentId }) => attachmentId))).rows).toEqual(
+      cases.map(() => ({ quarantine_cleanup_completed_at: null })),
+    );
     await applyMigration(database, MIGRATION_0014);
     expect((await database.query(`
       select id::text as queue_id, first_remove_succeeded_at::text,
@@ -1259,6 +1346,49 @@ describe('private file and secure-item schema runtime', () => {
       select count(*)::int as count from public.file_cleanup_queue
       where attachment_id in ($1, $2, $3)
     `, cases.map(({ attachmentId }) => attachmentId))).rows).toEqual([{ count: 0 }]);
+
+    const completedAttachments = await database.query<{
+      attachment_id: string;
+      state: string;
+      soft_deleted: boolean;
+      quarantine_metadata_preserved: boolean;
+      quarantine_cleanup_completed_at: string;
+    }>(`
+      select id::text as attachment_id, state, deleted_at is not null as soft_deleted,
+        quarantine_expires_at is not null as quarantine_metadata_preserved,
+        quarantine_cleanup_completed_at::text
+      from public.attachments
+      where id in ($1, $2, $3)
+      order by id
+    `, cases.map(({ attachmentId }) => attachmentId));
+    expect(completedAttachments.rows.map(({ attachment_id }) => attachment_id))
+      .toEqual(cases.map(({ attachmentId }) => attachmentId));
+    for (const attachment of completedAttachments.rows) {
+      expect(attachment).toMatchObject({
+        state: 'quarantine',
+        soft_deleted: true,
+        quarantine_metadata_preserved: true,
+      });
+      expect(attachment.quarantine_cleanup_completed_at).not.toBeNull();
+    }
+
+    await applyMigration(database, MIGRATION_0014);
+    expect((await database.query<{ count: number }>(`
+      select count(*)::int as count from public.file_cleanup_queue
+      where attachment_id in ($1, $2, $3)
+    `, cases.map(({ attachmentId }) => attachmentId))).rows).toEqual([{ count: 0 }]);
+    expect((await database.query(`
+      select id::text as attachment_id, state, deleted_at is not null as soft_deleted,
+        quarantine_expires_at is not null as quarantine_metadata_preserved,
+        quarantine_cleanup_completed_at::text
+      from public.attachments
+      where id in ($1, $2, $3)
+      order by id
+    `, cases.map(({ attachmentId }) => attachmentId))).rows).toEqual(completedAttachments.rows);
+    expect((await database.query<{ count: number }>(`
+      select count(*)::int as count from pg_constraint
+      where conname = 'attachments_quarantine_cleanup_completed_check'
+    `)).rows).toEqual([{ count: 1 }]);
   });
 
   it('backfills retained tombstones for signed quarantine paths created before 0013 and reapplies without churn', async () => {
