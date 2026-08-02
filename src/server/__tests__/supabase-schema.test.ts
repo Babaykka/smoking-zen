@@ -9,6 +9,7 @@ const MIGRATIONS = [
   'supabase/migrations/0001_workspace_schema.sql',
   'supabase/migrations/0002_rls_storage_realtime.sql',
   'supabase/migrations/0003_task_realtime_actor.sql',
+  'supabase/migrations/0004_realtime_scope_lockdown.sql',
 ];
 const OWNER_TELEGRAM_ID = '4503599627370495';
 const REQUIRED_SECTIONS = [
@@ -38,6 +39,9 @@ async function createDatabase(options: { seedRounds?: number } = {}) {
     create function auth.uid()
       returns uuid language sql stable set search_path = ''
       as 'select nullif(current_setting(''request.jwt.claim.sub'', true), '''')::uuid';
+    create function auth.jwt()
+      returns jsonb language sql stable set search_path = ''
+      as 'select coalesce(nullif(current_setting(''request.jwt.claims'', true), ''''), ''{}'')::jsonb';
     create schema storage;
     create table storage.buckets (
       id text primary key, name text not null, public boolean not null default false, file_size_limit bigint
@@ -53,7 +57,14 @@ async function createDatabase(options: { seedRounds?: number } = {}) {
       returns void language sql volatile set search_path = '' as
       'insert into realtime.messages (extension, topic, event, payload) values (''broadcast'', topic, event, payload)';
     create function realtime.topic()
-      returns text language sql stable set search_path = '' as 'select null::text';
+      returns text language sql stable set search_path = ''
+      as 'select nullif(current_setting(''realtime.topic'', true), '''')::text';
+    grant usage on schema public, storage, realtime to anon, authenticated, service_role;
+    grant all privileges on storage.objects to anon, authenticated, service_role;
+    grant all privileges on realtime.messages to anon, authenticated, service_role;
+    alter default privileges in schema public grant all privileges on tables to anon, authenticated, service_role;
+    alter default privileges in schema public grant all privileges on sequences to anon, authenticated, service_role;
+    alter default privileges in schema public grant execute on functions to anon, authenticated, service_role;
   `);
 
   for (let round = 0; round < 2; round += 1) {
@@ -91,7 +102,7 @@ afterEach(async () => {
 });
 
 describe('Supabase schema runtime security', () => {
-  it('blocks direct Telegram identity mutation while allowing the scoped profile RPC', async () => {
+  it('blocks direct Telegram identity and profile mutation for authenticated browser roles', async () => {
     const database = await createDatabase();
     const ordinaryLogin = await database.query(`select * from public.bootstrap_telegram_user(
       '123456789', 'Сотрудник', null, 'member_test', 'ru', $1, 'Smoking Zen test'
@@ -109,28 +120,25 @@ describe('Supabase schema runtime security', () => {
       update public.app_users set telegram_id = $2
       where id = $1 returning telegram_id
     `, [ordinaryUser.rows[0]!.id, OWNER_TELEGRAM_ID]);
-    const profile = await database.query<{
-      display_name: string;
-      username: string;
-      avatar_url: string;
-    }>(`select * from public.update_own_profile(
-      'Владелец смены', 'updated_owner', 'https://images.example/avatar.png'
-    )`);
+    let profileDenied = false;
+    try {
+      await database.query(`select * from public.update_own_profile(
+        'Владелец смены', 'updated_owner', 'https://images.example/avatar.png'
+      )`);
+    } catch (error) {
+      profileDenied = /permission denied/i.test(String(error));
+    }
+    await database.exec('reset role');
     const identity = await database.query<{ telegram_id: string }>(
       'select telegram_id from public.app_users where id = $1',
       [ordinaryUser.rows[0]!.id],
     );
-    await database.exec('reset role');
     const owner = await bootstrapOwner(database);
 
     expect(direct.rows).toEqual([]);
     expect(identity.rows[0]?.telegram_id).toBe('123456789');
     expect(owner[0]?.role).toBe('owner');
-    expect(profile.rows).toEqual([{
-      display_name: 'Владелец смены',
-      username: 'updated_owner',
-      avatar_url: 'https://images.example/avatar.png',
-    }]);
+    expect(profileDenied).toBe(true);
   });
 
   it.each(['user', 'membership', 'workspace'] as const)(
@@ -269,5 +277,151 @@ describe('Supabase schema runtime security', () => {
       { workspace_id: workspaceOne, actor_user_id: actorOne },
       { workspace_id: workspaceTwo, actor_user_id: null },
     ]);
+  });
+
+  it('denies a Realtime-scoped authenticated bearer every direct business-table mutation', async () => {
+    const database = await createDatabase({ seedRounds: 1 });
+    const userId = '20000000-0000-4000-8000-000000000001';
+    const workspaceId = '10000000-0000-4000-8000-000000000001';
+    const taskId = '61000000-0000-4000-8000-000000000001';
+    const commentId = '62000000-0000-4000-8000-000000000001';
+    await database.query("select set_config('request.jwt.claim.sub', $1, false)", [userId]);
+    await database.query("select set_config('request.jwt.claims', $1, false)", [JSON.stringify({ sub: userId, role: 'authenticated', workspace_id: workspaceId, smoking_zen_scope: 'realtime' })]);
+    await database.exec('set role authenticated');
+
+    const permissionDenied = async (sql: string, params: unknown[] = []) => {
+      try {
+        await database.query(sql, params);
+        return false;
+      } catch (error) {
+        return /permission denied/i.test(String(error));
+      }
+    };
+    const denied = {
+      taskSelect: await permissionDenied('select * from public.tasks'),
+      taskInsert: await permissionDenied(
+        'insert into public.tasks (id, workspace_id, title, status_id) values ($1, $2, $3, $4)',
+        [taskId, workspaceId, 'Bearer insert', '40000000-0000-4000-8000-000000000001'],
+      ),
+      taskUpdate: await permissionDenied("update public.tasks set title = 'Bypass version' where id = '60000000-0000-4000-8000-000000000001'"),
+      taskHardDelete: await permissionDenied('delete from public.tasks where id = $1', [taskId]),
+      commentSelect: await permissionDenied('select * from public.comments'),
+      commentSpoofAuthor: await permissionDenied(
+        'insert into public.comments (id, workspace_id, task_id, author_id, body) values ($1, $2, $3, $4, $5)',
+        [commentId, workspaceId, '60000000-0000-4000-8000-000000000001', '30000000-0000-4000-8000-000000000002', 'Spoofed author'],
+      ),
+      commentUpdate: await permissionDenied("update public.comments set body = 'Bypass version' where id = $1", [commentId]),
+      commentHardDelete: await permissionDenied('delete from public.comments where id = $1', [commentId]),
+    };
+
+    expect(denied).toEqual({
+      taskSelect: true, taskInsert: true, taskUpdate: true, taskHardDelete: true,
+      commentSelect: true, commentSpoofAuthor: true, commentUpdate: true, commentHardDelete: true,
+    });
+  });
+
+  it('denies direct Storage and public RPC access to the Realtime bearer', async () => {
+    const database = await createDatabase({ seedRounds: 1 });
+    const userId = '20000000-0000-4000-8000-000000000001';
+    const workspaceId = '10000000-0000-4000-8000-000000000001';
+    await database.query("select set_config('request.jwt.claim.sub', $1, false)", [userId]);
+    await database.query("select set_config('request.jwt.claims', $1, false)", [JSON.stringify({ sub: userId, role: 'authenticated', workspace_id: workspaceId, smoking_zen_scope: 'realtime' })]);
+    await database.exec('set role authenticated');
+
+    await expect(database.query(
+      'insert into storage.objects (bucket_id, name) values ($1, $2)',
+      ['workspace-files', `${workspaceId}/forged.txt`],
+    )).rejects.toThrow(/permission denied/i);
+    await expect(database.query("select * from public.update_own_profile('Forged profile', null, null)"))
+      .rejects.toThrow(/permission denied/i);
+  });
+
+  it('authorizes only scoped private Realtime SELECT for the active member workspace', async () => {
+    const database = await createDatabase({ seedRounds: 1 });
+    const userId = '20000000-0000-4000-8000-000000000001';
+    const workspaceId = '10000000-0000-4000-8000-000000000001';
+    await database.exec(`
+      insert into public.workspaces (id, name) values ('10000000-0000-4000-8000-000000000002', 'Other');
+      insert into public.workspace_members (id, workspace_id, user_id, display_name, role, active)
+      values (
+        '30000000-0000-4000-8000-000000000099',
+        '10000000-0000-4000-8000-000000000002',
+        '${userId}',
+        'Same user, other workspace',
+        'member',
+        true
+      );
+      insert into realtime.messages (extension, topic, event, payload)
+      values ('broadcast', 'workspace:${workspaceId}', 'workspace_changed', '{}');
+    `);
+    await database.query("select set_config('request.jwt.claim.sub', $1, false)", [userId]);
+    await database.query("select set_config('request.jwt.claims', $1, false)", [JSON.stringify({ sub: userId, role: 'authenticated', workspace_id: workspaceId, smoking_zen_scope: 'realtime' })]);
+    await database.exec('set role authenticated');
+
+    await database.query("select set_config('realtime.topic', $1, false)", [`workspace:${workspaceId}`]);
+    const own = await database.query<{ count: number }>('select count(*)::int as count from realtime.messages');
+    await database.query("select set_config('realtime.topic', $1, false)", ['workspace:10000000-0000-4000-8000-000000000002']);
+    const other = await database.query<{ count: number }>('select count(*)::int as count from realtime.messages');
+    await database.query("select set_config('request.jwt.claims', $1, false)", [JSON.stringify({ sub: userId, role: 'authenticated', workspace_id: workspaceId })]);
+    await database.query("select set_config('realtime.topic', $1, false)", [`workspace:${workspaceId}`]);
+    const unscoped = await database.query<{ count: number }>('select count(*)::int as count from realtime.messages');
+    await expect(database.query(
+      "insert into realtime.messages (extension, topic, event, payload) values ('broadcast', $1, 'forged', '{}')",
+      [`workspace:${workspaceId}`],
+    )).rejects.toThrow(/permission denied/i);
+
+    expect(own.rows[0]?.count).toBeGreaterThan(0);
+    expect(other.rows[0]?.count).toBe(0);
+    expect(unscoped.rows[0]?.count).toBe(0);
+  });
+
+  it('removes Supabase default grants for future public objects', async () => {
+    const database = await createDatabase();
+    await database.exec(`
+      create table public.future_private_record (id bigserial primary key);
+      create function public.future_private_function() returns integer language sql as 'select 1';
+    `);
+    const privileges = await database.query<{
+      authenticated_table: boolean;
+      authenticated_sequence: boolean;
+      anon_table: boolean;
+      anon_sequence: boolean;
+      service_table: boolean;
+      service_function: boolean;
+    }>(`
+      select
+        has_table_privilege('authenticated', 'public.future_private_record', 'select') as authenticated_table,
+        has_sequence_privilege('authenticated', 'public.future_private_record_id_seq', 'usage') as authenticated_sequence,
+        has_table_privilege('anon', 'public.future_private_record', 'select') as anon_table,
+        has_sequence_privilege('anon', 'public.future_private_record_id_seq', 'usage') as anon_sequence,
+        has_table_privilege('service_role', 'public.future_private_record', 'select') as service_table,
+        has_function_privilege('service_role', 'public.future_private_function()', 'execute') as service_function
+    `);
+
+    const lockdownMigration = await readFile('supabase/migrations/0004_realtime_scope_lockdown.sql', 'utf8');
+    const currentLeaks = await database.query<{ grantee: string; object_name: string }>(`
+      select grantee, table_name as object_name
+      from information_schema.role_table_grants
+      where table_schema = 'public' and grantee in ('PUBLIC', 'anon', 'authenticated')
+      union all
+      select grantee, routine_name as object_name
+      from information_schema.role_routine_grants
+      where routine_schema = 'public'
+        and routine_name <> 'future_private_function'
+        and grantee in ('PUBLIC', 'anon', 'authenticated')
+    `);
+    expect(privileges.rows).toEqual([{
+      authenticated_table: false,
+      authenticated_sequence: false,
+      anon_table: false,
+      anon_sequence: false,
+      service_table: true,
+      service_function: true,
+    }]);
+    expect(currentLeaks.rows).toEqual([]);
+    // PGlite keeps PostgreSQL's implicit PUBLIC function EXECUTE even after ALTER DEFAULT
+    // PRIVILEGES, so the function-default revocation is covered statically here while
+    // current function denial is exercised above against the profile RPC.
+    expect(lockdownMigration).toMatch(/alter default privileges in schema public revoke execute on functions from public, anon, authenticated;/i);
   });
 });

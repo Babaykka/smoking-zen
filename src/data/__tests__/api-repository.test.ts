@@ -39,6 +39,16 @@ describe('API task repository', () => {
     });
     expect(repository.pendingTaskInput('task-check-coals')).toEqual({ title: 'Мой текст' });
   });
+
+  it('disposes its Realtime subscription safely more than once', () => {
+    const unsubscribe = vi.fn();
+    const repository = createApiRepository({ initialSnapshot: demoSeed, fetcher: vi.fn(), realtime: () => unsubscribe });
+
+    repository.dispose?.();
+    repository.dispose?.();
+
+    expect(unsubscribe).toHaveBeenCalledOnce();
+  });
 });
 
 describe('workspace Realtime', () => {

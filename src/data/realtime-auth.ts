@@ -5,6 +5,7 @@ type RealtimeTokenManagerOptions = {
   fetcher?: typeof fetch;
   now?: () => Date;
   setAuth?: (token: string) => void | Promise<void>;
+  signal?: AbortSignal;
 };
 
 export type RealtimeTokenManager = ReturnType<typeof createRealtimeTokenManager>;
@@ -73,6 +74,7 @@ export function createRealtimeTokenManager(options: RealtimeTokenManagerOptions 
     const operation = (async () => {
       const response = await fetcher('/api/realtime/token', {
         method: 'GET', credentials: 'same-origin', headers: { accept: 'application/json' },
+        ...(options.signal ? { signal: options.signal } : {}),
       });
       const envelope = await response.json() as ApiEnvelope<TokenPayload>;
       if (!response.ok || !envelope.data) {

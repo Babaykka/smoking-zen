@@ -10,6 +10,7 @@ type ApiRepositoryOptions = {
   initialSnapshot: WorkspaceSnapshot;
   fetcher?: typeof fetch;
   realtime: RealtimeSubscriber;
+  signal?: AbortSignal;
 };
 
 function clone<T>(value: T): T {
@@ -36,6 +37,10 @@ export function createApiRepository(options: ApiRepositoryOptions): WorkspaceGat
   let hydrated = false;
   let hydration: Promise<void> | null = null;
 
+  const assertActive = () => {
+    if (disposed || options.signal?.aborted) throw new DOMException('Workspace request aborted.', 'AbortError');
+  };
+
   const notify = () => {
     const snapshot = clone(state);
     for (const listener of listeners) listener(snapshot);
@@ -45,8 +50,14 @@ export function createApiRepository(options: ApiRepositoryOptions): WorkspaceGat
     if (hydrated && !force) return;
     if (hydration) return hydration;
     hydration = (async () => {
-      const response = await fetcher('/api/tasks', { credentials: 'same-origin', headers: { accept: 'application/json' } });
+      assertActive();
+      const response = await fetcher('/api/tasks', {
+        credentials: 'same-origin', headers: { accept: 'application/json' },
+        ...(options.signal ? { signal: options.signal } : {}),
+      });
+      assertActive();
       const result = await envelope<WorkspaceSnapshot>(response);
+      assertActive();
       if (!response.ok || !result.data) throw new Error(result.error?.message ?? 'Не удалось загрузить задачи.');
       state = clone(result.data);
       hydrated = true;
@@ -60,13 +71,17 @@ export function createApiRepository(options: ApiRepositoryOptions): WorkspaceGat
   });
 
   const request = async <T>(url: string, method: string, body: unknown): Promise<T> => {
+    assertActive();
     const response = await fetcher(url, {
       method,
       credentials: 'same-origin',
       headers: { accept: 'application/json', 'content-type': 'application/json' },
       body: JSON.stringify(body),
+      ...(options.signal ? { signal: options.signal } : {}),
     });
+    assertActive();
     const result = await envelope<T>(response);
+    assertActive();
     if (response.status === 409 && result.data && typeof result.data === 'object') {
       const versions = result.data as { expectedVersion?: unknown; actualVersion?: unknown };
       if (typeof versions.expectedVersion === 'number' && typeof versions.actualVersion === 'number') throw new ConflictError(versions.expectedVersion, versions.actualVersion);
@@ -124,6 +139,7 @@ export function createApiRepository(options: ApiRepositoryOptions): WorkspaceGat
       return input ? clone(input) : undefined;
     },
     dispose() {
+      if (disposed) return;
       disposed = true;
       unsubscribeRealtime();
       listeners.clear();

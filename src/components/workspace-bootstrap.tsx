@@ -81,19 +81,38 @@ export function WorkspaceBootstrap({
 
   useEffect(() => {
     if (mode === 'demo') return;
-    let cancelled = false;
+    let active = true;
     let gateway: WorkspaceGateway | null = null;
     let tokenManager: RealtimeTokenManager | null = null;
+    const controller = new AbortController();
+    let resourcesDisposed = false;
+
+    const disposeResources = () => {
+      if (resourcesDisposed) return;
+      resourcesDisposed = true;
+      controller.abort();
+      gateway?.dispose?.();
+      gateway = null;
+      tokenManager?.clear();
+      tokenManager = null;
+    };
+
+    const stopIfInactive = () => {
+      if (active) return false;
+      disposeResources();
+      return true;
+    };
 
     void (async () => {
       await Promise.resolve();
+      if (stopIfInactive()) return;
       const initData = (window as typeof window & { Telegram?: { WebApp?: { initData?: string } } }).Telegram?.WebApp?.initData;
       if (!initData) {
-        if (!cancelled) setState({ gateway: null, error: 'Откройте приложение в Telegram для безопасного входа.' });
+        if (active) setState({ gateway: null, error: 'Откройте приложение в Telegram для безопасного входа.' });
         return;
       }
       if (!productionConfig) {
-        if (!cancelled) setState({ gateway: null, error: 'Сервис временно недоступен.' });
+        if (active) setState({ gateway: null, error: 'Сервис временно недоступен.' });
         return;
       }
 
@@ -101,36 +120,43 @@ export function WorkspaceBootstrap({
         const sessionResponse = await fetcher('/api/session/telegram', {
           method: 'POST', credentials: 'same-origin', headers: { 'content-type': 'application/json', accept: 'application/json' },
           body: JSON.stringify({ initData }),
+          signal: controller.signal,
         });
+        if (stopIfInactive()) return;
         if (!sessionResponse.ok) throw new Error('Авторизация Telegram недействительна.');
 
         let realtimeClient: ProductionRealtimeClient | null = null;
         tokenManager = createRealtimeTokenManager({
           fetcher,
           setAuth: (token) => realtimeClient?.realtime.setAuth(token),
+          signal: controller.signal,
         });
         const token = await tokenManager.getAccessToken();
+        if (stopIfInactive()) return;
         const workspaceId = await tokenManager.getWorkspaceId();
+        if (stopIfInactive()) return;
         realtimeClient = realtimeClientFactory(productionConfig, tokenManager);
         await realtimeClient.realtime.setAuth(token);
+        if (stopIfInactive()) return;
         gateway = createApiRepository({
           initialSnapshot: emptyWorkspace(workspaceId),
           fetcher,
           realtime: (id, listener) => subscribeWorkspaceRealtime(realtimeClient!, id, listener),
+          signal: controller.signal,
         });
         await gateway.hydrate();
-        if (!cancelled) setState({ gateway, error: null });
+        if (stopIfInactive()) return;
+        if (active) setState({ gateway, error: null });
       } catch (error) {
-        gateway?.dispose?.();
-        tokenManager?.clear();
-        if (!cancelled) setState({ gateway: null, error: error instanceof Error ? error.message : 'Сервис временно недоступен.' });
+        if (!active || controller.signal.aborted) return;
+        disposeResources();
+        setState({ gateway: null, error: error instanceof Error ? error.message : 'Сервис временно недоступен.' });
       }
     })();
 
     return () => {
-      cancelled = true;
-      gateway?.dispose?.();
-      tokenManager?.clear();
+      active = false;
+      disposeResources();
     };
   }, [fetcher, mode, productionConfig, realtimeClientFactory]);
 

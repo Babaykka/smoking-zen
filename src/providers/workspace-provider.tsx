@@ -23,10 +23,7 @@ export function WorkspaceProvider({ children, gateway }: WorkspaceProviderProps)
   useEffect(() => {
     const unsubscribe = gateway.subscribe(setSnapshot);
     void gateway.hydrate();
-    return () => {
-      unsubscribe();
-      gateway.dispose?.();
-    };
+    return unsubscribe;
   }, [gateway]);
 
   const value = useMemo(() => ({ repository: gateway, snapshot }), [gateway, snapshot]);

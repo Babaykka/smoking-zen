@@ -1,9 +1,11 @@
-import { render, screen } from '@testing-library/react';
-import { describe, expect, it } from 'vitest';
+import { render, screen, waitFor } from '@testing-library/react';
+import { StrictMode } from 'react';
+import { describe, expect, it, vi } from 'vitest';
 
 import { createDemoRepository } from '@/data/demo-repository';
 import { demoSeed } from '@/data/demo-seed';
 import { createDemoGateway } from '@/data/workspace-gateway';
+import type { WorkspaceGateway } from '@/data/workspace-gateway';
 import { WorkspaceProvider, useWorkspace } from '@/providers/workspace-provider';
 
 function TaskCount() {
@@ -48,5 +50,29 @@ describe('WorkspaceProvider', () => {
 
     expect(await screen.findByText(persistedTitle)).toBeInTheDocument();
     window.localStorage.removeItem('smoking-zen-demo-workspace');
+  });
+
+  it('only owns its subscription and never disposes a reused gateway during StrictMode effects', async () => {
+    const unsubscribe = vi.fn();
+    const gateway: WorkspaceGateway = {
+      snapshot: () => demoSeed,
+      hydrate: vi.fn().mockResolvedValue(undefined),
+      subscribe: vi.fn(() => unsubscribe),
+      createTask: vi.fn(), updateTask: vi.fn(), deleteTask: vi.fn(), restoreTask: vi.fn(), createComment: vi.fn(),
+      dispose: vi.fn(),
+    };
+
+    const rendered = render(
+      <StrictMode>
+        <WorkspaceProvider gateway={gateway}><TaskCount /></WorkspaceProvider>
+      </StrictMode>,
+    );
+    await waitFor(() => expect(gateway.subscribe).toHaveBeenCalledTimes(2));
+
+    expect(unsubscribe).toHaveBeenCalledOnce();
+    expect(gateway.dispose).not.toHaveBeenCalled();
+    rendered.unmount();
+    expect(unsubscribe).toHaveBeenCalledTimes(2);
+    expect(gateway.dispose).not.toHaveBeenCalled();
   });
 });

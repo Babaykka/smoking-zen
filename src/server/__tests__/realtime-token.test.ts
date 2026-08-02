@@ -23,7 +23,12 @@ describe('Realtime access token', () => {
 
     const verified = await jwtVerify(token, publicKey, { algorithms: ['ES256'], audience: 'authenticated', issuer: 'https://project.supabase.co/auth/v1', currentDate: now });
     expect(verified.protectedHeader).toMatchObject({ alg: 'ES256', kid: 'supabase-es256-key-1', typ: 'JWT' });
-    expect(verified.payload).toMatchObject({ sub: '11111111-1111-4111-8111-111111111111', role: 'authenticated', workspace_id: '33333333-3333-4333-8333-333333333333' });
+    expect(verified.payload).toMatchObject({
+      sub: '11111111-1111-4111-8111-111111111111',
+      role: 'authenticated',
+      workspace_id: '33333333-3333-4333-8333-333333333333',
+      smoking_zen_scope: 'realtime',
+    });
     expect(verified.payload.exp! - verified.payload.iat!).toBe(300);
   });
 });

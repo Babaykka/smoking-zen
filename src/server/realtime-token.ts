@@ -9,7 +9,7 @@ export async function createRealtimeAccessToken(identity: RealtimeIdentity, opti
   const now = options.now ?? new Date();
   const issuedAt = Math.floor(now.getTime() / 1_000);
   const privateKey = await importPKCS8(options.privateKeyPem.replace(/\\n/g, '\n'), 'ES256');
-  return new SignJWT({ role: 'authenticated', workspace_id: identity.workspaceId })
+  return new SignJWT({ role: 'authenticated', workspace_id: identity.workspaceId, smoking_zen_scope: 'realtime' })
     .setProtectedHeader({ alg: 'ES256', kid: options.keyId, typ: 'JWT' })
     .setSubject(identity.userId)
     .setIssuer(options.issuer)
