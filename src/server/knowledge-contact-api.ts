@@ -2,7 +2,7 @@ import 'server-only';
 
 import type { SupabaseClient } from '@supabase/supabase-js';
 
-import { ConflictError } from '@/data/workspace-repository';
+import { assertRestorableRecord, ConflictError } from '@/data/workspace-repository';
 import {
   contactInputSchema,
   knowledgeInputSchema,
@@ -15,6 +15,7 @@ import {
 import type { Contact, ContactMethod, KnowledgeItem, RecordMetadata, SearchResult } from '@/domain/types';
 import { requireProductionEnvironment } from '@/server/env';
 import { readSessionCookie } from '@/server/http';
+import { isDatabaseVersionConflict, throwKnownRestoreDatabaseError } from '@/server/restore';
 import { readSession } from '@/server/session';
 import { createServiceSupabaseClient, createSupabaseAccessStore } from '@/server/supabase';
 import type { TaskSessionActor } from '@/server/task-api';
@@ -72,7 +73,7 @@ function contactFromRow(value: unknown, methods: ContactMethod[]): Contact {
 }
 
 function isVersionConflict(result: DataResult): boolean {
-  return result.error?.code === '40001' || result.error?.message?.includes('version_conflict') === true;
+  return isDatabaseVersionConflict(result.error);
 }
 
 function methodsPayload(input: ContactInput): Record<string, unknown>[] {
@@ -138,14 +139,24 @@ export function createSupabaseKnowledgeContactStore(
     },
     async restoreKnowledge(workspaceId, id, expectedVersion, actorUserId) {
       const current = await currentKnowledge(workspaceId, id);
-      if (!current) throw new Error('Запись не найдена');
-      if (Number(current.version) !== expectedVersion) throw new ConflictError(expectedVersion, Number(current.version));
-      const deletedAt = Date.parse(String(current.deleted_at));
-      if (!Number.isFinite(deletedAt) || Date.now() >= deletedAt + 30 * 24 * 60 * 60 * 1_000) throw new Error('Срок восстановления истёк');
-      const result = await createActorClient(actorUserId).from('knowledge_items').update({ deleted_at: null })
-        .eq('workspace_id', workspaceId).eq('id', id).eq('version', expectedVersion).select('*').maybeSingle() as DataResult;
-      const data = assertResult(result);
-      return data ? knowledgeFromRow(data) : conflictOrMissing(currentKnowledge, workspaceId, id, expectedVersion);
+      assertRestorableRecord(current ? {
+        version: Number(current.version),
+        deletedAt: current.deleted_at === null ? null : String(current.deleted_at),
+      } : null, expectedVersion);
+      const result = await createActorClient(actorUserId).rpc('restore_knowledge_record', {
+        p_workspace_id: workspaceId, p_knowledge_id: id, p_expected_version: expectedVersion,
+      }) as DataResult;
+      if (isDatabaseVersionConflict(result.error)) return conflictOrMissing(currentKnowledge, workspaceId, id, expectedVersion);
+      throwKnownRestoreDatabaseError(result.error, 'knowledge_not_found');
+      const rows = assertResult(result) as unknown[];
+      const row = rows[0];
+      if (row) return knowledgeFromRow(row);
+      const latest = await currentKnowledge(workspaceId, id);
+      assertRestorableRecord(latest ? {
+        version: Number(latest.version),
+        deletedAt: latest.deleted_at === null ? null : String(latest.deleted_at),
+      } : null, expectedVersion);
+      throw new Error('Не удалось восстановить запись.');
     },
     async createContact(workspaceId, input, actorUserId) {
       const contact = contactInputSchema.parse(input);
@@ -182,10 +193,16 @@ export function createSupabaseKnowledgeContactStore(
       return row ? contactFromRow(row, []) : conflictOrMissing(currentContact, workspaceId, id, expectedVersion);
     },
     async restoreContact(workspaceId, id, expectedVersion, actorUserId) {
+      const current = await currentContact(workspaceId, id);
+      assertRestorableRecord(current ? {
+        version: Number(current.version),
+        deletedAt: current.deleted_at === null ? null : String(current.deleted_at),
+      } : null, expectedVersion);
       const result = await createActorClient(actorUserId).rpc('set_contact_deleted', {
         p_workspace_id: workspaceId, p_contact_id: id, p_expected_version: expectedVersion, p_restore: true,
       }) as DataResult;
       if (isVersionConflict(result)) return conflictOrMissing(currentContact, workspaceId, id, expectedVersion);
+      throwKnownRestoreDatabaseError(result.error, 'contact_not_found');
       const rows = assertResult(result) as unknown[];
       const row = rows[0];
       if (!row) return conflictOrMissing(currentContact, workspaceId, id, expectedVersion);

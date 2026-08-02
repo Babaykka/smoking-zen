@@ -38,6 +38,43 @@ export class ConflictError extends Error {
   }
 }
 
+export class RestoreNotFoundError extends Error {
+  constructor() {
+    super('Запись для восстановления не найдена.');
+    this.name = 'RestoreNotFoundError';
+  }
+}
+
+export class RestoreNotDeletedError extends Error {
+  constructor() {
+    super('Запись не удалена и не требует восстановления.');
+    this.name = 'RestoreNotDeletedError';
+  }
+}
+
+export class RestoreExpiredError extends Error {
+  constructor() {
+    super('Восстановление доступно только 30 дней после удаления.');
+    this.name = 'RestoreExpiredError';
+  }
+}
+
+const RESTORE_WINDOW_MS = 30 * 24 * 60 * 60 * 1_000;
+
+export function assertRestorableRecord(
+  record: { version: number; deletedAt: string | null } | null | undefined,
+  expectedVersion: number,
+  currentTime = Date.now(),
+): asserts record is { version: number; deletedAt: string } {
+  if (!record) throw new RestoreNotFoundError();
+  if (record.version !== expectedVersion) throw new ConflictError(expectedVersion, record.version);
+  if (record.deletedAt === null) throw new RestoreNotDeletedError();
+  const deletedAt = Date.parse(record.deletedAt);
+  if (!Number.isFinite(deletedAt) || currentTime >= deletedAt + RESTORE_WINDOW_MS) {
+    throw new RestoreExpiredError();
+  }
+}
+
 export interface WorkspaceRepository {
   snapshot(): WorkspaceSnapshot;
   createTask(input: TaskInput): Task;

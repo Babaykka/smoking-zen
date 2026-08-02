@@ -25,6 +25,7 @@ import type {
 } from '@/domain/types';
 import { demoSeed } from '@/data/demo-seed';
 import {
+  assertRestorableRecord,
   ConflictError,
   type RestorableRecord,
   type WorkspaceListener,
@@ -41,8 +42,6 @@ type RepositoryOptions = {
 };
 
 type MutableRecord = Task | Comment | KnowledgeItem | Contact | SecureItemLink;
-
-const RESTORE_WINDOW_MS = 30 * 24 * 60 * 60 * 1_000;
 
 function clone<T>(value: T): T {
   if (typeof structuredClone === 'function') return structuredClone(value);
@@ -247,13 +246,8 @@ export function createDemoRepository(options: RepositoryOptions = {}): Workspace
     },
     deleteSecureItem: (id, expectedVersion) => deleteRecord<SecureItemLink>('secureItem', id, expectedVersion),
     restore: (entity, id, expectedVersion): RestorableRecord => {
-      const current = recordsFor(entity).find((record) => record.id === id && record.deletedAt !== null);
-      if (!current) throw new Error('Удалённая запись не найдена');
-      const deletedAt = current.deletedAt === null ? Number.NaN : Date.parse(current.deletedAt);
-      if (!Number.isFinite(deletedAt) || Date.parse(now()) >= deletedAt + RESTORE_WINDOW_MS) {
-        throw new Error('Восстановление доступно только 30 дней после удаления.');
-      }
-      assertVersion(current, expectedVersion);
+      const current = recordsFor(entity).find((record) => record.id === id);
+      assertRestorableRecord(current, expectedVersion, Date.parse(now()));
       const restored = { ...current, version: current.version + 1, updatedAt: now(), deletedAt: null };
       const records = recordsFor(entity);
       records[records.indexOf(current)] = restored;

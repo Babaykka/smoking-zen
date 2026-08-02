@@ -2,7 +2,13 @@ import { describe, expect, it, vi } from 'vitest';
 
 import { createDemoRepository } from '@/data/demo-repository';
 import { demoSeed } from '@/data/demo-seed';
-import { ConflictError, type WorkspacePersistence } from '@/data/workspace-repository';
+import {
+  ConflictError,
+  RestoreExpiredError,
+  RestoreNotDeletedError,
+  RestoreNotFoundError,
+  type WorkspacePersistence,
+} from '@/data/workspace-repository';
 import type { NotificationDelivery, WorkspaceSnapshot } from '@/domain/types';
 
 function createMemoryPersistence(): WorkspacePersistence {
@@ -90,6 +96,27 @@ describe('demo workspace repository', () => {
     });
   });
 
+  it('distinguishes missing and active records during restore without mutating state', () => {
+    const repository = createRepository();
+    const active = repository.snapshot().tasks[0]!;
+    const before = repository.snapshot();
+
+    expect(() => repository.restore('task', 'missing-task', 1)).toThrow(RestoreNotFoundError);
+    expect(() => repository.restore('task', active.id, active.version)).toThrow(RestoreNotDeletedError);
+    expect(repository.snapshot()).toEqual(before);
+  });
+
+  it('keeps optimistic-version precedence for a stale deleted record during restore', () => {
+    const repository = createRepository();
+    const created = repository.createTask({ title: 'Конфликт восстановления' });
+    const deleted = repository.deleteTask(created.id, created.version);
+    const before = repository.snapshot();
+
+    expect(() => repository.restore('task', created.id, created.version)).toThrow(ConflictError);
+    expect(repository.snapshot()).toEqual(before);
+    expect(deleted.version).toBe(created.version + 1);
+  });
+
   it('rejects restore exactly 30 days after deletion without mutating the deleted record', () => {
     let now = '2026-08-01T10:00:00.000Z';
     const repository = createDemoRepository({
@@ -104,7 +131,7 @@ describe('demo workspace repository', () => {
     const deleted = repository.deleteTask(created.id, created.version);
     now = '2026-08-31T10:00:00.000Z';
 
-    expect(() => repository.restore('task', created.id, deleted.version)).toThrow('Восстановление доступно только 30 дней');
+    expect(() => repository.restore('task', created.id, deleted.version)).toThrow(RestoreExpiredError);
     expect(repository.snapshot().tasks.some((task) => task.id === created.id)).toBe(false);
   });
 

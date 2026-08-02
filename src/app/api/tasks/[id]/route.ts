@@ -3,7 +3,7 @@ import { z } from 'zod';
 import { ConflictError } from '@/data/workspace-repository';
 import { taskPatchSchema } from '@/domain/schemas';
 import { ServerConfigurationError } from '@/server/env';
-import { apiResponse, hasSameOrigin, readJsonObject, WORKSPACE_MAX_JSON_BYTES } from '@/server/http';
+import { apiResponse, hasSameOrigin, readJsonObject, restoreErrorResponse, WORKSPACE_MAX_JSON_BYTES } from '@/server/http';
 import { createDefaultTaskRouteDependencies, type TaskRouteDependencies } from '@/server/task-api';
 
 type RouteContext = { params: Promise<{ id: string }> };
@@ -38,6 +38,8 @@ export function createTaskItemHandler(dependencies: TaskRouteDependencies) {
       return apiResponse(requestId, 405, null, { code: 'method_not_allowed', message: 'Метод не поддерживается.' });
     } catch (error) {
       if (error instanceof ConflictError) return apiResponse(requestId, 409, { expectedVersion: error.expectedVersion, actualVersion: error.actualVersion }, { code: 'version_conflict', message: error.message });
+      const restoreResponse = restoreErrorResponse(requestId, error);
+      if (restoreResponse) return restoreResponse;
       return apiResponse(requestId, 500, null, { code: 'internal_error', message: 'Не удалось выполнить запрос.' });
     }
   };

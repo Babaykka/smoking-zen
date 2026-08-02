@@ -2,11 +2,12 @@ import 'server-only';
 
 import type { SupabaseClient } from '@supabase/supabase-js';
 
-import { ConflictError } from '@/data/workspace-repository';
+import { assertRestorableRecord, ConflictError } from '@/data/workspace-repository';
 import type { CommentInput, TaskInput, TaskPatchInput } from '@/domain/schemas';
 import type { Comment, Contact, ContactMethod, KnowledgeItem, Priority, Section, Task, TaskStatus, WorkspaceMember, WorkspaceSnapshot } from '@/domain/types';
 import { requireProductionEnvironment } from '@/server/env';
 import { readSessionCookie } from '@/server/http';
+import { isDatabaseVersionConflict, throwKnownRestoreDatabaseError } from '@/server/restore';
 import { readSession } from '@/server/session';
 import { createServiceSupabaseClient, createSupabaseAccessStore } from '@/server/supabase';
 
@@ -28,7 +29,7 @@ export type TaskRouteDependencies = {
   requestId: () => string;
 };
 
-type DataResult = { data: unknown; error: { message?: string } | null };
+type DataResult = { data: unknown; error: { code?: string; message?: string } | null };
 
 function assertResult(result: DataResult): unknown {
   if (result.error) throw new Error('Database operation failed.');
@@ -179,14 +180,24 @@ export function createSupabaseTaskStore(
 
     async restoreTask(workspaceId, id, expectedVersion, actorUserId) {
       const current = await currentTask(workspaceId, id);
-      if (!current) throw new Error('Запись не найдена');
-      if (Number(current.version) !== expectedVersion) throw new ConflictError(expectedVersion, Number(current.version));
-      const deletedAt = Date.parse(String(current.deleted_at));
-      if (!Number.isFinite(deletedAt) || Date.now() >= deletedAt + 30 * 24 * 60 * 60 * 1_000) throw new Error('Срок восстановления истёк');
-      const result = await createActorClient(actorUserId).from('tasks').update({ deleted_at: null, updated_at: new Date().toISOString(), version: expectedVersion + 1 })
-        .eq('workspace_id', workspaceId).eq('id', id).eq('version', expectedVersion).select('*').maybeSingle() as DataResult;
-      const data = assertResult(result);
-      return data ? taskFromRow(data) : conflictOrMissing(workspaceId, id, expectedVersion);
+      assertRestorableRecord(current ? {
+        version: Number(current.version),
+        deletedAt: current.deleted_at === null ? null : String(current.deleted_at),
+      } : null, expectedVersion);
+      const result = await createActorClient(actorUserId).rpc('restore_task_record', {
+        p_workspace_id: workspaceId, p_task_id: id, p_expected_version: expectedVersion,
+      }) as DataResult;
+      if (isDatabaseVersionConflict(result.error)) return conflictOrMissing(workspaceId, id, expectedVersion);
+      throwKnownRestoreDatabaseError(result.error, 'task_not_found');
+      const rows = assertResult(result) as unknown[];
+      const row = rows[0];
+      if (row) return taskFromRow(row);
+      const latest = await currentTask(workspaceId, id);
+      assertRestorableRecord(latest ? {
+        version: Number(latest.version),
+        deletedAt: latest.deleted_at === null ? null : String(latest.deleted_at),
+      } : null, expectedVersion);
+      throw new Error('Не удалось восстановить запись.');
     },
 
     async createComment(workspaceId, input, actorUserId) {

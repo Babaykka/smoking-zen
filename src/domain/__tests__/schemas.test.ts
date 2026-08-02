@@ -70,6 +70,8 @@ describe('workspace schemas', () => {
     expect(contactInputSchema.safeParse({ name: 'Confirmation WhatsApp', methods: [{ kind: 'whatsapp', value: 'confirmation code: 1234567' }] }).success).toBe(false);
     expect(contactInputSchema.safeParse({ name: 'E.164 13', methods: [{ kind: 'phone', value: '+1234567890123' }] }).success).toBe(true);
     expect(contactInputSchema.safeParse({ name: 'E.164 15', methods: [{ kind: 'phone', value: '+378282246310005' }] }).success).toBe(true);
+    expect(contactInputSchema.parse({ name: 'WhatsApp E.164 15', methods: [{ kind: 'whatsapp', value: '+378282246310005' }] }).methods)
+      .toEqual([{ kind: 'whatsapp', value: '378282246310005' }]);
   });
 
   it('requires deterministic knowledge patch transitions', () => {

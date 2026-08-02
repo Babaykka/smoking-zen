@@ -54,6 +54,7 @@ test('knowledge detail and People form are keyboard-safe without overflow at exa
   const knowledgeCard = page.getByRole('button', { name: 'Открыть материал Плотная забивка чаши' });
   await knowledgeCard.click();
   await expect(page.getByRole('complementary', { name: 'Детали материала' })).toBeVisible();
+  await expect(page.getByRole('button', { name: 'Закрыть' })).toBeFocused();
   await expect(knowledgeCard).toBeHidden();
   expect(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth)).toBe(true);
   await page.getByRole('button', { name: 'Закрыть' }).click();

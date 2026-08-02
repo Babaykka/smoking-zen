@@ -5,7 +5,12 @@ import { describe, expect, it, vi } from 'vitest';
 import { createCommentsHandler } from '@/app/api/comments/route';
 import { createTaskItemHandler } from '@/app/api/tasks/[id]/route';
 import { createTasksHandler } from '@/app/api/tasks/route';
-import { ConflictError } from '@/data/workspace-repository';
+import {
+  ConflictError,
+  RestoreExpiredError,
+  RestoreNotDeletedError,
+  RestoreNotFoundError,
+} from '@/data/workspace-repository';
 import { demoSeed } from '@/data/demo-seed';
 import type { TaskApiStore, TaskSessionActor } from '@/server/task-api';
 
@@ -87,6 +92,36 @@ describe('task routes', () => {
 
     expect((await handler(jsonRequest('https://app.example/api/tasks/task-1', 'PATCH', { action: 'restore', expectedVersion: 3 }), { params: Promise.resolve({ id: 'task-1' }) })).status).toBe(200);
     expect(taskStore.restoreTask).toHaveBeenCalledWith(actor.workspaceId, 'task-1', 3, actor.userId);
+  });
+
+  it('maps typed task restore failures to stable recovery responses', async () => {
+    const taskStore = store();
+    const handler = createTaskItemHandler({ appOrigin: 'https://app.example', store: taskStore, authenticate: async () => actor, requestId: () => 'request-restore' });
+    const failures = [
+      { error: new RestoreNotFoundError(), status: 404, code: 'record_not_found' },
+      { error: new RestoreNotDeletedError(), status: 409, code: 'restore_not_deleted' },
+      { error: new RestoreExpiredError(), status: 410, code: 'restore_expired' },
+    ];
+
+    for (const failure of failures) {
+      vi.mocked(taskStore.restoreTask).mockRejectedValueOnce(failure.error);
+      const response = await handler(
+        jsonRequest('https://app.example/api/tasks/task-1', 'PATCH', { action: 'restore', expectedVersion: 3 }),
+        { params: Promise.resolve({ id: 'task-1' }) },
+      );
+      expect(response.status).toBe(failure.status);
+      expect(await response.json()).toMatchObject({ data: null, error: { code: failure.code } });
+    }
+
+    vi.mocked(taskStore.restoreTask).mockRejectedValueOnce(new ConflictError(2, 3));
+    const conflict = await handler(
+      jsonRequest('https://app.example/api/tasks/task-1', 'PATCH', { action: 'restore', expectedVersion: 2 }),
+      { params: Promise.resolve({ id: 'task-1' }) },
+    );
+    expect(conflict.status).toBe(409);
+    expect(await conflict.json()).toMatchObject({
+      data: { expectedVersion: 2, actualVersion: 3 }, error: { code: 'version_conflict' },
+    });
   });
 
   it('creates comments with the authenticated membership as author', async () => {

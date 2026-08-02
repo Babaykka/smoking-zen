@@ -12,6 +12,7 @@ const MIGRATIONS = [
   'supabase/migrations/0004_realtime_scope_lockdown.sql',
   'supabase/migrations/0005_audit_immutability.sql',
   'supabase/migrations/0006_knowledge_contacts_search.sql',
+  'supabase/migrations/0007_task5_integrity.sql',
 ];
 const OWNER_TELEGRAM_ID = '4503599627370495';
 const REQUIRED_SECTIONS = [
@@ -234,25 +235,37 @@ describe('Supabase schema runtime security', () => {
     expect(helperPrivileges.rows).toEqual([{ anon: false, authenticated: false, service: false }]);
   });
 
-  it('reconciles conflicting legacy taxonomy positions and archives extras idempotently', async () => {
+  it('reconciles canonical taxonomy without deleting custom rows or breaking live references', async () => {
     const database = await createDatabase({ migrations: MIGRATIONS.slice(0, 5) });
     const workspaceId = '10000000-0000-4000-8000-000000000098';
-    const legacyStatusId = '40000000-0000-4000-8000-000000000098';
-    const legacySectionId = '50000000-0000-4000-8000-000000000098';
+    const customStatusId = '40000000-0000-4000-8000-000000000098';
+    const customSectionId = '50000000-0000-4000-8000-000000000098';
+    const taskId = '60000000-0000-4000-8000-000000000098';
+    const knowledgeId = '70000000-0000-4000-8000-000000000098';
     await database.query('insert into public.workspaces (id, name) values ($1, $2)', [workspaceId, 'Conflicting taxonomy']);
     await database.query(`
       insert into public.task_statuses (id, workspace_id, name, position) values
-        ($2, $1, 'Legacy status', 1),
+        ($2, $1, 'На проверке', 1),
         ('40000000-0000-4000-8000-000000000091', $1, 'Новая', 2),
         ('40000000-0000-4000-8000-000000000092', $1, 'В работе', 3),
         ('40000000-0000-4000-8000-000000000093', $1, 'Ждёт', 4),
-        ('40000000-0000-4000-8000-000000000094', $1, 'Готово', 5)
-    `, [workspaceId, legacyStatusId]);
+        ('40000000-0000-4000-8000-000000000094', $1, 'Готово', 5),
+        ('40000000-0000-4000-8000-000000000095', $1, 'Пауза', 10)
+    `, [workspaceId, customStatusId]);
     await database.query(`
       insert into public.sections (id, workspace_id, name, position) values
-        ($2, $1, 'Legacy section', 1),
-        ('50000000-0000-4000-8000-000000000091', $1, 'Открытие', 2)
-    `, [workspaceId, legacySectionId]);
+        ($2, $1, 'Франшиза', 1),
+        ('50000000-0000-4000-8000-000000000091', $1, 'Открытие', 2),
+        ('50000000-0000-4000-8000-000000000095', $1, 'Развитие', 20)
+    `, [workspaceId, customSectionId]);
+    await database.query(`
+      insert into public.tasks (id, workspace_id, title, status_id, section_id)
+      values ($1, $2, 'Проверить франшизу', $3, $4)
+    `, [taskId, workspaceId, customStatusId, customSectionId]);
+    await database.query(`
+      insert into public.knowledge_items (id, workspace_id, title, body, kind, section_id)
+      values ($1, $2, 'Регламент франшизы', '', 'note', $3)
+    `, [knowledgeId, workspaceId, customSectionId]);
 
     await applyMigration(database, MIGRATIONS[5]!);
     const afterFirst = await database.query<{ entity: string; id: string; name: string; position: number; version: number; deleted_at: string | null }>(`
@@ -269,10 +282,124 @@ describe('Supabase schema runtime security', () => {
       order by entity, name
     `, [workspaceId]);
     expect(afterSecond.rows).toEqual(afterFirst.rows);
-    expect((await database.query<{ name: string }>('select name from public.task_statuses where workspace_id = $1 and deleted_at is null order by position', [workspaceId])).rows.map(({ name }) => name)).toEqual(['Новая', 'В работе', 'Ждёт', 'Готово']);
-    expect((await database.query<{ name: string }>('select name from public.sections where workspace_id = $1 and deleted_at is null order by position', [workspaceId])).rows.map(({ name }) => name)).toEqual(REQUIRED_SECTIONS);
-    expect((await database.query<{ deleted: boolean }>('select deleted_at is not null as deleted from public.task_statuses where id = $1', [legacyStatusId])).rows).toEqual([{ deleted: true }]);
-    expect((await database.query<{ deleted: boolean }>('select deleted_at is not null as deleted from public.sections where id = $1', [legacySectionId])).rows).toEqual([{ deleted: true }]);
+    expect((await database.query<{ name: string; position: number }>(`
+      select name, position from public.task_statuses
+      where workspace_id = $1 and deleted_at is null and name in ('Новая', 'В работе', 'Ждёт', 'Готово')
+      order by position
+    `, [workspaceId])).rows).toEqual([
+      { name: 'Новая', position: 1 }, { name: 'В работе', position: 2 },
+      { name: 'Ждёт', position: 3 }, { name: 'Готово', position: 4 },
+    ]);
+    expect((await database.query<{ name: string; position: number }>(`
+      select name, position from public.sections
+      where workspace_id = $1 and deleted_at is null and name = any($2::text[])
+      order by position
+    `, [workspaceId, REQUIRED_SECTIONS])).rows).toEqual(REQUIRED_SECTIONS.map((name, index) => ({ name, position: index + 1 })));
+    const customStatus = await database.query<{ name: string; position: number; active: boolean; selectable: boolean }>(`
+      select s.name, s.position, s.deleted_at is null as active,
+        exists (select 1 from public.tasks t where t.id = $2 and t.deleted_at is null and t.status_id = s.id) as selectable
+      from public.task_statuses s where s.id = $1
+    `, [customStatusId, taskId]);
+    expect(customStatus.rows).toEqual([{ name: 'На проверке', position: expect.any(Number), active: true, selectable: true }]);
+    expect(customStatus.rows[0]!.position).toBeGreaterThan(4);
+    const customSection = await database.query<{ name: string; position: number; active: boolean; task_ref: boolean; knowledge_ref: boolean }>(`
+      select s.name, s.position, s.deleted_at is null as active,
+        exists (select 1 from public.tasks t where t.id = $2 and t.deleted_at is null and t.section_id = s.id) as task_ref,
+        exists (select 1 from public.knowledge_items k where k.id = $3 and k.deleted_at is null and k.section_id = s.id) as knowledge_ref
+      from public.sections s where s.id = $1
+    `, [customSectionId, taskId, knowledgeId]);
+    expect(customSection.rows).toEqual([{
+      name: 'Франшиза', position: expect.any(Number), active: true, task_ref: true, knowledge_ref: true,
+    }]);
+    expect(customSection.rows[0]!.position).toBeGreaterThan(8);
+    expect((await database.query<{ entity: string; name: string; position: number }>(`
+      select 'status' as entity, name, position from public.task_statuses
+        where workspace_id = $1 and name = 'Пауза' and deleted_at is null
+      union all
+      select 'section', name, position from public.sections
+        where workspace_id = $1 and name = 'Развитие' and deleted_at is null
+      order by entity
+    `, [workspaceId])).rows).toEqual([
+      { entity: 'section', name: 'Развитие', position: 20 },
+      { entity: 'status', name: 'Пауза', position: 10 },
+    ]);
+  });
+
+  it('converges a database that already recorded 0006 through an idempotent 0007', async () => {
+    const database = await createDatabase({ migrations: MIGRATIONS.slice(0, 6), migrationRounds: 1 });
+    const workspaceId = '10000000-0000-4000-8000-000000000097';
+    const customStatusId = '40000000-0000-4000-8000-000000000097';
+    const customSectionId = '50000000-0000-4000-8000-000000000097';
+    await database.query('insert into public.workspaces (id, name) values ($1, $2)', [workspaceId, 'Recorded 0006']);
+    await database.query(`
+      insert into public.task_statuses (id, workspace_id, name, position) values
+        ($2, $1, 'На согласовании', 1),
+        ('40000000-0000-4000-8000-000000000096', $1, 'Новая', 2)
+    `, [workspaceId, customStatusId]);
+    await database.query(`
+      insert into public.sections (id, workspace_id, name, position) values
+        ($2, $1, 'Партнёры', 1),
+        ('50000000-0000-4000-8000-000000000096', $1, 'Открытие', 2)
+    `, [workspaceId, customSectionId]);
+    await database.query(`
+      insert into public.tasks (workspace_id, title, status_id, section_id)
+      values ($1, 'Ссылка после 0006', $2, $3)
+    `, [workspaceId, customStatusId, customSectionId]);
+
+    await applyMigration(database, MIGRATIONS[6]!);
+    const afterFirst = await database.query<{ entity: string; id: string; name: string; position: number; version: number; deleted_at: string | null }>(`
+      select 'section' as entity, id, name, position, version, deleted_at from public.sections where workspace_id = $1
+      union all
+      select 'status', id, name, position, version, deleted_at from public.task_statuses where workspace_id = $1
+      order by entity, name
+    `, [workspaceId]);
+    await applyMigration(database, MIGRATIONS[6]!);
+    const afterSecond = await database.query<{ entity: string; id: string; name: string; position: number; version: number; deleted_at: string | null }>(`
+      select 'section' as entity, id, name, position, version, deleted_at from public.sections where workspace_id = $1
+      union all
+      select 'status', id, name, position, version, deleted_at from public.task_statuses where workspace_id = $1
+      order by entity, name
+    `, [workspaceId]);
+    const definitions = await database.query<{ name: string; definition: string }>(`
+      select p.proname as name, pg_get_functiondef(p.oid) as definition
+      from pg_proc p join pg_namespace n on n.oid = p.pronamespace
+      where n.nspname in ('public', 'private') and p.proname in (
+        'ensure_workspace_taxonomy', 'bootstrap_telegram_user', 'create_contact_with_methods',
+        'replace_contact_with_methods', 'set_contact_deleted', 'search_workspace',
+        'restore_task_record', 'restore_knowledge_record'
+      )
+      order by name
+    `);
+    const restorePrivileges = await database.query<{
+      service_task: boolean;
+      service_knowledge: boolean;
+      authenticated_task: boolean;
+      authenticated_knowledge: boolean;
+    }>(`
+      select
+        has_function_privilege('service_role', 'public.restore_task_record(uuid,uuid,integer)', 'execute') as service_task,
+        has_function_privilege('service_role', 'public.restore_knowledge_record(uuid,uuid,integer)', 'execute') as service_knowledge,
+        has_function_privilege('authenticated', 'public.restore_task_record(uuid,uuid,integer)', 'execute') as authenticated_task,
+        has_function_privilege('authenticated', 'public.restore_knowledge_record(uuid,uuid,integer)', 'execute') as authenticated_knowledge
+    `);
+
+    expect(afterSecond.rows).toEqual(afterFirst.rows);
+    expect(afterSecond.rows).toEqual(expect.arrayContaining([
+      expect.objectContaining({ id: customStatusId, name: 'На согласовании', deleted_at: null }),
+      expect.objectContaining({ id: customSectionId, name: 'Партнёры', deleted_at: null }),
+    ]));
+    expect(definitions.rows.map(({ name }) => name)).toEqual([
+      'bootstrap_telegram_user', 'create_contact_with_methods', 'ensure_workspace_taxonomy',
+      'replace_contact_with_methods', 'restore_knowledge_record', 'restore_task_record',
+      'search_workspace', 'set_contact_deleted',
+    ]);
+    expect(definitions.rows.find(({ name }) => name === 'create_contact_with_methods')?.definition).toMatch(/p_methods is null/i);
+    expect(definitions.rows.find(({ name }) => name === 'set_contact_deleted')?.definition).toMatch(/restore_not_deleted/i);
+    expect(definitions.rows.find(({ name }) => name === 'search_workspace')?.definition).toMatch(/position\(lower\(trim\(p_query\)\)/i);
+    expect(definitions.rows.find(({ name }) => name === 'bootstrap_telegram_user')?.definition).toMatch(/ensure_workspace_taxonomy/i);
+    expect(restorePrivileges.rows).toEqual([{
+      service_task: true, service_knowledge: true, authenticated_task: false, authenticated_knowledge: false,
+    }]);
   });
 
   it('upgrades populated legacy link rows before enforcing link consistency', async () => {
@@ -340,6 +467,14 @@ describe('Supabase schema runtime security', () => {
   it('keeps contact and contact methods atomic, workspace-scoped, and recoverable together', async () => {
     const database = await createDatabase({ seedRounds: 1 });
     const workspaceId = '10000000-0000-4000-8000-000000000001';
+    await expect(database.query(
+      `select * from public.create_contact_with_methods($1, 'Пустые методы', 'service', '', $2::jsonb)`,
+      [workspaceId, null],
+    )).rejects.toThrow(/invalid_contact/i);
+    expect((await database.query<{ count: number }>(
+      `select count(*)::int as count from public.contacts where workspace_id = $1 and name = 'Пустые методы'`,
+      [workspaceId],
+    )).rows).toEqual([{ count: 0 }]);
     const created = await database.query<{ id: string; version: number }>(
       `select id, version from public.create_contact_with_methods($1, 'Мастер', 'service', '', $2::jsonb)`,
       [workspaceId, JSON.stringify([{ kind: 'phone', value: '+79991234567' }])],
@@ -349,6 +484,10 @@ describe('Supabase schema runtime security', () => {
       `select * from public.replace_contact_with_methods($1, $2, $3, 'Сломано', 'service', '', $4::jsonb)`,
       [workspaceId, contactId, created.rows[0]!.version, JSON.stringify([{ kind: 'email', value: 'bad' }])],
     )).rejects.toThrow(/invalid_contact_method/i);
+    await expect(database.query(
+      `select * from public.replace_contact_with_methods($1, $2, $3, 'Стереть методы', 'service', 'изменено', $4::jsonb)`,
+      [workspaceId, contactId, created.rows[0]!.version, null],
+    )).rejects.toThrow(/invalid_contact/i);
     const unchanged = await database.query<{ name: string; value: string }>(`
       select c.name, m.value from public.contacts c join public.contact_methods m on m.contact_id = c.id
       where c.id = $1 and c.deleted_at is null and m.deleted_at is null
@@ -359,8 +498,77 @@ describe('Supabase schema runtime security', () => {
       'select version from public.set_contact_deleted($1, $2, $3, false)', [workspaceId, contactId, created.rows[0]!.version],
     );
     expect((await database.query('select 1 from public.contact_methods where contact_id = $1 and deleted_at is null', [contactId])).rows).toEqual([]);
-    await database.query('select * from public.set_contact_deleted($1, $2, $3, true)', [workspaceId, contactId, deleted.rows[0]!.version]);
+    const restored = await database.query<{ version: number }>(
+      'select version from public.set_contact_deleted($1, $2, $3, true)', [workspaceId, contactId, deleted.rows[0]!.version],
+    );
     expect((await database.query('select 1 from public.contact_methods where contact_id = $1 and deleted_at is null', [contactId])).rows).toHaveLength(1);
+    await expect(database.query(
+      'select * from public.set_contact_deleted($1, $2, $3, true)', [workspaceId, contactId, restored.rows[0]!.version],
+    )).rejects.toThrow(/restore_not_deleted/i);
+    await expect(database.query(
+      "select * from public.set_contact_deleted($1, '00000000-0000-4000-8000-000000000404', 1, true)", [workspaceId],
+    )).rejects.toThrow(/contact_not_found/i);
+    await database.query(
+      "update public.contacts set deleted_at = clock_timestamp() - interval '31 days' where id = $1", [contactId],
+    );
+    const expired = await database.query<{ version: number }>('select version from public.contacts where id = $1', [contactId]);
+    await expect(database.query(
+      'select * from public.set_contact_deleted($1, $2, $3, true)', [workspaceId, contactId, expired.rows[0]!.version],
+    )).rejects.toThrow(/restore_expired/i);
+  });
+
+  it('enforces task and knowledge restore state and deadline inside atomic database functions', async () => {
+    const database = await createDatabase({ seedRounds: 1 });
+    const workspaceId = '10000000-0000-4000-8000-000000000001';
+    const statusId = '40000000-0000-4000-8000-000000000001';
+    const activeTask = await database.query<{ id: string; version: number }>(`
+      insert into public.tasks (workspace_id, title, status_id) values ($1, 'Активная', $2)
+      returning id, version
+    `, [workspaceId, statusId]);
+    await expect(database.query(
+      'select * from public.restore_task_record($1, $2, $3)',
+      [workspaceId, activeTask.rows[0]!.id, activeTask.rows[0]!.version],
+    )).rejects.toThrow(/restore_not_deleted/i);
+
+    const expiredTask = await database.query<{ id: string; version: number }>(`
+      insert into public.tasks (workspace_id, title, status_id, deleted_at)
+      values ($1, 'Просроченная', $2, clock_timestamp() - interval '30 days') returning id, version
+    `, [workspaceId, statusId]);
+    const expiredKnowledge = await database.query<{ id: string; version: number }>(`
+      insert into public.knowledge_items (workspace_id, title, kind, link_url, deleted_at)
+      values ($1, 'Просроченный материал', 'note', null, clock_timestamp() - interval '31 days') returning id, version
+    `, [workspaceId]);
+    await expect(database.query(
+      'select * from public.restore_task_record($1, $2, $3)',
+      [workspaceId, expiredTask.rows[0]!.id, expiredTask.rows[0]!.version],
+    )).rejects.toThrow(/restore_expired/i);
+    await expect(database.query(
+      'select * from public.restore_knowledge_record($1, $2, $3)',
+      [workspaceId, expiredKnowledge.rows[0]!.id, expiredKnowledge.rows[0]!.version],
+    )).rejects.toThrow(/restore_expired/i);
+
+    const recentTask = await database.query<{ id: string; version: number }>(`
+      insert into public.tasks (workspace_id, title, status_id, deleted_at)
+      values ($1, 'Свежая', $2, clock_timestamp() - interval '29 days') returning id, version
+    `, [workspaceId, statusId]);
+    const recentKnowledge = await database.query<{ id: string; version: number }>(`
+      insert into public.knowledge_items (workspace_id, title, kind, link_url, deleted_at)
+      values ($1, 'Свежий материал', 'note', null, clock_timestamp() - interval '29 days') returning id, version
+    `, [workspaceId]);
+    expect((await database.query<{ deleted_at: string | null }>(
+      'select deleted_at from public.restore_task_record($1, $2, $3)',
+      [workspaceId, recentTask.rows[0]!.id, recentTask.rows[0]!.version],
+    )).rows).toEqual([{ deleted_at: null }]);
+    expect((await database.query<{ deleted_at: string | null }>(
+      'select deleted_at from public.restore_knowledge_record($1, $2, $3)',
+      [workspaceId, recentKnowledge.rows[0]!.id, recentKnowledge.rows[0]!.version],
+    )).rows).toEqual([{ deleted_at: null }]);
+    await expect(database.query(
+      "select * from public.restore_task_record($1, '00000000-0000-4000-8000-000000000404', 1)", [workspaceId],
+    )).rejects.toThrow(/task_not_found/i);
+    await expect(database.query(
+      "select * from public.restore_knowledge_record($1, '00000000-0000-4000-8000-000000000404', 1)", [workspaceId],
+    )).rejects.toThrow(/knowledge_not_found/i);
   });
 
   it('broadcasts contact changes only to the owning workspace and accepts only a same-workspace active audit actor', async () => {

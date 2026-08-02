@@ -1,11 +1,16 @@
 import { NextResponse } from 'next/server';
 
+import {
+  RestoreExpiredError,
+  RestoreNotDeletedError,
+  RestoreNotFoundError,
+} from '@/data/workspace-repository';
 import { SESSION_COOKIE_NAME, type SessionCookie } from '@/server/session';
 
 export type ApiError = { code: string; message: string };
 export type ApiEnvelope<T> = { data: T | null; error: ApiError | null; requestId: string };
 export const DEFAULT_MAX_JSON_BYTES = 20_000;
-export const WORKSPACE_MAX_JSON_BYTES = 128 * 1024;
+export const WORKSPACE_MAX_JSON_BYTES = 512 * 1024;
 
 export function apiResponse<T>(
   requestId: string,
@@ -16,6 +21,19 @@ export function apiResponse<T>(
   const response = NextResponse.json({ data, error, requestId }, { status });
   response.headers.set('cache-control', 'no-store');
   return response;
+}
+
+export function restoreErrorResponse(requestId: string, error: unknown): NextResponse | null {
+  if (error instanceof RestoreNotFoundError) {
+    return apiResponse(requestId, 404, null, { code: 'record_not_found', message: error.message });
+  }
+  if (error instanceof RestoreNotDeletedError) {
+    return apiResponse(requestId, 409, null, { code: 'restore_not_deleted', message: error.message });
+  }
+  if (error instanceof RestoreExpiredError) {
+    return apiResponse(requestId, 410, null, { code: 'restore_expired', message: error.message });
+  }
+  return null;
 }
 
 export function setSessionCookie(response: NextResponse, cookie: SessionCookie): void {

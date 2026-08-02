@@ -8,7 +8,12 @@ import { createContactsHandler } from '@/app/api/contacts/route';
 import { createKnowledgeItemHandler } from '@/app/api/knowledge/[id]/route';
 import { createKnowledgeHandler } from '@/app/api/knowledge/route';
 import { createSearchHandler } from '@/app/api/search/route';
-import { ConflictError } from '@/data/workspace-repository';
+import {
+  ConflictError,
+  RestoreExpiredError,
+  RestoreNotDeletedError,
+  RestoreNotFoundError,
+} from '@/data/workspace-repository';
 import { demoSeed } from '@/data/demo-seed';
 import type { KnowledgeContactApiStore, KnowledgeContactRouteDependencies } from '@/server/knowledge-contact-api';
 
@@ -41,12 +46,33 @@ describe('knowledge, contact and search routes', () => {
     expect((await handler(request('/api/knowledge', 'POST', { title: 'Чужая', kind: 'note' }, 'https://evil.example'))).status).toBe(403);
   });
 
-  it('accepts the maximum Unicode knowledge body without widening auth request limits', async () => {
+  it('accepts the maximum schema-valid escaped knowledge envelope', async () => {
     const api = store();
     const handler = createKnowledgeHandler(dependencies(api));
-    const body = 'я'.repeat(30_000);
-    expect((await handler(request('/api/knowledge', 'POST', { title: 'Большой регламент', kind: 'note', body }))).status).toBe(201);
-    expect(api.createKnowledge).toHaveBeenCalledWith(actor.workspaceId, expect.objectContaining({ body }), actor.userId);
+    const escaped = '\u0001';
+    const attachments = Array.from({ length: 20 }, (_, index) => ({
+      id: `${escaped.repeat(198)}${String(index).padStart(2, '0')}`,
+      name: escaped.repeat(255),
+      mimeType: escaped.repeat(200),
+      size: 25 * 1024 * 1024,
+      storagePath: escaped.repeat(1_000),
+    }));
+    const urlPrefix = 'https://example.com/';
+    const input = {
+      title: escaped.repeat(280),
+      kind: 'link' as const,
+      body: escaped.repeat(30_000),
+      linkUrl: `${urlPrefix}${escaped.repeat(2_000 - urlPrefix.length)}`,
+      sectionId: escaped.repeat(200),
+      attachments,
+    };
+    const raw = JSON.stringify(input);
+    expect(new TextEncoder().encode(raw).byteLength).toBeGreaterThan(256 * 1024);
+    expect(new TextEncoder().encode(raw).byteLength).toBeLessThan(512 * 1024);
+    expect((await handler(request('/api/knowledge', 'POST', input))).status).toBe(201);
+    expect(api.createKnowledge).toHaveBeenCalledWith(actor.workspaceId, expect.objectContaining({
+      body: input.body, linkUrl: input.linkUrl, attachments,
+    }), actor.userId);
   });
 
   it('keeps title-only patches non-defaulting and returns version conflicts', async () => {
@@ -85,6 +111,31 @@ describe('knowledge, contact and search routes', () => {
     expect((await item(request('/api/contacts/contact-coal', 'PATCH', { action: 'restore', expectedVersion: 2 }), context)).status).toBe(200);
     expect(api.deleteContact).toHaveBeenCalledWith(actor.workspaceId, 'contact-coal', 1, actor.userId);
     expect(api.restoreContact).toHaveBeenCalledWith(actor.workspaceId, 'contact-coal', 2, actor.userId);
+  });
+
+  it.each([
+    { entity: 'knowledge', method: 'restoreKnowledge' as const, path: '/api/knowledge/knowledge-bowl', id: 'knowledge-bowl' },
+    { entity: 'contact', method: 'restoreContact' as const, path: '/api/contacts/contact-coal', id: 'contact-coal' },
+  ])('maps typed $entity restore failures to stable recovery responses', async ({ method, path, id }) => {
+    const api = store();
+    const handler = method === 'restoreKnowledge'
+      ? createKnowledgeItemHandler(dependencies(api))
+      : createContactItemHandler(dependencies(api));
+    const failures = [
+      { error: new RestoreNotFoundError(), status: 404, code: 'record_not_found' },
+      { error: new RestoreNotDeletedError(), status: 409, code: 'restore_not_deleted' },
+      { error: new RestoreExpiredError(), status: 410, code: 'restore_expired' },
+    ];
+
+    for (const failure of failures) {
+      vi.mocked(api[method]).mockRejectedValueOnce(failure.error);
+      const response = await handler(
+        request(path, 'PATCH', { action: 'restore', expectedVersion: 2 }),
+        { params: Promise.resolve({ id }) },
+      );
+      expect(response.status).toBe(failure.status);
+      expect(await response.json()).toMatchObject({ data: null, error: { code: failure.code } });
+    }
   });
 
   it('does not search through a URL and fails closed for unauthenticated or invalid requests', async () => {

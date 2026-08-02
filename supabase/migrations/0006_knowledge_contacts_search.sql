@@ -34,24 +34,24 @@ security definer
 set search_path = ''
 as $$
 declare
-  active_count integer;
   correct_count integer;
   position_shift integer;
 begin
   perform pg_advisory_xact_lock(hashtextextended('smoking-zen-taxonomy:' || target_workspace_id::text, 0));
 
-  select count(*)::integer into active_count
-    from public.task_statuses
-    where workspace_id = target_workspace_id and deleted_at is null;
   select count(*)::integer into correct_count
     from public.task_statuses
     where workspace_id = target_workspace_id and deleted_at is null
       and (name, position) in (values ('Новая', 1), ('В работе', 2), ('Ждёт', 3), ('Готово', 4));
-  if active_count <> 4 or correct_count <> 4 then
+  if correct_count <> 4 then
     select coalesce(max(position), 0) + 100 into position_shift
       from public.task_statuses where workspace_id = target_workspace_id;
     update public.task_statuses set position = position + position_shift
-      where workspace_id = target_workspace_id;
+      where workspace_id = target_workspace_id
+        and (
+          position between 1 and 4
+          or name in ('Новая', 'В работе', 'Ждёт', 'Готово')
+        );
     insert into public.task_statuses (workspace_id, name, position)
     values
       (target_workspace_id, 'Новая', 1),
@@ -59,14 +59,8 @@ begin
       (target_workspace_id, 'Ждёт', 3),
       (target_workspace_id, 'Готово', 4)
     on conflict (workspace_id, name) do update set position = excluded.position, deleted_at = null;
-    update public.task_statuses set deleted_at = clock_timestamp()
-      where workspace_id = target_workspace_id and deleted_at is null
-        and name not in ('Новая', 'В работе', 'Ждёт', 'Готово');
   end if;
 
-  select count(*)::integer into active_count
-    from public.sections
-    where workspace_id = target_workspace_id and deleted_at is null;
   select count(*)::integer into correct_count
     from public.sections
     where workspace_id = target_workspace_id and deleted_at is null
@@ -80,11 +74,18 @@ begin
         ('Документы и финансы', 7),
         ('Безопасность и санитария', 8)
       );
-  if active_count <> 8 or correct_count <> 8 then
+  if correct_count <> 8 then
     select coalesce(max(position), 0) + 100 into position_shift
       from public.sections where workspace_id = target_workspace_id;
     update public.sections set position = position + position_shift
-      where workspace_id = target_workspace_id;
+      where workspace_id = target_workspace_id
+        and (
+          position between 1 and 8
+          or name in (
+            'Открытие', 'Ремонт и техника', 'Закупки и склад', 'Зал и сервис',
+            'Персонал', 'Маркетинг', 'Документы и финансы', 'Безопасность и санитария'
+          )
+        );
     insert into public.sections (workspace_id, name, position)
     values
       (target_workspace_id, 'Открытие', 1),
@@ -96,12 +97,6 @@ begin
       (target_workspace_id, 'Документы и финансы', 7),
       (target_workspace_id, 'Безопасность и санитария', 8)
     on conflict (workspace_id, name) do update set position = excluded.position, deleted_at = null;
-    update public.sections set deleted_at = clock_timestamp()
-      where workspace_id = target_workspace_id and deleted_at is null
-        and name not in (
-          'Открытие', 'Ремонт и техника', 'Закупки и склад', 'Зал и сервис',
-          'Персонал', 'Маркетинг', 'Документы и финансы', 'Безопасность и санитария'
-        );
   end if;
 end;
 $$;
@@ -243,7 +238,7 @@ declare
   item public.contacts%rowtype;
   method_position integer := 0;
 begin
-  if jsonb_typeof(p_methods) <> 'array' or jsonb_array_length(p_methods) not between 1 and 10
+  if p_methods is null or jsonb_typeof(p_methods) <> 'array' or jsonb_array_length(p_methods) not between 1 and 10
     or p_name is null or char_length(trim(p_name)) not between 1 and 280
     or p_category not in ('supplier', 'service', 'landlord', 'cleaning', 'other')
     or p_notes is null or char_length(p_notes) > 10000 then
@@ -289,7 +284,7 @@ declare
   item public.contacts%rowtype;
   method_position integer := 0;
 begin
-  if jsonb_typeof(p_methods) <> 'array' or jsonb_array_length(p_methods) not between 1 and 10
+  if p_methods is null or jsonb_typeof(p_methods) <> 'array' or jsonb_array_length(p_methods) not between 1 and 10
     or p_name is null or char_length(trim(p_name)) not between 1 and 280
     or p_category not in ('supplier', 'service', 'landlord', 'cleaning', 'other')
     or p_notes is null or char_length(p_notes) > 10000 then
@@ -343,7 +338,10 @@ begin
   if not found then raise exception 'contact_not_found' using errcode = 'P0002'; end if;
   if item.version <> p_expected_version then raise exception 'version_conflict' using errcode = '40001'; end if;
   if p_restore then
-    if item.deleted_at is null or item.deleted_at + interval '30 days' <= clock_timestamp() then
+    if item.deleted_at is null then
+      raise exception 'restore_not_deleted' using errcode = '55000';
+    end if;
+    if item.deleted_at + interval '30 days' <= clock_timestamp() then
       raise exception 'restore_expired' using errcode = '22023';
     end if;
     update public.contacts set deleted_at = null where id = p_contact_id and workspace_id = p_workspace_id;
@@ -361,6 +359,68 @@ $$;
 
 revoke all on function public.set_contact_deleted(uuid, uuid, integer, boolean) from public, anon, authenticated;
 grant execute on function public.set_contact_deleted(uuid, uuid, integer, boolean) to service_role;
+
+create or replace function public.restore_task_record(
+  p_workspace_id uuid,
+  p_task_id uuid,
+  p_expected_version integer
+)
+returns setof public.tasks
+language plpgsql
+security definer
+set search_path = ''
+as $$
+declare
+  item public.tasks%rowtype;
+begin
+  select * into item from public.tasks
+    where id = p_task_id and workspace_id = p_workspace_id for update;
+  if not found then raise exception 'task_not_found' using errcode = 'P0002'; end if;
+  if item.version <> p_expected_version then raise exception 'version_conflict' using errcode = '40001'; end if;
+  if item.deleted_at is null then raise exception 'restore_not_deleted' using errcode = '55000'; end if;
+  if item.deleted_at + interval '30 days' <= clock_timestamp() then
+    raise exception 'restore_expired' using errcode = '22023';
+  end if;
+
+  update public.tasks set deleted_at = null
+    where id = p_task_id and workspace_id = p_workspace_id;
+  return query select * from public.tasks where id = p_task_id and workspace_id = p_workspace_id;
+end;
+$$;
+
+revoke all on function public.restore_task_record(uuid, uuid, integer) from public, anon, authenticated;
+grant execute on function public.restore_task_record(uuid, uuid, integer) to service_role;
+
+create or replace function public.restore_knowledge_record(
+  p_workspace_id uuid,
+  p_knowledge_id uuid,
+  p_expected_version integer
+)
+returns setof public.knowledge_items
+language plpgsql
+security definer
+set search_path = ''
+as $$
+declare
+  item public.knowledge_items%rowtype;
+begin
+  select * into item from public.knowledge_items
+    where id = p_knowledge_id and workspace_id = p_workspace_id for update;
+  if not found then raise exception 'knowledge_not_found' using errcode = 'P0002'; end if;
+  if item.version <> p_expected_version then raise exception 'version_conflict' using errcode = '40001'; end if;
+  if item.deleted_at is null then raise exception 'restore_not_deleted' using errcode = '55000'; end if;
+  if item.deleted_at + interval '30 days' <= clock_timestamp() then
+    raise exception 'restore_expired' using errcode = '22023';
+  end if;
+
+  update public.knowledge_items set deleted_at = null
+    where id = p_knowledge_id and workspace_id = p_workspace_id;
+  return query select * from public.knowledge_items where id = p_knowledge_id and workspace_id = p_workspace_id;
+end;
+$$;
+
+revoke all on function public.restore_knowledge_record(uuid, uuid, integer) from public, anon, authenticated;
+grant execute on function public.restore_knowledge_record(uuid, uuid, integer) to service_role;
 
 create or replace function public.search_workspace(
   p_workspace_id uuid,

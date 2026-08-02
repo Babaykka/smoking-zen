@@ -112,4 +112,43 @@ describe('KnowledgeWorkspace', () => {
     fireEvent.click(screen.getByRole('button', { name: 'Открыть материал Плотная забивка чаши' }));
     expect(screen.getByRole('complementary', { name: 'Детали материала' }).parentElement).toHaveClass('tasks-workspace--detail');
   });
+
+  it('moves focus into the mobile detail and restores the opening card at exactly 360px', async () => {
+    const originalWidth = window.innerWidth;
+    Object.defineProperty(window, 'innerWidth', { configurable: true, value: 360 });
+    try {
+      render(<WorkspaceProvider gateway={createDemoGateway(createDemoRepository({ loadPersisted: false }))}><KnowledgeWorkspace /></WorkspaceProvider>);
+      const card = screen.getByRole('button', { name: 'Открыть материал Плотная забивка чаши' });
+      card.focus();
+      fireEvent.click(card);
+
+      const closeButton = await screen.findByRole('button', { name: 'Закрыть' });
+      await waitFor(() => expect(closeButton).toHaveFocus());
+      fireEvent.click(closeButton);
+      await waitFor(() => expect(card).toHaveFocus());
+    } finally {
+      Object.defineProperty(window, 'innerWidth', { configurable: true, value: originalWidth });
+    }
+  });
+
+  it('does not refocus the mobile detail when a new material finishes saving', async () => {
+    const originalWidth = window.innerWidth;
+    Object.defineProperty(window, 'innerWidth', { configurable: true, value: 360 });
+    try {
+      render(<WorkspaceProvider gateway={createDemoGateway(createDemoRepository({ loadPersisted: false }))}><KnowledgeWorkspace /></WorkspaceProvider>);
+      fireEvent.click(screen.getByRole('button', { name: 'Добавить материал' }));
+      const closeButton = await screen.findByRole('button', { name: 'Закрыть' });
+      await waitFor(() => expect(closeButton).toHaveFocus());
+
+      fireEvent.change(screen.getByLabelText('Название материала'), { target: { value: 'Фокус после сохранения' } });
+      const saveButton = screen.getByRole('button', { name: 'Сохранить материал' });
+      saveButton.focus();
+      fireEvent.click(saveButton);
+
+      await screen.findByRole('button', { name: 'Архивировать материал' });
+      await waitFor(() => expect(saveButton).toHaveFocus());
+    } finally {
+      Object.defineProperty(window, 'innerWidth', { configurable: true, value: originalWidth });
+    }
+  });
 });

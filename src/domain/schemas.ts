@@ -50,7 +50,7 @@ function containsContactSecret(kind: ContactMethodKind, value: string): boolean 
   if (secretLikeText.test(value)) return true;
   const digits = value.replace(/\D/g, '');
   if (digits.length < 13 || digits.length > 19 || /^(\d)\1+$/.test(digits) || !passesLuhn(digits)) return false;
-  return !(kind === 'phone' && /^\+[\d\s().-]+$/.test(value.trim()) && digits.length <= 15);
+  return !((kind === 'phone' || kind === 'whatsapp') && /^\+[\d\s().-]+$/.test(value.trim()) && digits.length <= 15);
 }
 
 const safeKnowledgeUrlSchema = z.string({ error: 'Укажите корректную HTTPS-ссылку.' }).trim().max(2_000, 'Ссылка слишком длинная.').refine((value) => {
