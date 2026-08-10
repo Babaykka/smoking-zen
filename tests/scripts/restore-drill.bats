@@ -17,7 +17,7 @@ make_snapshot() {
   db_sha=$(shasum -a 256 "$base/database.dump" | awk '{print $1}')
   checksum_sha=$(shasum -a 256 "$base/storage-checksums.json" | awk '{print $1}')
   db_bytes=$(wc -c < "$base/database.dump" | tr -d ' ')
-  printf '{"schemaVersion":2,"snapshotId":"%s","sourceProjectRef":"%s","schemaRevision":"0017","startedAt":"2026-08-10T01:02:03.000Z","oldestCaptureAt":"2026-08-10T01:02:03.000Z","completedAt":"2026-08-10T01:03:03.000Z","database":{"bytes":%s,"sha256":"%s","tocEntries":2,"serverMajor":18,"serverVersionNum":180004,"clientMajor":18,"clientVersion":"18.4","rowCounts":{"appUsers":1,"workspaces":1,"memberships":1,"tasks":2,"knowledgeItems":1,"contacts":1,"attachments":0}},"storage":{"count":0,"bytes":0,"checksumFileSha256":"%s"}}\n' "$RESTORE_SNAPSHOT_ID" "$RESTORE_SOURCE_PROJECT_REF" "$db_bytes" "$db_sha" "$checksum_sha" > "$base/manifest.json"
+  printf '{"schemaVersion":2,"snapshotId":"%s","sourceProjectRef":"%s","schemaRevision":"0019","startedAt":"2026-08-10T01:02:03.000Z","oldestCaptureAt":"2026-08-10T01:02:03.000Z","completedAt":"2026-08-10T01:03:03.000Z","database":{"bytes":%s,"sha256":"%s","tocEntries":2,"serverMajor":18,"serverVersionNum":180004,"clientMajor":18,"clientVersion":"18.4","rowCounts":{"appUsers":1,"workspaces":1,"memberships":1,"tasks":2,"knowledgeItems":1,"contacts":1,"attachments":0}},"storage":{"count":0,"bytes":0,"checksumFileSha256":"%s"}}\n' "$RESTORE_SNAPSHOT_ID" "$RESTORE_SOURCE_PROJECT_REF" "$db_bytes" "$db_sha" "$checksum_sha" > "$base/manifest.json"
 }
 
 @test "restore rejects a manifest labelled for a different source project before mutation" {
@@ -169,7 +169,7 @@ make_snapshot() {
   grep -q 'pg_restore .*<--exit-on-error>.*<--clean>.*<--if-exists>.*<--no-owner>.*<--no-privileges>.*<--no-password>.*<--single-transaction>' "$FAKE_LOG"
   grep -q 'pg_restore .*<--schema=public>.*<--schema=private>' "$FAKE_LOG"
   restore_line=$(grep -n '^pg_restore .*--clean' "$FAKE_LOG" | cut -d: -f1)
-  hardening_line=$(grep -n 'psql .*restore_acl_0017.sql' "$FAKE_LOG" | cut -d: -f1)
+  hardening_line=$(grep -n 'psql .*restore_acl_0019.sql' "$FAKE_LOG" | cut -d: -f1)
   storage_line=$(grep -n '^rclone <copy>' "$FAKE_LOG" | tail -1 | cut -d: -f1)
   [ "$restore_line" -lt "$hardening_line" ]
   [ "$hardening_line" -lt "$storage_line" ]
@@ -191,7 +191,7 @@ make_snapshot() {
   export FAKE_ACL_GUARD=f
   run "$RESTORE_SCRIPT"
   [ "$status" -ne 0 ]
-  [ "$(grep -c 'psql .*restore_acl_0017.sql' "$FAKE_LOG")" -eq 1 ]
+  [ "$(grep -c 'psql .*restore_acl_0019.sql' "$FAKE_LOG")" -eq 1 ]
   run grep -q 'psql .*supabase/migrations/' "$FAKE_LOG"
   [ "$status" -ne 0 ]
   run grep -q '^rclone <copy> .*<restore-target:' "$FAKE_LOG"

@@ -1,7 +1,9 @@
+import { z } from 'zod';
+
 import { commentInputSchema } from '@/domain/schemas';
 import { ServerConfigurationError } from '@/server/env';
 import { apiResponse, hasSameOrigin, readJsonObject, WORKSPACE_MAX_JSON_BYTES } from '@/server/http';
-import { createDefaultTaskRouteDependencies, type TaskRouteDependencies } from '@/server/task-api';
+import { CommentParentNotFoundError, createDefaultTaskRouteDependencies, type TaskRouteDependencies } from '@/server/task-api';
 
 export function createCommentsHandler(dependencies: TaskRouteDependencies) {
   return async function commentsHandler(request: Request): Promise<Response> {
@@ -12,10 +14,15 @@ export function createCommentsHandler(dependencies: TaskRouteDependencies) {
     if (!actor) return apiResponse(requestId, 401, null, { code: 'session_invalid', message: 'Требуется авторизация.' });
     const body = await readJsonObject(request, WORKSPACE_MAX_JSON_BYTES);
     const parsed = commentInputSchema.safeParse(body && { ...body, authorId: actor.membershipId });
-    if (!parsed.success) return apiResponse(requestId, 400, null, { code: 'invalid_request', message: parsed.error.issues[0]?.message ?? 'Некорректный запрос.' });
+    if (!parsed.success || !z.string().uuid().safeParse(parsed.data.taskId).success) {
+      return apiResponse(requestId, 400, null, { code: 'invalid_request', message: parsed.success ? 'Некорректная задача.' : parsed.error.issues[0]?.message ?? 'Некорректный запрос.' });
+    }
     try {
       return apiResponse(requestId, 201, await dependencies.store.createComment(actor.workspaceId, parsed.data, actor.userId), null);
-    } catch {
+    } catch (error) {
+      if (error instanceof CommentParentNotFoundError) {
+        return apiResponse(requestId, 404, null, { code: 'task_not_found', message: error.message });
+      }
       return apiResponse(requestId, 500, null, { code: 'internal_error', message: 'Не удалось выполнить запрос.' });
     }
   };

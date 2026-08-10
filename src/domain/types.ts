@@ -14,6 +14,7 @@ export type Attachment = {
   name: string;
   mimeType: string;
   size: number;
+  version: number;
 };
 
 export type TaskStatus = RecordMetadata & {
@@ -79,6 +80,12 @@ export type WorkspaceMember = RecordMetadata & {
   active: boolean;
 };
 
+export type InviteGrant = {
+  invitationId: string;
+  inviteLink: string;
+  expiresAt: string;
+};
+
 export type SecureItemSummary = RecordMetadata & {
   title: string;
   purpose: string;
@@ -109,7 +116,18 @@ export type NotificationDelivery = RecordMetadata & {
   deliveredAt: string | null;
 };
 
-export type WorkspaceEntity = 'task' | 'comment' | 'knowledge' | 'contact' | 'secureItem';
+export type WorkspaceEntity = 'task' | 'comment' | 'knowledge' | 'contact' | 'secureItem' | 'attachment';
+
+export type TrashItem = {
+  entity: Exclude<WorkspaceEntity, 'comment'>;
+  id: string;
+  title: string;
+  version: number;
+  deletedAt: string;
+  attachment?: Attachment;
+  parentType?: 'task' | 'knowledge';
+  parentId?: string;
+};
 
 export type WorkspaceSnapshot = {
   workspaceId: string;
@@ -123,6 +141,7 @@ export type WorkspaceSnapshot = {
   secureItems: SecureItemSummary[];
   auditEvents: AuditEvent[];
   notificationDeliveries: NotificationDelivery[];
+  trashItems?: TrashItem[];
 };
 
 export type SearchResult = {

@@ -188,7 +188,7 @@ setup() {
   grep -q '"clientMajor":18' "$manifest"
   grep -q '"clientVersion":"18.4"' "$manifest"
   grep -q '"sourceProjectRef":"abcdefghijklmnopqrst"' "$manifest"
-  grep -q '"schemaRevision":"0017"' "$manifest"
+  grep -q '"schemaRevision":"0019"' "$manifest"
 }
 
 @test "backup PG failure creates no remote artifacts or retention" {
@@ -281,7 +281,7 @@ setup() {
   base="$FAKE_REMOTE_ROOT/$BACKUP_TARGET_BUCKET/$BACKUP_TARGET_PREFIX/$foreign"
   mkdir -p "$base"
   instant=2026-07-01T01:02:03.000Z
-  printf '{"schemaVersion":2,"snapshotId":"%s","sourceProjectRef":"zyxwvutsrqponmlkjihg","schemaRevision":"0017","startedAt":"%s","oldestCaptureAt":"%s","completedAt":"%s","database":{"bytes":1,"sha256":"%064d","tocEntries":1,"serverMajor":18,"serverVersionNum":180004,"clientMajor":18,"clientVersion":"18.4","rowCounts":{"appUsers":1,"workspaces":1,"memberships":1,"tasks":0,"knowledgeItems":0,"contacts":0,"attachments":0}},"storage":{"count":0,"bytes":0,"checksumFileSha256":"%064d"}}\n' \
+  printf '{"schemaVersion":2,"snapshotId":"%s","sourceProjectRef":"zyxwvutsrqponmlkjihg","schemaRevision":"0019","startedAt":"%s","oldestCaptureAt":"%s","completedAt":"%s","database":{"bytes":1,"sha256":"%064d","tocEntries":1,"serverMajor":18,"serverVersionNum":180004,"clientMajor":18,"clientVersion":"18.4","rowCounts":{"appUsers":1,"workspaces":1,"memberships":1,"tasks":0,"knowledgeItems":0,"contacts":0,"attachments":0}},"storage":{"count":0,"bytes":0,"checksumFileSha256":"%064d"}}\n' \
     "$foreign" "$instant" "$instant" "$instant" 0 0 > "$base/manifest.json"
   export FAKE_TARGET_DIRS="$foreign/"$'\n'
   run "$BACKUP_SCRIPT"
@@ -307,7 +307,7 @@ setup() {
     const fs=require("fs"),path=require("path"),root=process.argv[1];fs.mkdirSync(root,{recursive:true});
     const ids=["20260103T120000Z","20260103T060000Z","20260102T120000Z","20251231T230000Z","20251230T120000Z","20251228T120000Z","20251222T120000Z","20251215T120000Z","20251208T120000Z","20251130T120000Z","20251031T120000Z","20250930T120000Z","20250831T120000Z","20250731T120000Z","20250630T120000Z","20250531T120000Z","20250430T120000Z","20250331T120000Z","20250228T120000Z","20250131T120000Z","20241231T120000Z","20241130T120000Z","20241031T120000Z","20240930T120000Z"];
     const rows={appUsers:1,workspaces:1,memberships:1,tasks:0,knowledgeItems:0,contacts:0,attachments:0};
-    for(const id of ids){const iso=`${id.slice(0,4)}-${id.slice(4,6)}-${id.slice(6,8)}T${id.slice(9,11)}:${id.slice(11,13)}:${id.slice(13,15)}.000Z`;fs.writeFileSync(path.join(root,`${id}.json`),JSON.stringify({schemaVersion:2,snapshotId:id,sourceProjectRef:"abcdefghijklmnopqrst",schemaRevision:"0017",startedAt:iso,oldestCaptureAt:iso,completedAt:iso,database:{bytes:1,sha256:"a".repeat(64),tocEntries:1,serverMajor:18,serverVersionNum:180004,clientMajor:18,clientVersion:"18.4",rowCounts:rows},storage:{count:0,bytes:0,checksumFileSha256:"b".repeat(64)}}));}
+    for(const id of ids){const iso=`${id.slice(0,4)}-${id.slice(4,6)}-${id.slice(6,8)}T${id.slice(9,11)}:${id.slice(11,13)}:${id.slice(13,15)}.000Z`;fs.writeFileSync(path.join(root,`${id}.json`),JSON.stringify({schemaVersion:2,snapshotId:id,sourceProjectRef:"abcdefghijklmnopqrst",schemaRevision:"0019",startedAt:iso,oldestCaptureAt:iso,completedAt:iso,database:{bytes:1,sha256:"a".repeat(64),tocEntries:1,serverMajor:18,serverVersionNum:180004,clientMajor:18,clientVersion:"18.4",rowCounts:rows},storage:{count:0,bytes:0,checksumFileSha256:"b".repeat(64)}}));}
     fs.writeFileSync(path.join(root,"20240201T000000Z.json"),"{}");
     fs.writeFileSync(path.join(root,"not-a-snapshot.json"),"{}");
   ' "$directory"
@@ -333,7 +333,7 @@ setup() {
       const id=d.toISOString().replace(/[-:]/g,"").replace(/\.000/,"");
       const dir=path.join(root,id); fs.mkdirSync(dir,{recursive:true});
       const t=d.toISOString();
-      fs.writeFileSync(path.join(dir,"manifest.json"),JSON.stringify({schemaVersion:2,snapshotId:id,sourceProjectRef:"abcdefghijklmnopqrst",schemaRevision:"0017",startedAt:t,oldestCaptureAt:t,completedAt:t,database:{bytes:1,sha256:"a".repeat(64),tocEntries:1,serverMajor:18,serverVersionNum:180004,clientMajor:18,clientVersion:"18.4",rowCounts:{appUsers:1,workspaces:1,memberships:1,tasks:0,knowledgeItems:0,contacts:0,attachments:0}},storage:{count:0,bytes:0,checksumFileSha256:"b".repeat(64)}}));
+      fs.writeFileSync(path.join(dir,"manifest.json"),JSON.stringify({schemaVersion:2,snapshotId:id,sourceProjectRef:"abcdefghijklmnopqrst",schemaRevision:"0019",startedAt:t,oldestCaptureAt:t,completedAt:t,database:{bytes:1,sha256:"a".repeat(64),tocEntries:1,serverMajor:18,serverVersionNum:180004,clientMajor:18,clientVersion:"18.4",rowCounts:{appUsers:1,workspaces:1,memberships:1,tasks:0,knowledgeItems:0,contacts:0,attachments:0}},storage:{count:0,bytes:0,checksumFileSha256:"b".repeat(64)}}));
       list.push(`${id}/`);
     }
     fs.writeFileSync(process.argv[2],`${list.join("\n")}\nnot-a-snapshot/\n20240101T000000Z/child/\n`);
@@ -416,7 +416,7 @@ setup() {
   directory="$TEST_ROOT/retention"
   mkdir -p "$directory"
   input="$directory/20260101T000000Z.json"
-  printf '{"schemaVersion":2,"snapshotId":"20260201T000000Z","sourceProjectRef":"abcdefghijklmnopqrst","schemaRevision":"0017","startedAt":"2026-02-01T00:00:00.000Z","oldestCaptureAt":"2026-02-01T00:00:00.000Z","completedAt":"2026-02-01T00:00:00.000Z","database":{"bytes":1,"sha256":"%064d","tocEntries":1,"serverMajor":18,"serverVersionNum":180004,"clientMajor":18,"clientVersion":"18.4","rowCounts":{"appUsers":1,"workspaces":1,"memberships":1,"tasks":0,"knowledgeItems":0,"contacts":0,"attachments":0}},"storage":{"count":0,"bytes":0,"checksumFileSha256":"%064d"}}\n' 0 0 > "$input"
+  printf '{"schemaVersion":2,"snapshotId":"20260201T000000Z","sourceProjectRef":"abcdefghijklmnopqrst","schemaRevision":"0019","startedAt":"2026-02-01T00:00:00.000Z","oldestCaptureAt":"2026-02-01T00:00:00.000Z","completedAt":"2026-02-01T00:00:00.000Z","database":{"bytes":1,"sha256":"%064d","tocEntries":1,"serverMajor":18,"serverVersionNum":180004,"clientMajor":18,"clientVersion":"18.4","rowCounts":{"appUsers":1,"workspaces":1,"memberships":1,"tasks":0,"knowledgeItems":0,"contacts":0,"attachments":0}},"storage":{"count":0,"bytes":0,"checksumFileSha256":"%064d"}}\n' 0 0 > "$input"
   run node "$HELPER" retention --directory "$directory" --now '2026-02-02T00:00:00.000Z' --source-project-ref abcdefghijklmnopqrst
   [ "$status" -eq 0 ]
   [ "$output" = '{"keep":[],"delete":[]}' ]
@@ -435,10 +435,10 @@ setup() {
     for(let hour=0;hour<8;hour++){
       const d=new Date(Date.UTC(2026,7,10,hour));
       const id=d.toISOString().replace(/[-:]/g,"").replace(/\.000/,"");
-      values.push({schemaVersion:2,snapshotId:id,sourceProjectRef:"abcdefghijklmnopqrst",schemaRevision:"0017",startedAt:d.toISOString(),oldestCaptureAt:d.toISOString(),completedAt:d.toISOString(),database:{bytes:1,sha256:"a".repeat(64),tocEntries:1,serverMajor:18,serverVersionNum:180004,clientMajor:18,clientVersion:"18.4",rowCounts:{appUsers:1,workspaces:1,memberships:1,tasks:0,knowledgeItems:0,contacts:0,attachments:0}},storage:{count:0,bytes:0,checksumFileSha256:"b".repeat(64)}});
+      values.push({schemaVersion:2,snapshotId:id,sourceProjectRef:"abcdefghijklmnopqrst",schemaRevision:"0019",startedAt:d.toISOString(),oldestCaptureAt:d.toISOString(),completedAt:d.toISOString(),database:{bytes:1,sha256:"a".repeat(64),tocEntries:1,serverMajor:18,serverVersionNum:180004,clientMajor:18,clientVersion:"18.4",rowCounts:{appUsers:1,workspaces:1,memberships:1,tasks:0,knowledgeItems:0,contacts:0,attachments:0}},storage:{count:0,bytes:0,checksumFileSha256:"b".repeat(64)}});
     }
     const d=new Date("2030-01-01T00:00:00.000Z");
-    values.push({schemaVersion:2,snapshotId:"20300101T000000Z",sourceProjectRef:"abcdefghijklmnopqrst",schemaRevision:"0017",startedAt:d.toISOString(),oldestCaptureAt:d.toISOString(),completedAt:d.toISOString(),database:{bytes:1,sha256:"a".repeat(64),tocEntries:1,serverMajor:18,serverVersionNum:180004,clientMajor:18,clientVersion:"18.4",rowCounts:{appUsers:1,workspaces:1,memberships:1,tasks:0,knowledgeItems:0,contacts:0,attachments:0}},storage:{count:0,bytes:0,checksumFileSha256:"b".repeat(64)}});
+    values.push({schemaVersion:2,snapshotId:"20300101T000000Z",sourceProjectRef:"abcdefghijklmnopqrst",schemaRevision:"0019",startedAt:d.toISOString(),oldestCaptureAt:d.toISOString(),completedAt:d.toISOString(),database:{bytes:1,sha256:"a".repeat(64),tocEntries:1,serverMajor:18,serverVersionNum:180004,clientMajor:18,clientVersion:"18.4",rowCounts:{appUsers:1,workspaces:1,memberships:1,tasks:0,knowledgeItems:0,contacts:0,attachments:0}},storage:{count:0,bytes:0,checksumFileSha256:"b".repeat(64)}});
     fs.writeFileSync(process.argv[1],JSON.stringify(values));
   ' "$input"
   run node "$HELPER" retention --input "$input" --now '2026-08-10T08:00:00.000Z' --source-project-ref abcdefghijklmnopqrst

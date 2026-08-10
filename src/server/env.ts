@@ -1,3 +1,5 @@
+import 'server-only';
+
 import { z } from 'zod';
 
 const telegramIdSchema = z
@@ -20,6 +22,32 @@ const telegramBotTokenSchema = z.string().regex(/^\d{5,16}:[A-Za-z0-9_-]{30,100}
 const telegramBotUsernameSchema = z.string().regex(/^(?=.{5,32}$)[A-Za-z0-9_]+bot$/iu);
 const telegramMiniAppShortNameSchema = z.string().regex(/^(?=.{3,30}$)[a-z][a-z0-9_]*$/u);
 const operationSecretSchema = z.string().regex(/^[A-Za-z0-9_-]{32,256}$/u);
+const MODERN_PUBLISHABLE_KEY = /^sb_publishable_[A-Za-z0-9_-]{4,512}$/u;
+const MODERN_SERVICE_KEY = /^sb_secret_[A-Za-z0-9_-]{4,512}$/u;
+const BASE64URL_SEGMENT = /^[A-Za-z0-9_-]+$/u;
+
+function legacyJwtRole(value: string): string | null {
+  if (value.length < 16 || value.length > 8_192) return null;
+  const segments = value.split('.');
+  if (segments.length !== 3 || segments.some((segment) => !BASE64URL_SEGMENT.test(segment) || segment.length > 4_096)) return null;
+  try {
+    const decoded = Buffer.from(segments[1]!, 'base64url');
+    if (decoded.byteLength < 2 || decoded.byteLength > 2_048) return null;
+    const payload = JSON.parse(decoded.toString('utf8')) as unknown;
+    if (!payload || typeof payload !== 'object' || Array.isArray(payload)) return null;
+    const role = (payload as Record<string, unknown>).role;
+    return typeof role === 'string' ? role : null;
+  } catch {
+    return null;
+  }
+}
+
+const supabasePublishableKeySchema = z.string().refine(
+  (value) => MODERN_PUBLISHABLE_KEY.test(value) || legacyJwtRole(value) === 'anon',
+);
+const supabaseServiceRoleKeySchema = z.string().refine(
+  (value) => MODERN_SERVICE_KEY.test(value) || legacyJwtRole(value) === 'service_role',
+);
 
 const selfHostedBitwardenOriginsSchema = z.string().optional().transform((raw, context) => {
   if (!raw?.trim()) return [] as string[];
@@ -70,8 +98,8 @@ const productionEnvironmentSchema = z.object({
   SESSION_SECRET: z.string().min(32),
   SUPABASE_URL: exactHttpsOriginSchema,
   SUPABASE_SELF_HOSTED_ORIGINS: selfHostedSupabaseOriginsSchema,
-  SUPABASE_PUBLISHABLE_KEY: z.string().min(1),
-  SUPABASE_SERVICE_ROLE_KEY: z.string().min(1),
+  SUPABASE_PUBLISHABLE_KEY: supabasePublishableKeySchema,
+  SUPABASE_SERVICE_ROLE_KEY: supabaseServiceRoleKeySchema,
   SUPABASE_JWT_ES256_PRIVATE_KEY: z.string().min(1),
   SUPABASE_JWT_KID: z.string().trim().min(1).max(200),
   OWNER_TELEGRAM_ID: telegramIdSchema,
@@ -84,6 +112,9 @@ const productionEnvironmentSchema = z.object({
   const officialProject = /^[a-z0-9]{20}\.supabase\.co$/u.test(hostname);
   if (!officialProject && !value.SUPABASE_SELF_HOSTED_ORIGINS.includes(origin)) {
     context.addIssue({ code: 'custom', path: ['SUPABASE_URL'], message: 'Untrusted Supabase origin.' });
+  }
+  if (value.SUPABASE_PUBLISHABLE_KEY === value.SUPABASE_SERVICE_ROLE_KEY) {
+    context.addIssue({ code: 'custom', path: ['SUPABASE_PUBLISHABLE_KEY'], message: 'Supabase browser and service keys must differ.' });
   }
 });
 
@@ -116,11 +147,50 @@ export type ProductionServerEnvironment = {
 
 export type ServerEnvironment = DemoServerEnvironment | ProductionServerEnvironment;
 
+export type BrowserProductionEnvironment = {
+  supabaseUrl: string;
+  supabasePublishableKey: string;
+  telegramLaunchUrl?: string;
+};
+
 export class ServerConfigurationError extends Error {
   constructor() {
     super('Production server configuration is incomplete.');
     this.name = 'ServerConfigurationError';
   }
+}
+
+/**
+ * Return only values that are safe to serialize into the browser document.
+ * This intentionally validates independently of the credentialed server parser:
+ * the first page render must never expose a misplaced service-role credential.
+ */
+export function parseBrowserProductionEnvironment(
+  source: Record<string, string | undefined>,
+): BrowserProductionEnvironment | undefined {
+  if (source.APP_MODE !== 'production') return undefined;
+
+  const url = exactHttpsOriginSchema.safeParse(source.SUPABASE_URL);
+  const publishableKey = supabasePublishableKeySchema.safeParse(source.SUPABASE_PUBLISHABLE_KEY);
+  const selfHostedOrigins = selfHostedSupabaseOriginsSchema.safeParse(source.SUPABASE_SELF_HOSTED_ORIGINS);
+  if (!url.success || !publishableKey.success || !selfHostedOrigins.success) return undefined;
+
+  const supabaseOrigin = new URL(url.data).origin;
+  const officialProject = /^[a-z0-9]{20}\.supabase\.co$/u.test(new URL(supabaseOrigin).hostname);
+  if (!officialProject && !selfHostedOrigins.data.includes(supabaseOrigin)) return undefined;
+  if (source.SUPABASE_SERVICE_ROLE_KEY && publishableKey.data === source.SUPABASE_SERVICE_ROLE_KEY) return undefined;
+
+  const botUsername = telegramBotUsernameSchema.safeParse(source.TELEGRAM_BOT_USERNAME);
+  const shortName = telegramMiniAppShortNameSchema.safeParse(source.TELEGRAM_MINI_APP_SHORT_NAME);
+  const telegramLaunchUrl = botUsername.success && shortName.success
+    ? `https://t.me/${botUsername.data}/${shortName.data}`
+    : undefined;
+
+  return {
+    supabaseUrl: url.data,
+    supabasePublishableKey: publishableKey.data,
+    ...(telegramLaunchUrl ? { telegramLaunchUrl } : {}),
+  };
 }
 
 export function parseServerEnvironment(source: Record<string, string | undefined>): ServerEnvironment {

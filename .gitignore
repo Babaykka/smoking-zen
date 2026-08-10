@@ -7,7 +7,7 @@ coverage/
 node_modules/
 playwright-report/
 test-results/
+output/
 .superpowers/
 supabase/.temp/
 backups/
-

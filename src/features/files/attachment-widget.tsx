@@ -1,10 +1,11 @@
 'use client';
 
-import { Download, FilePlus2, RotateCcw } from 'lucide-react';
+import { Download, FilePlus2, RotateCcw, Trash2 } from 'lucide-react';
 import { useState, type ChangeEvent } from 'react';
 
 import { FILE_ACCEPT, type AttachmentTarget } from '@/domain/files';
 import type { Attachment } from '@/domain/types';
+import { AuditHistory } from '@/components/audit-history';
 import { useWorkspace } from '@/providers/workspace-provider';
 
 function readableSize(size: number): string {
@@ -14,7 +15,7 @@ function readableSize(size: number): string {
 }
 
 export function AttachmentWidget({ attachments, target }: { attachments: Attachment[]; target: AttachmentTarget }) {
-  const { repository } = useWorkspace();
+  const { repository, snapshot } = useWorkspace();
   const [busy, setBusy] = useState(false);
   const [progress, setProgress] = useState(0);
   const [status, setStatus] = useState('');
@@ -59,8 +60,22 @@ export function AttachmentWidget({ attachments, target }: { attachments: Attachm
     }
   };
 
+  const archive = async (attachment: Attachment) => {
+    setBusy(true);
+    setError('');
+    setStatus('');
+    try {
+      await repository.deleteAttachment(attachment.id, attachment.version);
+      setStatus(`Файл ${attachment.name} перемещён в корзину.`);
+    } catch (cause) {
+      setError(cause instanceof Error ? cause.message : 'Не удалось удалить файл.');
+    } finally {
+      setBusy(false);
+    }
+  };
+
   return (
-    <section aria-labelledby={`attachments-${target.type}-${target.id}`} className="attachment-widget">
+    <section aria-busy={busy ? true : undefined} aria-labelledby={`attachments-${target.type}-${target.id}`} className="attachment-widget">
       <div className="attachment-widget__header">
         <div>
           <h2 id={`attachments-${target.type}-${target.id}`}>Файлы</h2>
@@ -87,6 +102,10 @@ export function AttachmentWidget({ attachments, target }: { attachments: Attachm
               <button aria-label={`Скачать ${attachment.name}`} onClick={() => void download(attachment)} type="button">
                 <Download aria-hidden="true" size={18} />
               </button>
+              <button aria-label={`Удалить ${attachment.name}`} disabled={busy} onClick={() => void archive(attachment)} type="button">
+                <Trash2 aria-hidden="true" size={18} />
+              </button>
+              <AuditHistory entity="attachment" entityId={attachment.id} events={snapshot.auditEvents} label={`История файла ${attachment.name}`} />
             </li>
           ))}
         </ul>

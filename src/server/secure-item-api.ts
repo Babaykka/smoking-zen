@@ -177,12 +177,16 @@ export function createSupabaseSecureItemStore(
     },
 
     async deleteSecureItem(workspaceId, id, expectedVersion, actorUserId) {
-      const timestamp = new Date().toISOString();
-      const result = await createActorClient(actorUserId).from('secure_items').update({ deleted_at: timestamp })
-        .eq('workspace_id', workspaceId).eq('id', id).eq('version', expectedVersion).is('deleted_at', null)
-        .select(SECURE_ITEM_SUMMARY_COLUMNS).maybeSingle() as Result;
+      const result = await createActorClient(actorUserId).rpc('set_secure_item_deleted', {
+        p_workspace_id: workspaceId, p_secure_item_id: id, p_expected_version: expectedVersion,
+      }) as Result;
+      if (isDatabaseVersionConflict(result.error) || result.error?.message === 'secure_item_not_found') {
+        return conflictOrMissing(workspaceId, id, expectedVersion);
+      }
       const data = dataOrThrow(result);
-      return data ? secureItemSummaryFromRow(data) : conflictOrMissing(workspaceId, id, expectedVersion);
+      const row = Array.isArray(data) ? data[0] : data;
+      if (!row) throw new SecureItemNotFoundError();
+      return secureItemSummaryFromRow(row);
     },
 
     async restoreSecureItem(workspaceId, id, expectedVersion, actorUserId) {

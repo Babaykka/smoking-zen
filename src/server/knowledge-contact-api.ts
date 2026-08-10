@@ -2,7 +2,7 @@ import 'server-only';
 
 import type { SupabaseClient } from '@supabase/supabase-js';
 
-import { assertRestorableRecord, ConflictError } from '@/data/workspace-repository';
+import { assertRestorableRecordPreflight, ConflictError } from '@/data/workspace-repository';
 import {
   contactInputSchema,
   knowledgeInputSchema,
@@ -74,7 +74,13 @@ function contactFromRow(value: unknown, methods: ContactMethod[]): Contact {
 
 function attachmentFromRow(value: unknown): Attachment {
   const row = value as Record<string, unknown>;
-  return { id: String(row.id), name: String(row.name), mimeType: String(row.mime_type), size: Number(row.size_bytes) };
+  return {
+    id: String(row.id),
+    name: String(row.name),
+    mimeType: String(row.mime_type),
+    size: Number(row.size_bytes),
+    version: Number(row.version),
+  };
 }
 
 function isVersionConflict(result: DataResult): boolean {
@@ -90,7 +96,7 @@ export function createSupabaseKnowledgeContactStore(
   createActorClient: (actorUserId: string) => SupabaseClient = () => client,
 ): KnowledgeContactApiStore {
   const knowledgeAttachments = async (workspaceId: string, id: string): Promise<Attachment[]> => {
-    const result = await client.from('attachments').select('id,name,mime_type,size_bytes')
+    const result = await client.from('attachments').select('id,name,mime_type,size_bytes,version')
       .eq('workspace_id', workspaceId).eq('knowledge_item_id', id).eq('state', 'ready').is('deleted_at', null).order('created_at') as DataResult;
     return (assertResult(result) as unknown[]).map(attachmentFromRow);
   };
@@ -142,10 +148,16 @@ export function createSupabaseKnowledgeContactStore(
       return data ? knowledgeFromRow(data, await knowledgeAttachments(workspaceId, id)) : conflictOrMissing(currentKnowledge, workspaceId, id, expectedVersion);
     },
     async deleteKnowledge(workspaceId, id, expectedVersion, actorUserId) {
-      const result = await createActorClient(actorUserId).from('knowledge_items').update({ deleted_at: new Date().toISOString() })
-        .eq('workspace_id', workspaceId).eq('id', id).eq('version', expectedVersion).is('deleted_at', null).select('*').maybeSingle() as DataResult;
-      const data = assertResult(result);
-      return data ? knowledgeFromRow(data) : conflictOrMissing(currentKnowledge, workspaceId, id, expectedVersion);
+      const result = await createActorClient(actorUserId).rpc('set_knowledge_deleted', {
+        p_workspace_id: workspaceId, p_knowledge_id: id, p_expected_version: expectedVersion,
+      }) as DataResult;
+      if (isDatabaseVersionConflict(result.error) || result.error?.message === 'knowledge_not_found') {
+        return conflictOrMissing(currentKnowledge, workspaceId, id, expectedVersion);
+      }
+      const rows = assertResult(result) as unknown[];
+      const row = rows[0];
+      if (!row) throw new Error('Не удалось удалить запись.');
+      return knowledgeFromRow(row);
     },
     async restoreKnowledge(workspaceId, id, expectedVersion, actorUserId) {
       const result = await createActorClient(actorUserId).rpc('restore_knowledge_record', {
@@ -194,7 +206,7 @@ export function createSupabaseKnowledgeContactStore(
     },
     async restoreContact(workspaceId, id, expectedVersion, actorUserId) {
       const current = await currentContact(workspaceId, id);
-      assertRestorableRecord(current ? {
+      assertRestorableRecordPreflight(current ? {
         version: Number(current.version),
         deletedAt: current.deleted_at === null ? null : String(current.deleted_at),
       } : null, expectedVersion);

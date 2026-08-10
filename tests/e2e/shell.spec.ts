@@ -72,6 +72,7 @@ test('shows the desktop workspace shell', async ({ page }, testInfo) => {
     'База',
     'Люди',
     'Сейф',
+    'Корзина',
   ]);
   await expect(page.locator('.app-shell__create')).toBeVisible();
   await expect(page.locator('.app-shell__floating-create')).toBeHidden();

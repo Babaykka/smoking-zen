@@ -11,6 +11,7 @@ const expectedVersionSchema = z.number().int().positive();
 const updateSchema = z.object({ input: contactPatchSchema, expectedVersion: expectedVersionSchema }).strict();
 const restoreSchema = z.object({ action: z.literal('restore'), expectedVersion: expectedVersionSchema }).strict();
 const deleteSchema = z.object({ expectedVersion: expectedVersionSchema }).strict();
+const entityIdSchema = z.string().uuid();
 
 export function createContactItemHandler(dependencies: KnowledgeContactRouteDependencies) {
   return async function contactItemHandler(request: Request, context: RouteContext): Promise<Response> {
@@ -19,7 +20,7 @@ export function createContactItemHandler(dependencies: KnowledgeContactRouteDepe
     const actor = await dependencies.authenticate(request);
     if (!actor) return apiResponse(requestId, 401, null, { code: 'session_invalid', message: 'Требуется авторизация.' });
     const { id } = await context.params;
-    if (!id || id.length > 200) return apiResponse(requestId, 400, null, { code: 'invalid_request', message: 'Некорректный запрос.' });
+    if (!entityIdSchema.safeParse(id).success) return apiResponse(requestId, 400, null, { code: 'invalid_request', message: 'Некорректный запрос.' });
     const body = await readJsonObject(request, WORKSPACE_MAX_JSON_BYTES);
     try {
       if (request.method === 'PATCH') {

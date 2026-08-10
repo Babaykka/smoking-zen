@@ -3,7 +3,7 @@ import { z } from 'zod';
 import { FileValidationError, validateUpload } from '@/domain/files';
 import { ServerConfigurationError } from '@/server/env';
 import { createDefaultFileRouteDependencies, type FileRouteDependencies } from '@/server/files/file-api';
-import { FileOperationError, ParentNotFoundError } from '@/server/files/file-store';
+import { FileOperationError, ParentNotFoundError, UploadQuotaExceededError } from '@/server/files/file-store';
 import { apiResponse, hasSameOrigin, readJsonObject } from '@/server/http';
 
 const MAX_PREFLIGHT_JSON_BYTES = 32 * 1024;
@@ -33,11 +33,6 @@ export function createSignUploadHandler(dependencies: FileRouteDependencies) {
     if (!actor) return apiResponse(requestId, 401, null, { code: 'session_invalid', message: 'Требуется авторизация.' });
 
     try {
-      try {
-        await dependencies.store.cleanupExpiredUploads(new Date(), 20);
-      } catch {
-        // Cleanup is opportunistic; signing remains available and the next request retries it.
-      }
       const body = await readJsonObject(request, MAX_PREFLIGHT_JSON_BYTES);
       const parsed = signUploadSchema.safeParse(body);
       if (!parsed.success) return apiResponse(requestId, 400, null, { code: 'invalid_request', message: 'Некорректные данные файла.' });
@@ -57,6 +52,11 @@ export function createSignUploadHandler(dependencies: FileRouteDependencies) {
     } catch (error) {
       if (error instanceof FileValidationError) return apiResponse(requestId, 400, null, { code: 'file_rejected', message: error.message });
       if (error instanceof ParentNotFoundError) return apiResponse(requestId, 404, null, { code: 'parent_not_found', message: error.message });
+      if (error instanceof UploadQuotaExceededError) {
+        const response = apiResponse(requestId, 429, null, { code: 'upload_quota_exceeded', message: error.message });
+        response.headers.set('Retry-After', '3600');
+        return response;
+      }
       if (error instanceof FileOperationError) return apiResponse(requestId, 503, null, { code: 'file_service_unavailable', message: error.message });
       return apiResponse(requestId, 500, null, { code: 'internal_error', message: 'Не удалось подготовить загрузку файла.' });
     }

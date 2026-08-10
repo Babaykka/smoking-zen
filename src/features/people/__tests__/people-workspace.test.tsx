@@ -1,5 +1,5 @@
 import { act, fireEvent, render, screen, waitFor } from '@testing-library/react';
-import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { createDemoRepository } from '@/data/demo-repository';
 import { createDemoGateway } from '@/data/workspace-gateway';
@@ -9,6 +9,52 @@ import { WorkspaceProvider } from '@/providers/workspace-provider';
 
 describe('PeopleWorkspace', () => {
   beforeEach(() => window.localStorage.clear());
+  afterEach(() => vi.unstubAllGlobals());
+
+  it('lets only the active owner create, copy, and share a 24-hour member invitation', async () => {
+    const gateway = createDemoGateway(createDemoRepository({ loadPersisted: false }));
+    let resolveInvite: ((value: { invitationId: string; inviteLink: string; expiresAt: string }) => void) | undefined;
+    gateway.createInvite = vi.fn(() => new Promise<{ invitationId: string; inviteLink: string; expiresAt: string }>((resolve) => { resolveInvite = resolve; }));
+    const writeText = vi.fn().mockResolvedValue(undefined);
+    const share = vi.fn().mockResolvedValue(undefined);
+    vi.stubGlobal('navigator', { ...window.navigator, clipboard: { writeText }, share });
+
+    render(<WorkspaceProvider currentMemberId="member-owner" gateway={gateway}><PeopleWorkspace /></WorkspaceProvider>);
+    const create = screen.getByRole('button', { name: 'Создать приглашение' });
+    fireEvent.click(create);
+    expect(create).toBeDisabled();
+    expect(gateway.createInvite).toHaveBeenCalledOnce();
+
+    await act(async () => resolveInvite?.({
+      invitationId: 'invite-1',
+      inviteLink: 'https://t.me/smoking_zen_demo/workspace?startapp=invite_demo',
+      expiresAt: '2026-08-11T10:00:00.000Z',
+    }));
+    expect(screen.getByRole('link', { name: 'Ссылка приглашения' })).toHaveAttribute(
+      'href', 'https://t.me/smoking_zen_demo/workspace?startapp=invite_demo',
+    );
+    expect(screen.getByText('Ссылка действует 24 часа.')).toBeInTheDocument();
+    fireEvent.click(screen.getByRole('button', { name: 'Скопировать ссылку' }));
+    await waitFor(() => expect(writeText).toHaveBeenCalledWith('https://t.me/smoking_zen_demo/workspace?startapp=invite_demo'));
+    fireEvent.click(screen.getByRole('button', { name: 'Поделиться приглашением' }));
+    await waitFor(() => expect(share).toHaveBeenCalledWith(expect.objectContaining({
+      title: 'Smoking Zen — приглашение',
+      url: 'https://t.me/smoking_zen_demo/workspace?startapp=invite_demo',
+    })));
+  });
+
+  it('hides invitations from regular members and reports a generic owner-safe error', async () => {
+    const memberGateway = createDemoGateway(createDemoRepository({ loadPersisted: false }));
+    render(<WorkspaceProvider currentMemberId="member-alina" gateway={memberGateway}><PeopleWorkspace /></WorkspaceProvider>);
+    expect(screen.queryByRole('button', { name: 'Создать приглашение' })).toBeNull();
+
+    const ownerGateway = createDemoGateway(createDemoRepository({ loadPersisted: false }));
+    ownerGateway.createInvite = vi.fn().mockRejectedValue(new Error('sensitive database detail'));
+    render(<WorkspaceProvider currentMemberId="member-owner" gateway={ownerGateway}><PeopleWorkspace /></WorkspaceProvider>);
+    fireEvent.click(screen.getByRole('button', { name: 'Создать приглашение' }));
+    expect(await screen.findByRole('alert')).toHaveTextContent(/^Не удалось создать приглашение\.$/);
+    expect(screen.queryByText(/sensitive database detail/iu)).toBeNull();
+  });
 
   it('never creates an action URL from malformed persisted method data', () => {
     expect(contactMethodHref({ kind: 'phone', value: 'javascript:alert(1)' })).toBeNull();

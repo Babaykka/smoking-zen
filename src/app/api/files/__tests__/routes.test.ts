@@ -4,12 +4,15 @@ import { describe, expect, it, vi } from 'vitest';
 
 import { createFileCompletionHandler } from '@/app/api/files/[id]/complete/route';
 import { createFileDownloadHandler } from '@/app/api/files/[id]/download/route';
+import { createFileMutationHandler } from '@/app/api/files/[id]/route';
 import { createSignUploadHandler } from '@/app/api/files/sign-upload/route';
 import { FileValidationError, MAX_FILE_BYTES } from '@/domain/files';
 import {
   FileNotFoundError,
   FileNotReadyError,
   ParentNotFoundError,
+  UploadQuotaExceededError,
+  UploadValidationBusyError,
   type PrivateFileStore,
   SIGNED_DOWNLOAD_SECONDS,
 } from '@/server/files/file-store';
@@ -44,6 +47,15 @@ function store(): PrivateFileStore {
       size: textBytes.length,
       url: `https://storage.example/storage/v1/object/sign/workspace-files/${attachmentId}?token=ephemeral`,
       expiresIn: 60,
+    }),
+    archiveAttachment: vi.fn().mockResolvedValue({
+      entity: 'attachment', id: attachmentId, title: 'policy.txt', version: 2,
+      deletedAt: '2026-08-02T12:00:00.000Z',
+      attachment: { id: attachmentId, name: 'policy.txt', mimeType: 'text/plain', size: textBytes.length, version: 2 },
+      parentType: 'task', parentId,
+    }),
+    restoreAttachment: vi.fn().mockResolvedValue({
+      id: attachmentId, name: 'policy.txt', mimeType: 'text/plain', size: textBytes.length, version: 3,
     }),
     cleanupExpiredUploads: vi.fn().mockResolvedValue({ removed: 0, failed: 0 }),
   };
@@ -107,11 +119,25 @@ describe('private file routes', () => {
       parent: { type: 'task', id: parentId },
       file: expect.objectContaining({ name: 'policy.txt', declaredMime: 'text/plain', size: textBytes.length }),
     });
-    expect(fileStore.cleanupExpiredUploads).toHaveBeenCalledWith(expect.any(Date), 20);
+    expect(fileStore.cleanupExpiredUploads).not.toHaveBeenCalled();
     const payload = await response.json();
     expect(payload.data.uploadUrl).toContain('token=ephemeral');
     expect(JSON.stringify(payload)).not.toMatch(/\/quarantine\/|\/ready\/|33333333-3333-4333-8333-333333333333/iu);
     expect(payload.data).not.toHaveProperty('storagePath');
+  });
+
+  it('returns a bounded 429 before any signed upload grant when the durable quota is full', async () => {
+    const fileStore = store();
+    vi.mocked(fileStore.signUpload).mockRejectedValueOnce(new UploadQuotaExceededError());
+    const response = await createSignUploadHandler(dependencies(fileStore))(
+      jsonRequest('https://app.example/api/files/sign-upload', 'POST', signBody()),
+    );
+
+    expect(response.status).toBe(429);
+    expect(response.headers.get('retry-after')).toBe('3600');
+    expect(await response.json()).toMatchObject({ data: null, error: { code: 'upload_quota_exceeded' } });
+    expect(fileStore.signUpload).toHaveBeenCalledTimes(1);
+    expect(fileStore.cleanupExpiredUploads).not.toHaveBeenCalled();
   });
 
   it.each([
@@ -128,6 +154,7 @@ describe('private file routes', () => {
     const response = await handler(request);
     expect([400, 403]).toContain(response.status);
     expect(fileStore.signUpload).not.toHaveBeenCalled();
+    expect(fileStore.cleanupExpiredUploads).not.toHaveBeenCalled();
   });
 
   it('completes validation server-side and maps unsafe bytes to a recovery-safe 422 response', async () => {
@@ -147,6 +174,11 @@ describe('private file routes', () => {
     const missingParent = await handler(jsonRequest(`https://app.example/api/files/${attachmentId}/complete`, 'POST'), context);
     expect(missingParent.status).toBe(404);
     expect(await missingParent.json()).toMatchObject({ data: null, error: { code: 'parent_not_found' } });
+
+    vi.mocked(fileStore.completeUpload).mockRejectedValueOnce(new UploadValidationBusyError());
+    const busy = await handler(jsonRequest(`https://app.example/api/files/${attachmentId}/complete`, 'POST'), context);
+    expect(busy.status).toBe(409);
+    expect(await busy.json()).toMatchObject({ data: null, error: { code: 'upload_processing' } });
   });
 
   it('redirects ready-only downloads for exactly 60 seconds without serializing the provider URL', async () => {
@@ -158,6 +190,8 @@ describe('private file routes', () => {
 
     expect(response.status).toBe(303);
     expect(response.headers.get('cache-control')).toBe('no-store');
+    expect(response.headers.get('content-disposition')).toBe('attachment');
+    expect(response.headers.get('access-control-allow-origin')).toBe('https://web.telegram.org');
     expect(fileStore.signDownload).toHaveBeenCalledWith(actor.workspaceId, attachmentId, SIGNED_DOWNLOAD_SECONDS);
     expect(response.headers.get('location')).toBe(`https://storage.example/storage/v1/object/sign/workspace-files/${attachmentId}?token=ephemeral`);
     expect(await response.text()).toBe('');
@@ -190,5 +224,24 @@ describe('private file routes', () => {
     const raw = JSON.stringify(await failed.json());
     expect(failed.status).toBe(500);
     expect(raw).not.toMatch(/token=secret|private-key|workspace\/ready/iu);
+  });
+
+  it('archives and restores only through exact versioned same-origin mutations', async () => {
+    const fileStore = store();
+    const handler = createFileMutationHandler(dependencies(fileStore));
+    const context = { params: Promise.resolve({ id: attachmentId }) };
+
+    const archived = await handler(jsonRequest(`https://app.example/api/files/${attachmentId}`, 'DELETE', { expectedVersion: 1 }), context);
+    expect(archived.status).toBe(200);
+    expect(fileStore.archiveAttachment).toHaveBeenCalledWith(actor.workspaceId, attachmentId, 1);
+    expect(await archived.json()).toMatchObject({ data: { entity: 'attachment', version: 2, parentId } });
+
+    const restored = await handler(jsonRequest(`https://app.example/api/files/${attachmentId}`, 'PATCH', { action: 'restore', expectedVersion: 2 }), context);
+    expect(restored.status).toBe(200);
+    expect(fileStore.restoreAttachment).toHaveBeenCalledWith(actor.workspaceId, attachmentId, 2);
+
+    const invalid = await handler(jsonRequest(`https://app.example/api/files/${attachmentId}`, 'PATCH', { action: 'restore', expectedVersion: 0 }), context);
+    expect(invalid.status).toBe(400);
+    expect(fileStore.restoreAttachment).toHaveBeenCalledTimes(1);
   });
 });

@@ -164,7 +164,7 @@ function manifestDocument(value, expectedSnapshot) {
   if (![1, 2].includes(document.schemaVersion) || !SNAPSHOT.test(document.snapshotId)) fail();
   if (document.schemaVersion === 2
     && (typeof document.sourceProjectRef !== 'string' || !/^[a-z0-9]{20}$/u.test(document.sourceProjectRef))) fail();
-  if (document.schemaVersion === 2 && document.schemaRevision !== '0017') fail();
+  if (document.schemaVersion === 2 && document.schemaRevision !== '0019') fail();
   const snapshotAt = snapshotDate(document.snapshotId).getTime();
   if (expectedSnapshot && document.snapshotId !== expectedSnapshot) fail();
   const startedAt = instant(document.startedAt);
@@ -321,7 +321,7 @@ async function createManifest(options) {
     schemaVersion: 2,
     snapshotId,
     sourceProjectRef,
-    schemaRevision: '0017',
+    schemaRevision: '0019',
     startedAt,
     oldestCaptureAt: new Date(Math.min(times[1], times[2])).toISOString(),
     completedAt,

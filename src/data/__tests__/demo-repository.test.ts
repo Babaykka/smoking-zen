@@ -2,6 +2,7 @@ import { describe, expect, it, vi } from 'vitest';
 
 import { createDemoRepository } from '@/data/demo-repository';
 import { demoSeed } from '@/data/demo-seed';
+import { createDemoGateway } from '@/data/workspace-gateway';
 import {
   ConflictError,
   RestoreExpiredError,
@@ -22,6 +23,15 @@ function createMemoryPersistence(): WorkspacePersistence {
   };
 }
 
+function createInspectablePersistence(initial: unknown = null): WorkspacePersistence & { saved: () => unknown } {
+  let value: unknown = structuredClone(initial);
+  return {
+    load: () => structuredClone(value),
+    save: (snapshot) => { value = structuredClone(snapshot); },
+    saved: () => structuredClone(value),
+  };
+}
+
 function createRepository() {
   let nextId = 1;
   return createDemoRepository({
@@ -32,6 +42,15 @@ function createRepository() {
 }
 
 describe('demo workspace repository', () => {
+  it('creates only a transient invitation with the production launch-token shape', async () => {
+    const gateway = createDemoGateway(createDemoRepository({ loadPersisted: false }));
+    const before = JSON.stringify(gateway.snapshot());
+    const invitation = await gateway.createInvite();
+
+    expect(invitation.inviteLink).toMatch(/^https:\/\/t\.me\/smoking_zen_demo\/workspace\?startapp=invite_[A-Za-z0-9_-]{43}$/u);
+    expect(new Date(invitation.expiresAt).getTime()).toBeGreaterThan(Date.now() + 23 * 60 * 60 * 1_000);
+    expect(JSON.stringify(gateway.snapshot())).toBe(before);
+  });
   it('exposes a visible deterministic seed without sharing mutable snapshots', () => {
     const repository = createRepository();
     const firstSnapshot = repository.snapshot();
@@ -187,6 +206,50 @@ describe('demo workspace repository', () => {
     expect(created.id).not.toBe('demo-1');
   });
 
+  it('persists a versioned envelope and deeply validates every nested entity before hydration', () => {
+    const persistence = createInspectablePersistence();
+    const writer = createDemoRepository({ persistence, loadPersisted: false });
+    writer.createTask({ title: 'Сохранённая безопасная задача' });
+
+    expect(persistence.saved()).toMatchObject({
+      schemaVersion: 1,
+      snapshot: { workspaceId: demoSeed.workspaceId },
+    });
+
+    const corrupted = structuredClone(persistence.saved()) as {
+      schemaVersion: number;
+      snapshot: WorkspaceSnapshot;
+    };
+    corrupted.snapshot.tasks[0]!.priority = 99 as never;
+    const fallback = createDemoRepository({
+      persistence: createInspectablePersistence(corrupted),
+      seed: { ...demoSeed, tasks: [] },
+    });
+
+    expect(fallback.snapshot().tasks).toEqual([]);
+  });
+
+  it('migrates a valid legacy snapshot and strips transient safe values and unknown fields', () => {
+    const legacy = structuredClone(demoSeed) as WorkspaceSnapshot & {
+      transientUploadUrl?: string;
+      secureItems: Array<WorkspaceSnapshot['secureItems'][number] & { externalUrl?: string; password?: string }>;
+    };
+    legacy.transientUploadUrl = 'https://storage.example/private-signed-url';
+    legacy.secureItems[0] = {
+      ...legacy.secureItems[0]!,
+      externalUrl: 'https://vault.bitwarden.com/#/vault?itemId=123e4567-e89b-12d3-a456-426614174000',
+      password: 'must-not-survive',
+    };
+    const persistence = createInspectablePersistence(legacy);
+    const repository = createDemoRepository({ persistence });
+
+    expect(repository.snapshot().secureItems[0]).not.toHaveProperty('externalUrl');
+    expect(repository.snapshot().secureItems[0]).not.toHaveProperty('password');
+    repository.createTask({ title: 'Перезаписать снимок в новом формате' });
+    expect(JSON.stringify(persistence.saved())).not.toContain('private-signed-url');
+    expect(JSON.stringify(persistence.saved())).not.toContain('must-not-survive');
+  });
+
   it('preserves mutable record metadata for notification deliveries', () => {
     const delivery: NotificationDelivery = {
       id: 'delivery-1',
@@ -211,7 +274,7 @@ describe('demo workspace repository', () => {
       title: 'Касса',
       purpose: 'very-private-metadata',
       owner: 'Управляющий',
-      externalUrl: 'https://vault.bitwarden.com/#/items/very-private-url',
+      externalUrl: 'https://vault.bitwarden.com/#/vault?itemId=223e4567-e89b-12d3-a456-426614174000',
     });
 
     expect(repository.search('very-private')).toEqual([]);

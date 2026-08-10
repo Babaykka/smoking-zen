@@ -114,7 +114,7 @@ describe('Task 7 production operations release surface', () => {
   });
 
   it('ships schema-revision ACL hardening that cannot mutate application data', () => {
-    const hardening = read('supabase/operations/restore_acl_0017.sql');
+    const hardening = read('supabase/operations/restore_acl_0019.sql');
     expect(hardening.trimStart()).toMatch(/^begin;/u);
     expect(hardening.trimEnd()).toMatch(/commit;$/u);
     expect(hardening).toContain('revoke all privileges on all tables in schema public');
@@ -125,7 +125,7 @@ describe('Task 7 production operations release surface', () => {
     expect(hardening).not.toMatch(/\b(?:insert|update|delete|truncate)\b/iu);
     expect(hardening).not.toMatch(/\b(?:create|replace)\s+(?:or\s+replace\s+)?function\b/iu);
     const restore = read('scripts/restore-drill.sh');
-    expect(restore).toContain('restore_acl_0017.sql');
+    expect(restore).toContain('restore_acl_0019.sql');
     expect(restore).toContain('smoking_zen_business_digest');
     expect(restore).not.toContain('MIGRATION_FILES');
   });
@@ -134,6 +134,7 @@ describe('Task 7 production operations release surface', () => {
     const ci = read('.github/workflows/ci.yml');
     const backup = read('.github/workflows/backup.yml');
     const freshness = read('.github/workflows/backup-freshness.yml');
+    const packageManifest = JSON.parse(read('package.json')) as { scripts?: Record<string, string> };
     for (const workflow of [ci, backup, freshness]) {
       expect(workflow).toContain('permissions:\n  contents: read');
       expect(workflow).not.toContain('pull_request_target');
@@ -146,8 +147,10 @@ describe('Task 7 production operations release surface', () => {
     expect(ci).toContain('version: 10.14.0');
     for (const gate of [
       'pnpm lint', 'pnpm typecheck', 'pnpm test', 'pnpm build', 'pnpm test:scripts',
-      'pnpm lint:shell', 'playwright test', 'pnpm audit --prod --audit-level high', 'gitleaks',
+      'pnpm lint:shell', 'pnpm audit --prod --audit-level high', 'gitleaks',
     ]) expect(ci).toContain(gate);
+    expect(ci).toMatch(/^\s*run:\s*pnpm test:e2e\s*$/mu);
+    expect(packageManifest.scripts?.['test:e2e']).toMatch(/^playwright\s+test(?:\s|$)/u);
     expect(backup).toContain("cron: '15 23 * * *'");
     expect(backup).toContain("if: github.ref == 'refs/heads/main'");
     expect(backup).toContain('environment: production');

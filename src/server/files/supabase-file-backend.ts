@@ -10,6 +10,13 @@ import type {
   ReadyAttachmentMutation,
   StoredAttachment,
 } from '@/server/files/file-store';
+import {
+  FileMutationError,
+  FileNotFoundError,
+  ParentNotFoundError,
+  UploadExpiredError,
+  UploadQuotaExceededError,
+} from '@/server/files/file-store';
 
 const FILE_BUCKET = 'workspace-files';
 const UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/iu;
@@ -41,12 +48,14 @@ function storedAttachment(value: unknown): StoredAttachment {
     sha256: row.sha256 === null ? null : String(row.sha256),
     quarantineExpiresAt: row.quarantine_expires_at === null ? null : String(row.quarantine_expires_at),
     completedAt: row.completed_at === null ? null : String(row.completed_at),
+    version: Number(row.version),
+    deletedAt: row.deleted_at === null ? null : String(row.deleted_at),
   };
 }
 
 const ATTACHMENT_COLUMNS = [
   'id', 'workspace_id', 'task_id', 'knowledge_item_id', 'name', 'mime_type', 'size_bytes',
-  'storage_path', 'state', 'sha256', 'quarantine_expires_at', 'completed_at',
+  'storage_path', 'state', 'sha256', 'quarantine_expires_at', 'completed_at', 'version', 'deleted_at',
 ].join(',');
 
 export function createSupabaseFileBackend(client: SupabaseClient): FileBackend {
@@ -60,44 +69,87 @@ export function createSupabaseFileBackend(client: SupabaseClient): FileBackend {
       return dataOrThrow(result) !== null;
     },
 
-    async insertQuarantine(record: NewQuarantineAttachment) {
-      const result = await client.from('attachments').insert({
-        id: record.id,
-        workspace_id: record.workspaceId,
-        task_id: record.taskId,
-        knowledge_item_id: record.knowledgeItemId,
-        name: record.name,
-        mime_type: record.mimeType,
-        size_bytes: record.size,
-        storage_path: record.storagePath,
-        state: 'quarantine',
-        sha256: null,
-        created_by: record.createdBy,
-        quarantine_expires_at: record.quarantineExpiresAt,
-        completed_at: null,
+    async reserveQuarantine(record: NewQuarantineAttachment) {
+      const result = await client.rpc('reserve_attachment_upload', {
+        p_workspace_id: record.workspaceId,
+        p_attachment_id: record.id,
+        p_task_id: record.taskId,
+        p_knowledge_item_id: record.knowledgeItemId,
+        p_created_by: record.createdBy,
+        p_name: record.name,
+        p_mime_type: record.mimeType,
+        p_size_bytes: record.size,
+        p_storage_path: record.storagePath,
       }) as Result;
-      dataOrThrow(result);
+      if (result.error) {
+        const message = String(result.error.message ?? '');
+        if (/upload_(?:workspace|member)(?:_byte)?_quota_exceeded/u.test(message)) {
+          throw new UploadQuotaExceededError();
+        }
+        if (message.includes('upload_parent_not_found') || message.includes('upload_member_not_found')) {
+          throw new ParentNotFoundError();
+        }
+        throw new Error('Private file backend operation failed.');
+      }
+      const row = Array.isArray(result.data) ? result.data[0] : result.data;
+      if (!row) throw new Error('Upload reservation was not returned.');
+      return storedAttachment(row);
     },
 
-    async deleteQuarantine(workspaceId, attachmentId, storagePath) {
-      const storageResult = await bucket.remove([storagePath]);
-      dataOrThrow(storageResult as Result);
-      const result = await client.from('attachments').delete()
-        .eq('workspace_id', workspaceId).eq('id', attachmentId).eq('state', 'quarantine')
-        .eq('storage_path', storagePath) as Result;
-      dataOrThrow(result);
+    async cancelReservation(workspaceId, attachmentId, storagePath) {
+      const result = await client.rpc('cancel_attachment_upload_reservation', {
+        p_workspace_id: workspaceId,
+        p_attachment_id: attachmentId,
+        p_expected_storage_path: storagePath,
+      }) as Result;
+      const cancelled = dataOrThrow(result);
+      if (typeof cancelled !== 'boolean') throw new Error('Upload reservation cancellation verdict was not returned.');
+      return cancelled;
     },
 
-    async retireQuarantine(workspaceId, attachmentId, storagePath, reason) {
+    async retireQuarantine(workspaceId, attachmentId, storagePath, reason, validationLeaseId) {
       const result = await client.rpc('retire_quarantine_attachment', {
         p_workspace_id: workspaceId,
         p_attachment_id: attachmentId,
         p_expected_storage_path: storagePath,
         p_reason: reason,
+        ...(validationLeaseId ? { p_validation_lease_id: validationLeaseId } : {}),
       }) as Result;
       const retired = dataOrThrow(result);
       if (typeof retired !== 'boolean') throw new Error('Quarantine retirement verdict was not returned.');
       return retired;
+    },
+
+    async claimValidation(workspaceId, attachmentId, storagePath) {
+      const result = await client.rpc('claim_attachment_validation', {
+        p_workspace_id: workspaceId,
+        p_attachment_id: attachmentId,
+        p_expected_storage_path: storagePath,
+      }) as Result;
+      if (result.error) {
+        const message = String(result.error.message ?? '');
+        if (message.includes('attachment_validation_expired')) throw new UploadExpiredError();
+        if (message.includes('attachment_validation_parent_not_found')) throw new ParentNotFoundError();
+        if (message.includes('attachment_validation_not_found')) throw new FileNotFoundError();
+        throw new Error('Private file backend operation failed.');
+      }
+      if (result.data === null) return null;
+      if (typeof result.data !== 'string' || !UUID_PATTERN.test(result.data)) {
+        throw new Error('Attachment validation lease was not returned.');
+      }
+      return result.data;
+    },
+
+    async releaseValidation(workspaceId, attachmentId, storagePath, validationLeaseId) {
+      const result = await client.rpc('release_attachment_validation', {
+        p_workspace_id: workspaceId,
+        p_attachment_id: attachmentId,
+        p_expected_storage_path: storagePath,
+        p_validation_lease_id: validationLeaseId,
+      }) as Result;
+      const released = dataOrThrow(result);
+      if (typeof released !== 'boolean') throw new Error('Attachment validation release verdict was not returned.');
+      return released;
     },
 
     async createSignedUploadUrl(storagePath) {
@@ -130,7 +182,7 @@ export function createSupabaseFileBackend(client: SupabaseClient): FileBackend {
       dataOrThrow(result as Result);
     },
 
-    async completeUpload(record: StoredAttachment, ready: ReadyAttachmentMutation) {
+    async completeUpload(record: StoredAttachment, ready: ReadyAttachmentMutation, validationLeaseId: string) {
       const result = await client.rpc('complete_attachment_upload', {
         p_workspace_id: record.workspaceId,
         p_attachment_id: record.id,
@@ -140,6 +192,7 @@ export function createSupabaseFileBackend(client: SupabaseClient): FileBackend {
         p_mime_type: ready.mimeType,
         p_size_bytes: ready.size,
         p_sha256: ready.sha256,
+        p_validation_lease_id: validationLeaseId,
       }) as Result;
       const data = dataOrThrow(result);
       const row = Array.isArray(data) ? data[0] : data;
@@ -204,6 +257,29 @@ export function createSupabaseFileBackend(client: SupabaseClient): FileBackend {
       const data = dataOrThrow(result as Result) as { signedUrl?: unknown };
       if (typeof data.signedUrl !== 'string') throw new Error('Signed download URL was not returned.');
       return data.signedUrl;
+    },
+
+    async setAttachmentDeleted(workspaceId, attachmentId, expectedVersion, restore) {
+      const result = await client.rpc('set_attachment_deleted', {
+        p_workspace_id: workspaceId,
+        p_attachment_id: attachmentId,
+        p_expected_version: expectedVersion,
+        p_restore: restore,
+      }) as Result;
+      if (result.error) {
+        const message = String(result.error.message ?? '');
+        const conflict = /version_conflict:(\d+)/u.exec(message);
+        if (conflict) throw new FileMutationError('version_conflict', expectedVersion, Number(conflict[1]));
+        if (message.includes('restore_expired')) throw new FileMutationError('restore_expired');
+        if (message.includes('restore_not_deleted')) throw new FileMutationError('restore_not_deleted');
+        if (message.includes('attachment_not_found')) throw new FileMutationError('file_not_found');
+        if (message.includes('attachment_parent_not_found')) throw new FileMutationError('parent_not_found');
+        if (message.includes('attachment_not_ready')) throw new FileMutationError('file_not_ready');
+        throw new Error('Private file backend operation failed.');
+      }
+      const row = Array.isArray(result.data) ? result.data[0] : result.data;
+      if (!row) throw new Error('Attachment mutation did not return a record.');
+      return storedAttachment(row);
     },
   };
 }

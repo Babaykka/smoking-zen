@@ -9,6 +9,7 @@ import {
 import {
   safeSafeTextFixtures,
   safeSafeUrlFixtures,
+  unsafePersistedUrlTextFixtures,
   unsafeSafeTextFixtures,
   unsafeSafeUrlFixtures,
 } from '@/domain/__tests__/safe-content-fixtures';
@@ -22,13 +23,23 @@ const validItem = {
   cardHolder: 'SMOKING ZEN',
   cardPurpose: 'Операционные расходы',
   lastFour: '0000',
-  externalUrl: 'https://vault.bitwarden.com/#/items/example',
+  externalUrl: 'https://vault.bitwarden.com/#/vault?itemId=123e4567-e89b-12d3-a456-426614174000',
 };
 
 describe('secure item schemas', () => {
   it.each([
-    'https://vault.bitwarden.com/#/items/example',
-    'https://vault.bitwarden.eu/#/items/example',
+    'https://vault.bitwarden.com/hunter2',
+    'https://vault.bitwarden.com/?item=hunter2',
+    'https://vault.bitwarden.com/#/items/hunter2',
+    'https://vault.bitwarden.com/#/vault?itemId=hunter2',
+  ])('rejects every non-canonical Bitwarden deep link even when it has no secret-looking key: %s', (externalUrl) => {
+    expect(secureItemInputSchema.safeParse({ ...validItem, externalUrl }).success).toBe(false);
+  });
+
+  it.each([
+    'https://vault.bitwarden.com',
+    'https://vault.bitwarden.eu/?itemId=123e4567-e89b-12d3-a456-426614174000',
+    'https://vault.bitwarden.com/#/vault?itemId=123e4567-e89b-12d3-a456-426614174000',
   ])('accepts the exact built-in Bitwarden vault origin %s', (externalUrl) => {
     expect(secureItemInputSchema.parse({ ...validItem, externalUrl })).toMatchObject({
       externalUrl,
@@ -65,13 +76,13 @@ describe('secure item schemas', () => {
 
   it('allows a self-hosted origin only through an exact server allowlist', () => {
     const allowed = createSecureItemInputSchema(['https://vault.example.org']);
-    expect(allowed.safeParse({ ...validItem, externalUrl: 'https://vault.example.org/#/items/1' }).success).toBe(true);
+    expect(allowed.safeParse({ ...validItem, externalUrl: 'https://vault.example.org/#/vault?itemId=123e4567-e89b-12d3-a456-426614174000' }).success).toBe(true);
     expect(allowed.safeParse({ ...validItem, externalUrl: 'https://sub.vault.example.org/#/items/1' }).success).toBe(false);
     expect(allowed.safeParse({ ...validItem, externalUrl: 'https://vault.example.org:8443/#/items/1' }).success).toBe(false);
   });
 
   it('preserves legitimate Bitwarden item UUID routes while scanning decoded URL components', () => {
-    const externalUrl = 'https://vault.bitwarden.com/#/vault/item/123e4567-e89b-12d3-a456-426614174000';
+    const externalUrl = 'https://vault.bitwarden.com/#/vault?itemId=123e4567-e89b-12d3-a456-426614174000';
     expect(secureItemInputSchema.safeParse({ ...validItem, externalUrl }).success).toBe(true);
   });
 
@@ -81,8 +92,8 @@ describe('secure item schemas', () => {
     expect(secureItemInputSchema.safeParse({ ...validItem, lastFour: 0 }).success).toBe(false);
     expect(secureItemInputSchema.safeParse({ ...validItem, lastFour: '123' }).success).toBe(false);
     expect(secureItemPatchSchema.parse({ owner: 'Старший смены' })).toEqual({ owner: 'Старший смены' });
-    expect(createSecureItemPatchSchema([]).parse({ externalUrl: 'https://vault.bitwarden.eu/#/items/new' }))
-      .toEqual({ externalUrl: 'https://vault.bitwarden.eu/#/items/new' });
+    expect(createSecureItemPatchSchema([]).parse({ externalUrl: 'https://vault.bitwarden.eu/?itemId=223e4567-e89b-12d3-a456-426614174000' }))
+      .toEqual({ externalUrl: 'https://vault.bitwarden.eu/?itemId=223e4567-e89b-12d3-a456-426614174000' });
   });
 
   it.each([
@@ -112,6 +123,11 @@ describe('secure item schemas', () => {
 
   it.each(unsafeSafeTextFixtures)('rejects canonically disguised persisted secret or PAN text: %s', (purpose) => {
     expect(secureItemInputSchema.safeParse({ ...validItem, purpose }).success).toBe(false);
+  });
+
+  it.each(unsafePersistedUrlTextFixtures)('rejects an unsafe URL in Safe free text: %s', (purpose) => {
+    expect(secureItemInputSchema.safeParse({ ...validItem, purpose }).success).toBe(false);
+    expect(secureItemPatchSchema.safeParse({ purpose }).success).toBe(false);
   });
 
   it.each(safeSafeTextFixtures)('preserves benign normalized Safe prose: %s', (purpose) => {

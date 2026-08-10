@@ -38,9 +38,12 @@ export function createFileDownloadHandler(dependencies: FileRouteDependencies) {
       return new Response(null, {
         status: 303,
         headers: {
+          'access-control-allow-origin': 'https://web.telegram.org',
           'cache-control': 'no-store',
+          'content-disposition': 'attachment',
           location: signed.url,
           'referrer-policy': 'no-referrer',
+          vary: 'Origin',
           'x-content-type-options': 'nosniff',
         },
       });

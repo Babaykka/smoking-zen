@@ -4,17 +4,19 @@ import { describe, expect, it } from 'vitest';
 
 import { createInviteHandler } from '@/app/api/invites/route';
 import { createRedeemInvitationHandler } from '@/app/api/invites/redeem/route';
+import { createRefreshSessionHandler } from '@/app/api/session/refresh/route';
 import { createTelegramSessionHandler } from '@/app/api/session/telegram/route';
-import type { SessionCookie } from '@/server/session';
+import { SESSION_COOKIE_NAME, SESSION_DURATION_SECONDS, type SessionCookie } from '@/server/session';
+import { readSessionCookie } from '@/server/http';
 import type { AccessStore, MembershipAccess } from '@/server/supabase';
 
 const NOW = new Date('2026-08-02T10:00:00.000Z');
 const OWNER_TELEGRAM_ID = '4503599627370495';
 const APP_ORIGIN = 'https://smoking-zen.example';
 const COOKIE: SessionCookie = {
-  name: '__Host-smoking_zen_session',
+  name: SESSION_COOKIE_NAME,
   value: 'test-session-token',
-  options: { httpOnly: true, sameSite: 'lax', secure: true, path: '/', maxAge: 43_200 },
+  options: { httpOnly: true, sameSite: 'none', secure: true, partitioned: true, path: '/', maxAge: 43_200 },
 };
 const OWNER_MEMBERSHIP: MembershipAccess = {
   userId: '11111111-1111-4111-8111-111111111111',
@@ -31,7 +33,7 @@ function request(path: string, body: unknown, cookie?: string) {
     headers: {
       'content-type': 'application/json',
       origin: APP_ORIGIN,
-      ...(cookie ? { cookie: `__Host-smoking_zen_session=${cookie}` } : {}),
+      ...(cookie ? { cookie: `${SESSION_COOKIE_NAME}=${cookie}` } : {}),
     },
     body: JSON.stringify(body),
   });
@@ -88,7 +90,17 @@ describe('Telegram session route', () => {
     expect(await json(first)).toMatchObject({ data: { membership: OWNER_MEMBERSHIP }, error: null, requestId: 'request-1' });
     expect(second.status).toBe(200);
     expect(bootstrapCalls).toBe(2);
-    expect(first.headers.get('set-cookie')).toContain('HttpOnly');
+    const setCookie = first.headers.get('set-cookie') ?? '';
+    expect(setCookie.split(';').map((part) => part.trim())).toEqual(expect.arrayContaining([
+      `${SESSION_COOKIE_NAME}=test-session-token`,
+      'Path=/',
+      `Max-Age=${SESSION_DURATION_SECONDS}`,
+      'Secure',
+      'Partitioned',
+      'HttpOnly',
+      'SameSite=none',
+    ]));
+    expect(readSessionCookie(request('/api/tasks', {}, 'parsed-session-token'))).toBe('parsed-session-token');
   });
 
   it('denies an inactive membership and never issues a session', async () => {
@@ -303,6 +315,36 @@ describe('Telegram session route', () => {
 });
 
 describe('invitation routes', () => {
+  it('rejects wrong methods before parsing, authentication, or persistence', async () => {
+    let effects = 0;
+    const invite = createInviteHandler({
+      appOrigin: APP_ORIGIN,
+      botUsername: 'smoking_zen_bot',
+      appShortName: 'workspace',
+      store: createStore({ getActiveMembership: async () => { effects += 1; return OWNER_MEMBERSHIP; } }),
+      now: () => NOW,
+      requestId: () => 'request-invite-method',
+      readSession: async () => { effects += 1; return OWNER_MEMBERSHIP; },
+      generateToken: () => { effects += 1; return 'A'.repeat(43); },
+    });
+    const telegram = createTelegramSessionHandler({
+      appOrigin: APP_ORIGIN,
+      botToken: 'test-token', ownerTelegramId: OWNER_TELEGRAM_ID, workspaceName: 'Smoking Zen',
+      maxAgeSeconds: 300, now: () => NOW, requestId: () => 'request-session-method',
+      store: createStore({ bootstrapTelegramUser: async () => { effects += 1; return OWNER_MEMBERSHIP; } }),
+      verifyInitData: () => { effects += 1; return { id: '123456789', firstName: 'Новый', authDate: 1_722_513_600 }; },
+      createSession: async () => COOKIE,
+    });
+
+    for (const handler of [invite, telegram]) {
+      const response = await handler(new Request(`${APP_ORIGIN}/wrong-method`, { method: 'GET' }));
+      expect(response.status).toBe(405);
+      expect(response.headers.get('cache-control')).toBe('no-store');
+      expect((await json(response)).error?.code).toBe('method_not_allowed');
+    }
+    expect(effects).toBe(0);
+  });
+
   it('creates a 24-hour invitation while persisting only a SHA-256 token hash', async () => {
     let storedHash = '';
     const rawToken = 'A'.repeat(42) + '_';
@@ -345,6 +387,8 @@ describe('invitation routes', () => {
       requestId: () => 'request-removed-redeem',
       onEffect: () => { effects += 1; },
     });
+    const wrongMethod = await handler(new Request(`${APP_ORIGIN}/api/invites/redeem`, { method: 'GET' }));
+    expect(wrongMethod.status).toBe(405);
     const unsafe = request('/api/invites/redeem', {
       initData: 'signed-init-data', token: 'caller-controlled-token',
     });
@@ -354,5 +398,29 @@ describe('invitation routes', () => {
     expect(unsafe.bodyUsed).toBe(false);
     expect(effects).toBe(0);
     expect(JSON.stringify(await json(response))).not.toContain('caller-controlled-token');
+  });
+});
+
+describe('session refresh route', () => {
+  it('rejects wrong methods before session or store work and clears an invalid POST session', async () => {
+    let effects = 0;
+    const handler = createRefreshSessionHandler({
+      appOrigin: APP_ORIGIN,
+      store: createStore({ getActiveMembership: async () => { effects += 1; return OWNER_MEMBERSHIP; } }),
+      requestId: () => 'request-refresh',
+      readSession: async () => { effects += 1; return null; },
+      refreshSession: async () => { effects += 1; return COOKIE; },
+      clearSession: () => ({ ...COOKIE, value: '', options: { ...COOKIE.options, maxAge: 0 } }),
+    });
+
+    const wrongMethod = await handler(new Request(`${APP_ORIGIN}/api/session/refresh`, { method: 'GET' }));
+    expect(wrongMethod.status).toBe(405);
+    expect(effects).toBe(0);
+
+    const invalid = await handler(request('/api/session/refresh', {}));
+    expect(invalid.status).toBe(401);
+    expect(effects).toBe(1);
+    expect(invalid.headers.get('set-cookie')).toContain(`${SESSION_COOKIE_NAME}=`);
+    expect(invalid.headers.get('cache-control')).toBe('no-store');
   });
 });

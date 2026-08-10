@@ -67,7 +67,7 @@ test('keeps Safe summaries masked and reveals an allowed Bitwarden URL only afte
   await page.getByLabel('Ответственный').fill('Управляющий');
   await page.getByLabel('Банк').fill('Тестовый банк');
   await page.getByLabel('Последние четыре цифры').fill('4242');
-  const externalUrl = 'https://vault.bitwarden.eu/#/items/e2e-memory-only';
+  const externalUrl = 'https://vault.bitwarden.eu/#/vault?itemId=123e4567-e89b-12d3-a456-426614174000';
   await page.getByLabel('Ссылка Bitwarden').fill(externalUrl);
   await page.getByRole('button', { name: 'Сохранить запись' }).click();
 

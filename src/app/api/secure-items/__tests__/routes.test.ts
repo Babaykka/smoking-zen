@@ -8,6 +8,7 @@ import { createSecureItemsHandler } from '@/app/api/secure-items/route';
 import { ConflictError, RestoreExpiredError } from '@/data/workspace-repository';
 import {
   safeSafeUrlFixtures,
+  unsafePersistedUrlTextFixtures,
   unsafeSafeTextFixtures,
   unsafeSafeUrlFixtures,
 } from '@/domain/__tests__/safe-content-fixtures';
@@ -49,7 +50,7 @@ const validInput = {
   cardHolder: summary.cardHolder,
   cardPurpose: summary.cardPurpose,
   lastFour: summary.lastFour,
-  externalUrl: 'https://vault.bitwarden.com/#/items/example',
+  externalUrl: 'https://vault.bitwarden.com/#/vault?itemId=123e4567-e89b-12d3-a456-426614174000',
 };
 
 function store(): SecureItemApiStore {
@@ -106,9 +107,9 @@ describe('secure-item routes', () => {
   });
 
   it.each([
-    'https://vault.bitwarden.com/#/items/example',
-    'https://vault.bitwarden.eu/#/items/example',
-    'https://vault.example.org/#/items/example',
+    'https://vault.bitwarden.com',
+    'https://vault.bitwarden.eu/?itemId=123e4567-e89b-12d3-a456-426614174000',
+    'https://vault.example.org/#/vault?itemId=123e4567-e89b-12d3-a456-426614174000',
   ])('creates fixed metadata for an exact allowed origin without returning the URL: %s', async (externalUrl) => {
     const secureStore = store();
     const handler = createSecureItemsHandler(dependencies(secureStore));
@@ -181,6 +182,16 @@ describe('secure-item routes', () => {
       }), { params: Promise.resolve({ id: itemId }) });
       expect(updated.status).toBe(400);
       expect(secureStore.updateSecureItem).not.toHaveBeenCalled();
+    },
+  );
+
+  it.each(unsafePersistedUrlTextFixtures)(
+    'returns stable 400 for an unsafe persisted URL in a Safe summary: %s', async (purpose) => {
+      const secureStore = store();
+      const collection = createSecureItemsHandler(dependencies(secureStore));
+      const created = await collection(request('https://app.example/api/secure-items', 'POST', { ...validInput, purpose }));
+      expect(created.status).toBe(400);
+      expect(secureStore.createSecureItem).not.toHaveBeenCalled();
     },
   );
 

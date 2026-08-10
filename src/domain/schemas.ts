@@ -19,11 +19,13 @@ const idSchema = (label: string) => z
   .max(200, `${label} слишком длинное.`);
 
 const nullableIdSchema = idSchema('Значение').nullable().optional();
-const optionalTextSchema = z.string({ error: 'Заметка должна быть текстом.' }).trim().max(10_000, 'Заметка слишком длинная.').optional();
 const SAFE_SCAN_ZERO_WIDTH = /[\u200b\u200c\u200d\u2060\ufeff]/gu;
 const SAFE_SCAN_SEPARATORS = /[\p{Pd}+:\/_\.=]+/gu;
 const SAFE_SCAN_WHITESPACE = /[\u0009-\u000d\u0020\u00a0\u1680\u2000-\u200a\u2028\u2029\u202f\u205f\u3000]+/gu;
 const SAFE_URL_RAW_WHITESPACE = /[\u0009-\u000d\u0020\u00a0\u1680\u2000-\u200a\u2028\u2029\u202f\u205f\u3000\ufeff]/u;
+const UNSAFE_URL_CODE_POINT = /[\u0000-\u0020\u007f-\u009f\u00a0\u1680\u2000-\u200a\u2028\u2029\u202f\u205f\u3000\ufeff]/u;
+const PERSISTED_URL_TOKEN = /https?:\/\/[^\u0009-\u000d\u0020<>"']*/giu;
+const PERSISTED_HTTPS_URL = /^https:\/\/[A-Za-z0-9](?:[A-Za-z0-9.-]*[A-Za-z0-9])?(?:\/[^?#]*)?$/iu;
 const secretLikeText = /(?:^|[^\p{L}\p{N}])(?:password|passphrase|secret|token|credential|pin|cvv|cvc|otp|confirmation(?:[ /]+code)?|пароль|секрет|токен|пин|(?:код[ /]*)?подтвержден\p{L}*)(?:(?: *\/+ *)\S+| +(?=\S*(?:\d|[/~]))\S+)/iu;
 const completeCardLikeText = /\d(?:[ /]*\d){12,18}/u;
 
@@ -46,10 +48,62 @@ export function containsSecretLikeText(value: string): boolean {
   return secretLikeText.test(scanned) || completeCardLikeText.test(scanned);
 }
 
-const safeFreeText = (schema: z.ZodString) => schema.refine(
-  (value) => !containsSecretLikeText(value),
-  'Секретные данные и реквизиты карт хранить нельзя.',
-);
+function boundedPercentDecode(value: string): string | null {
+  let current = value;
+  for (let pass = 0; pass < 8; pass += 1) {
+    let next: string;
+    try {
+      next = decodeURIComponent(current);
+    } catch {
+      return null;
+    }
+    if (next === current) return current;
+    current = next;
+  }
+  return null;
+}
+
+function isOpaquePathToken(value: string): boolean {
+  if (/^[a-f0-9]{48,}$/iu.test(value)) return true;
+  return value.length >= 64
+    && /^[A-Za-z0-9_-]+$/u.test(value)
+    && new Set(value).size >= 12;
+}
+
+function hasUnsafePathToken(url: URL): boolean {
+  return url.pathname.split('/').some((rawSegment) => {
+    const decoded = boundedPercentDecode(rawSegment);
+    if (decoded === null || /[?#]/u.test(decoded) || UNSAFE_URL_CODE_POINT.test(decoded)) return true;
+    return decoded.split('/').some(isOpaquePathToken);
+  });
+}
+
+export function isSafePersistedHttpsUrl(value: string): boolean {
+  if (value.length > 2_000 || UNSAFE_URL_CODE_POINT.test(value) || !PERSISTED_HTTPS_URL.test(value)) return false;
+  try {
+    const url = new URL(value);
+    return url.protocol === 'https:' && !url.username && !url.password && !url.search && !url.hash
+      && !hasUnsafePathToken(url);
+  } catch {
+    return false;
+  }
+}
+
+function containsUnsafePersistedUrl(value: string): boolean {
+  for (const match of value.matchAll(PERSISTED_URL_TOKEN)) {
+    const candidate = (match[0] ?? '').replace(/[),.;:!\]}]+$/gu, '');
+    if (!isSafePersistedHttpsUrl(candidate)) return true;
+  }
+  return false;
+}
+
+const safeFreeText = (schema: z.ZodString) => schema
+  .refine((value) => !containsSecretLikeText(value), 'Секретные данные и реквизиты карт хранить нельзя.')
+  .refine((value) => !containsUnsafePersistedUrl(value), 'Ссылки с доступом, параметрами или закрытыми токенами хранить нельзя.');
+
+const optionalTextSchema = safeFreeText(
+  z.string({ error: 'Заметка должна быть текстом.' }).trim().max(10_000, 'Заметка слишком длинная.'),
+).optional();
 
 function passesLuhn(value: string): boolean {
   let sum = 0;
@@ -74,13 +128,7 @@ function containsContactSecret(kind: ContactMethodKind, value: string): boolean 
 }
 
 const safeKnowledgeUrlSchema = z.string({ error: 'Укажите корректную HTTPS-ссылку.' }).trim().max(2_000, 'Ссылка слишком длинная.').refine((value) => {
-  try {
-    const url = new URL(value);
-    return url.protocol === 'https:' && !url.username && !url.password &&
-      [...url.searchParams.keys()].every((key) => !/(?:token|signature|credential|secret|password|x-amz-)/iu.test(key));
-  } catch {
-    return false;
-  }
+  return isSafePersistedHttpsUrl(value);
 }, 'Укажите корректную HTTPS-ссылку.');
 
 function normalizeContactMethod(kind: ContactMethodKind, value: string): string | null {
@@ -102,12 +150,13 @@ export const attachmentInputSchema = z
     name: z.string({ error: 'Название файла должно быть текстом.' }).trim().min(1, 'Введите название файла.').max(255, 'Название файла слишком длинное.'),
     mimeType: z.string({ error: 'Тип файла должен быть текстом.' }).trim().min(1, 'Укажите тип файла.').max(200, 'Тип файла слишком длинный.'),
     size: z.number({ error: 'Размер файла должен быть числом.' }).int('Размер файла должен быть целым числом.').positive('Файл не может быть пустым.').max(MAX_ATTACHMENT_BYTES, 'Размер файла не должен превышать 25 МиБ.'),
+    version: z.number({ error: 'Версия файла должна быть числом.' }).int().positive().default(1),
   }, { error: 'Вложение должно быть объектом.' })
   .strict();
 
 export const taskInputSchema = z
   .object({
-    title: z.string({ error: 'Название задачи должно быть текстом.' }).trim().min(1, 'Введите название задачи.').max(280, 'Название задачи слишком длинное.').refine((value) => !containsSecretLikeText(value), 'Секретные данные и реквизиты карт хранить нельзя.'),
+    title: safeFreeText(z.string({ error: 'Название задачи должно быть текстом.' }).trim().min(1, 'Введите название задачи.').max(280, 'Название задачи слишком длинное.')),
     description: safeFreeText(z.string({ error: 'Описание задачи должно быть текстом.' }).trim().max(20_000, 'Описание задачи слишком длинное.')).default(''),
     priority: prioritySchema.default(3),
     statusId: idSchema('Статус').optional(),
@@ -120,7 +169,7 @@ export const taskInputSchema = z
 
 export const taskPatchSchema = z
   .object({
-    title: z.string({ error: 'Название задачи должно быть текстом.' }).trim().min(1, 'Введите название задачи.').max(280, 'Название задачи слишком длинное.').refine((value) => !containsSecretLikeText(value), 'Секретные данные и реквизиты карт хранить нельзя.').optional(),
+    title: safeFreeText(z.string({ error: 'Название задачи должно быть текстом.' }).trim().min(1, 'Введите название задачи.').max(280, 'Название задачи слишком длинное.')).optional(),
     description: safeFreeText(z.string({ error: 'Описание задачи должно быть текстом.' }).trim().max(20_000, 'Описание задачи слишком длинное.')).optional(),
     priority: prioritySchema.optional(),
     statusId: idSchema('Статус').optional(),
@@ -207,7 +256,7 @@ export const contactInputSchema = z
       ContactCategory,
       ...ContactCategory[],
     ], { error: 'Выберите категорию контакта.' }).default('other'),
-    notes: optionalTextSchema.refine((value) => value === undefined || !containsSecretLikeText(value), 'Секретные данные и реквизиты карт хранить нельзя.').default(''),
+    notes: optionalTextSchema.default(''),
     methods: z.array(contactMethodSchema, { error: 'Способы связи должны быть списком.' }).min(1, 'Добавьте хотя бы один способ связи.').max(10, 'Можно добавить не более 10 способов связи.'),
   }, { error: 'Контакт должен быть объектом.' })
   .strict();
@@ -215,12 +264,14 @@ export const contactInputSchema = z
 export const contactPatchSchema = z.object({
   name: safeFreeText(z.string({ error: 'Имя контакта должно быть текстом.' }).trim().min(1, 'Введите имя контакта.').max(280, 'Имя контакта слишком длинное.')).optional(),
   category: z.enum(['supplier', 'service', 'landlord', 'cleaning', 'other'] satisfies [ContactCategory, ...ContactCategory[]], { error: 'Выберите категорию контакта.' }).optional(),
-  notes: optionalTextSchema.refine((value) => value === undefined || !containsSecretLikeText(value), 'Секретные данные и реквизиты карт хранить нельзя.'),
+  notes: optionalTextSchema,
   methods: z.array(contactMethodSchema, { error: 'Способы связи должны быть списком.' }).min(1, 'Добавьте хотя бы один способ связи.').max(10, 'Можно добавить не более 10 способов связи.').optional(),
 }, { error: 'Изменения контакта должны быть объектом.' }).strict();
 
 const BUILTIN_BITWARDEN_ORIGINS = ['https://vault.bitwarden.com', 'https://vault.bitwarden.eu'] as const;
-const secretQueryKey = /(?:token|signature|credential|secret|password|passphrase|pin|cvv|cvc|otp|confirmation|x-amz-)/iu;
+const BITWARDEN_ITEM_ID = '[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}';
+const BITWARDEN_ROOT_ITEM = new RegExp(`^\\?itemId=${BITWARDEN_ITEM_ID}$`, 'iu');
+const BITWARDEN_HASH_ITEM = new RegExp(`^#/vault\\?itemId=${BITWARDEN_ITEM_ID}$`, 'iu');
 
 function allowedBitwardenOrigins(selfHostedOrigins: readonly string[]): Set<string> {
   const origins = new Set<string>(BUILTIN_BITWARDEN_ORIGINS);
@@ -238,47 +289,16 @@ function allowedBitwardenOrigins(selfHostedOrigins: readonly string[]): Set<stri
   return origins;
 }
 
-function decodeUrlComponent(value: string): string | null {
-  let decoded = value;
-  try {
-    for (let pass = 0; pass < 8; pass += 1) {
-      const next = decodeURIComponent(decoded);
-      if (next === decoded) return decoded;
-      decoded = next;
-    }
-    return null;
-  } catch {
-    return null;
-  }
-}
-
-function containsUrlSecret(value: string): boolean {
-  const withoutLegitimateUuid = normalizeSafeText(value).replace(
-    /[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}/giu,
-    '',
-  );
-  return containsSecretLikeText(withoutLegitimateUuid);
-}
-
 export function isAllowedBitwardenUrl(value: string, selfHostedOrigins: readonly string[] = []): boolean {
   if (SAFE_URL_RAW_WHITESPACE.test(value)) return false;
   const origins = allowedBitwardenOrigins(selfHostedOrigins);
   try {
     const url = new URL(value);
     if (url.protocol !== 'https:' || url.username || url.password || url.port || !origins.has(url.origin)) return false;
-    const pathname = decodeUrlComponent(url.pathname);
-    const fragment = decodeUrlComponent(url.hash.slice(1));
-    if (pathname === null || fragment === null || containsUrlSecret(pathname) || containsUrlSecret(fragment)) return false;
-    const decodedQuery = decodeUrlComponent(url.search.slice(1));
-    if (decodedQuery === null) return false;
-    return (decodedQuery === '' ? [] : decodedQuery.split('&')).every((entry) => {
-      const separator = entry.indexOf('=');
-      const key = separator === -1 ? entry : entry.slice(0, separator);
-      const queryValue = separator === -1 ? '' : entry.slice(separator + 1);
-      return !secretQueryKey.test(normalizeSafeText(key))
-        && !containsUrlSecret(key)
-        && !containsUrlSecret(queryValue);
-    });
+    if (url.pathname !== '/') return false;
+    if (!url.search && !url.hash) return true;
+    if (url.search && !url.hash) return BITWARDEN_ROOT_ITEM.test(url.search);
+    return !url.search && BITWARDEN_HASH_ITEM.test(url.hash);
   } catch {
     return false;
   }

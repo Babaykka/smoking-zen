@@ -11,8 +11,10 @@ import {
 } from 'react';
 
 import { ConflictError } from '@/data/workspace-repository';
+import { AuditHistory } from '@/components/audit-history';
 import type { SecureItemInput, SecureItemPatchInput } from '@/domain/schemas';
 import type { SecureItemSummary } from '@/domain/types';
+import { useTelegramBackButton } from '@/lib/use-telegram-back-button';
 import { useWorkspace } from '@/providers/workspace-provider';
 
 type SafeDraft = {
@@ -128,6 +130,7 @@ export function SecureItemsWorkspace() {
     setError('');
     restoreOpenerFocus();
   };
+  useTelegramBackButton(editing !== null && operation === null, close);
 
   const save = async (event: FormEvent) => {
     event.preventDefault();
@@ -286,6 +289,7 @@ export function SecureItemsWorkspace() {
             <label>Ссылка Bitwarden<input autoCapitalize="none" onChange={(event) => setDraft({ ...draft, externalUrl: event.target.value })} placeholder={editing === 'new' ? 'https://vault.bitwarden.com/…' : 'Оставьте пустым, чтобы не менять'} spellCheck={false} type="url" value={draft.externalUrl} /></label>
             <p className="safe-editor__hint">Пароли, PIN, CVV, OTP и полные номера карт здесь не сохраняются.</p>
             <div className="safe-editor__actions"><button className="task-primary-button" disabled={operation !== null} type="submit">Сохранить запись</button>{editing !== 'new' && <button className="task-secondary-button" disabled={operation !== null} onClick={() => void remove()} type="button">Архивировать</button>}</div>
+            {editing !== 'new' && <AuditHistory entity="secureItem" entityId={editing.id} events={snapshot.auditEvents} label="История записи" />}
             {error && <p className="workspace-error" role="alert">{error}</p>}
           </form>
         </aside>

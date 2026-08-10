@@ -14,10 +14,12 @@ import { KnowledgeWorkspace } from '@/features/knowledge/knowledge-workspace';
 import { PeopleWorkspace } from '@/features/people/people-workspace';
 import { GlobalSearch } from '@/features/search/global-search';
 import { SecureItemsWorkspace } from '@/features/secure-items/secure-items-workspace';
+import { TrashWorkspace } from '@/features/trash/trash-workspace';
 import type { SearchNavigationTarget, SearchResult, WorkspaceSnapshot } from '@/domain/types';
+import { getTelegramInitData, initializeTelegramWebApp } from '@/lib/telegram-web-app';
 import { WorkspaceProvider } from '@/providers/workspace-provider';
 
-export type BrowserProductionConfig = { supabaseUrl: string; supabasePublishableKey: string };
+export type BrowserProductionConfig = { supabaseUrl: string; supabasePublishableKey: string; telegramLaunchUrl?: string };
 type ProductionRealtimeClient = WorkspaceRealtimeClient & { realtime: { setAuth(token: string): void | Promise<void> } };
 
 type WorkspaceBootstrapProps = {
@@ -31,6 +33,7 @@ type WorkspaceBootstrapProps = {
 const viewTitles: Record<ViewKey, string> = {
   today: 'Сегодня', tasks: 'Задачи', knowledge: 'База знаний', people: 'Люди',
   safe: 'Сейф',
+  trash: 'Корзина',
 };
 
 function defaultDemoGatewayFactory() {
@@ -66,10 +69,24 @@ function taskLaunchFromSession(value: unknown): string | null {
     : null;
 }
 
-function WorkspaceApplication({ gateway, mode, launchTaskId }: {
+function membershipIdFromSession(value: unknown): string | null {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return null;
+  const data = (value as Record<string, unknown>).data;
+  if (!data || typeof data !== 'object' || Array.isArray(data)) return null;
+  const membership = (data as Record<string, unknown>).membership;
+  if (!membership || typeof membership !== 'object' || Array.isArray(membership)) return null;
+  const membershipId = (membership as Record<string, unknown>).membershipId;
+  return typeof membershipId === 'string'
+    && /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/iu.test(membershipId)
+    ? membershipId
+    : null;
+}
+
+function WorkspaceApplication({ gateway, mode, launchTaskId, currentMemberId }: {
   gateway: WorkspaceGateway;
   mode: 'demo' | 'production';
   launchTaskId: string | null;
+  currentMemberId: string | null;
 }) {
   const [activeView, setActiveView] = useState<ViewKey>(launchTaskId ? 'tasks' : 'today');
   const [pendingLaunchTaskId, setPendingLaunchTaskId] = useState(launchTaskId);
@@ -85,7 +102,7 @@ function WorkspaceApplication({ gateway, mode, launchTaskId }: {
   }, []);
   const navigate = (view: ViewKey) => { setSearchTarget(null); setActiveView(view); };
   return (
-    <WorkspaceProvider gateway={gateway}>
+    <WorkspaceProvider currentMemberId={currentMemberId} gateway={gateway}>
       <AppShell activeView={activeView} onCreate={() => setCreateRequest((value) => value + 1)} onNavigate={navigate}>
         {mode === 'demo' && <div className="demo-banner" role="status">Демо-режим: рабочие данные не подключены.</div>}
         <GlobalSearch onOpen={openSearchResult} />
@@ -104,6 +121,8 @@ function WorkspaceApplication({ gateway, mode, launchTaskId }: {
           <PeopleWorkspace onSearchTargetConsumed={consumeSearchTarget} searchTarget={searchTarget?.entity === 'contact' ? searchTarget : undefined} />
         ) : activeView === 'safe' ? (
           <SecureItemsWorkspace />
+        ) : activeView === 'trash' ? (
+          <TrashWorkspace />
         ) : (
           <section aria-labelledby="view-title" className="workspace-loading">
             <p className="workspace-loading__eyebrow">Smoking Zen</p>
@@ -123,11 +142,14 @@ export function WorkspaceBootstrap({
   demoGatewayFactory = defaultDemoGatewayFactory,
   realtimeClientFactory = defaultRealtimeClientFactory,
 }: WorkspaceBootstrapProps) {
-  const [state, setState] = useState<{ gateway: WorkspaceGateway | null; error: string | null; launchTaskId: string | null }>(() => ({
+  const [state, setState] = useState<{ gateway: WorkspaceGateway | null; error: string | null; launchTaskId: string | null; currentMemberId: string | null }>(() => ({
     gateway: mode === 'demo' ? demoGatewayFactory() : null,
     error: null,
     launchTaskId: null,
+    currentMemberId: mode === 'demo' ? 'member-owner' : null,
   }));
+
+  useEffect(() => initializeTelegramWebApp(), []);
 
   useEffect(() => {
     if (mode === 'demo') return;
@@ -156,13 +178,13 @@ export function WorkspaceBootstrap({
     void (async () => {
       await Promise.resolve();
       if (stopIfInactive()) return;
-      const initData = (window as typeof window & { Telegram?: { WebApp?: { initData?: string } } }).Telegram?.WebApp?.initData;
+      const initData = getTelegramInitData();
       if (!initData) {
-        if (active) setState({ gateway: null, error: 'Откройте приложение в Telegram для безопасного входа.', launchTaskId: null });
+        if (active) setState({ gateway: null, error: 'Откройте приложение в Telegram для безопасного входа.', launchTaskId: null, currentMemberId: null });
         return;
       }
       if (!productionConfig) {
-        if (active) setState({ gateway: null, error: 'Сервис временно недоступен.', launchTaskId: null });
+        if (active) setState({ gateway: null, error: 'Сервис временно недоступен.', launchTaskId: null, currentMemberId: null });
         return;
       }
 
@@ -177,6 +199,7 @@ export function WorkspaceBootstrap({
         const sessionPayload: unknown = await sessionResponse.json();
         if (stopIfInactive()) return;
         const launchTaskId = taskLaunchFromSession(sessionPayload);
+        const currentMemberId = membershipIdFromSession(sessionPayload);
 
         let realtimeClient: ProductionRealtimeClient | null = null;
         tokenManager = createRealtimeTokenManager({
@@ -199,11 +222,11 @@ export function WorkspaceBootstrap({
         });
         await gateway.hydrate();
         if (stopIfInactive()) return;
-        if (active) setState({ gateway, error: null, launchTaskId });
+        if (active) setState({ gateway, error: null, launchTaskId, currentMemberId });
       } catch (error) {
         if (!active || controller.signal.aborted) return;
         disposeResources();
-        setState({ gateway: null, error: error instanceof Error ? error.message : 'Сервис временно недоступен.', launchTaskId: null });
+        setState({ gateway: null, error: error instanceof Error ? error.message : 'Сервис временно недоступен.', launchTaskId: null, currentMemberId: null });
       }
     })();
 
@@ -213,7 +236,7 @@ export function WorkspaceBootstrap({
     };
   }, [fetcher, mode, productionConfig, realtimeClientFactory]);
 
-  if (state.error) return <main className="bootstrap-state"><p role="alert">{state.error}</p></main>;
-  if (!state.gateway) return <main className="bootstrap-state"><p role="status">Подключаем рабочее пространство…</p></main>;
-  return <WorkspaceApplication gateway={state.gateway} launchTaskId={state.launchTaskId} mode={mode} />;
+  if (state.error) return <main className="bootstrap-state"><p role="alert">{state.error}</p>{state.error.includes('Telegram') && productionConfig?.telegramLaunchUrl && <a href={productionConfig.telegramLaunchUrl} rel="noopener noreferrer">Открыть в Telegram</a>}</main>;
+  if (!state.gateway) return <main aria-busy="true" className="bootstrap-state"><p role="status">Подключаем рабочее пространство…</p></main>;
+  return <WorkspaceApplication currentMemberId={state.currentMemberId} gateway={state.gateway} launchTaskId={state.launchTaskId} mode={mode} />;
 }

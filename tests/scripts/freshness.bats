@@ -18,7 +18,7 @@ make_manifest() {
   local base="$FAKE_REMOTE_ROOT/$BACKUP_TARGET_BUCKET/$BACKUP_TARGET_PREFIX/$snapshot"
   mkdir -p "$base"
   local instant="${snapshot:0:4}-${snapshot:4:2}-${snapshot:6:2}T${snapshot:9:2}:${snapshot:11:2}:${snapshot:13:2}.000Z"
-  printf '{"schemaVersion":2,"snapshotId":"%s","sourceProjectRef":"%s","schemaRevision":"0017","startedAt":"%s","oldestCaptureAt":"%s","completedAt":"%s","database":{"bytes":1,"sha256":"%064d","tocEntries":1,"serverMajor":18,"serverVersionNum":180004,"clientMajor":18,"clientVersion":"18.4","rowCounts":{"appUsers":1,"workspaces":1,"memberships":1,"tasks":0,"knowledgeItems":0,"contacts":0,"attachments":0}},"storage":{"count":0,"bytes":0,"checksumFileSha256":"%064d"}}\n' \
+  printf '{"schemaVersion":2,"snapshotId":"%s","sourceProjectRef":"%s","schemaRevision":"0019","startedAt":"%s","oldestCaptureAt":"%s","completedAt":"%s","database":{"bytes":1,"sha256":"%064d","tocEntries":1,"serverMajor":18,"serverVersionNum":180004,"clientMajor":18,"clientVersion":"18.4","rowCounts":{"appUsers":1,"workspaces":1,"memberships":1,"tasks":0,"knowledgeItems":0,"contacts":0,"attachments":0}},"storage":{"count":0,"bytes":0,"checksumFileSha256":"%064d"}}\n' \
     "$snapshot" "$source_ref" "$instant" "$instant" "$instant" 0 0 > "$base/manifest.json"
 }
 

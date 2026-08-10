@@ -7,20 +7,25 @@
   },
   "scripts": {
     "dev": "next dev",
+    "start": "next start",
     "build": "next build",
     "lint": "eslint .",
     "typecheck": "tsc --noEmit",
     "test": "vitest run",
     "test:e2e": "playwright test",
+    "test:e2e:production": "playwright test --config=playwright.production.config.ts",
     "test:scripts": "bats tests/scripts/*.bats",
     "lint:shell": "shellcheck scripts/*.sh tests/scripts/test_helper.bash tests/scripts/*.bats"
   },
   "dependencies": {
     "@supabase/supabase-js": "^2.111.0",
+    "fast-xml-parser": "5.10.1",
     "file-type": "^22.0.1",
     "jose": "^6.2.6",
     "lucide-react": "^0.468.0",
     "next": "^16.0.7",
+    "pdf-lib": "1.17.1",
+    "pdfjs-dist": "6.2.108",
     "react": "^19.0.0",
     "react-dom": "^19.0.0",
     "server-only": "^0.0.1",
@@ -29,6 +34,7 @@
     "zod": "^4.4.3"
   },
   "devDependencies": {
+    "@axe-core/playwright": "^4.12.1",
     "@electric-sql/pglite": "^0.5.4",
     "@playwright/test": "^1.50.1",
     "@testing-library/jest-dom": "6.9.1",

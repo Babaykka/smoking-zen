@@ -6,27 +6,39 @@ import { createDemoGateway } from '@/data/workspace-gateway';
 import { demoSeed } from '@/data/demo-seed';
 import { ConflictError, type WorkspaceRepository } from '@/data/workspace-repository';
 import type { Task } from '@/domain/types';
-import { TaskWorkspace } from '@/features/tasks/task-workspace';
+import { groupTodayTasks, TaskWorkspace } from '@/features/tasks/task-workspace';
 import { WorkspaceProvider } from '@/providers/workspace-provider';
 
 afterEach(() => window.localStorage.clear());
 
-function renderWorkspace(repository: WorkspaceRepository, props: Partial<React.ComponentProps<typeof TaskWorkspace>> = {}) {
+function renderWorkspace(repository: WorkspaceRepository, props: Partial<React.ComponentProps<typeof TaskWorkspace>> = {}, currentMemberId = 'member-owner') {
   return render(
-    <WorkspaceProvider gateway={createDemoGateway(repository)}>
+    <WorkspaceProvider currentMemberId={currentMemberId} gateway={createDemoGateway(repository)}>
       <TaskWorkspace activeView="tasks" createRequest={0} {...props} />
     </WorkspaceProvider>,
   );
 }
 
 describe('TaskWorkspace', () => {
+  it('keeps advanced filters behind an explicit mobile disclosure while preserving desktop controls', () => {
+    renderWorkspace(createDemoRepository({ loadPersisted: false }));
+    const toggle = screen.getByRole('button', { name: 'Фильтры задач' });
+    const filters = document.getElementById('task-filters');
+    expect(filters).not.toBeNull();
+
+    expect(toggle).toHaveAttribute('aria-expanded', 'false');
+    expect(filters!).toHaveAttribute('data-expanded', 'false');
+    fireEvent.click(toggle);
+    expect(toggle).toHaveAttribute('aria-expanded', 'true');
+    expect(filters!).toHaveAttribute('data-expanded', 'true');
+  });
   it('creates a task from only a title with P3 and rejects an empty title', async () => {
     const repository = createDemoRepository({ seed: { ...demoSeed, tasks: [] }, loadPersisted: false });
     const { rerender } = renderWorkspace(repository);
 
     fireEvent.click(screen.getByRole('button', { name: 'Быстрая задача' }));
     fireEvent.submit(screen.getByRole('form', { name: 'Быстрое создание задачи' }));
-    expect(await screen.findByRole('alert')).toHaveTextContent('Введите название задачи.');
+    expect(await screen.findByRole('alert')).toHaveTextContent(/^Введите название задачи\.$/);
 
     fireEvent.change(screen.getByLabelText('Название задачи'), { target: { value: 'Заказать мяту' } });
     fireEvent.submit(screen.getByRole('form', { name: 'Быстрое создание задачи' }));
@@ -77,6 +89,184 @@ describe('TaskWorkspace', () => {
       expect.stringContaining('Срочная без исполнителя'),
       expect.stringContaining('Недавняя'),
     ]);
+    expect(screen.getByRole('heading', { name: 'Просрочено' })).toBeInTheDocument();
+    expect(screen.getByRole('heading', { name: 'На сегодня' })).toBeInTheDocument();
+    expect(screen.getByRole('heading', { name: 'P1/P2 без исполнителя' })).toBeInTheDocument();
+    expect(screen.getByRole('heading', { name: 'Последние изменения' })).toBeInTheDocument();
+  });
+
+  it('keeps only the five newest ordinary tasks in Today recent activity', () => {
+    const base = demoSeed.tasks[0]!;
+    const recent = Array.from({ length: 8 }, (_, index) => ({
+      ...base,
+      id: `recent-${index}`,
+      title: `Недавняя ${index}`,
+      priority: 4 as const,
+      assigneeId: 'member-owner',
+      dueAt: null,
+      updatedAt: `2026-08-02T${String(index + 1).padStart(2, '0')}:00:00.000Z`,
+    }));
+
+    const groups = groupTodayTasks(recent, new Date('2026-08-02T12:00:00.000Z'));
+
+    expect(groups.find((group) => group.key === 'recent')?.tasks.map((task) => task.id)).toEqual([
+      'recent-7', 'recent-6', 'recent-5', 'recent-4', 'recent-3',
+    ]);
+    expect(groups.slice(0, 3).every((group) => group.tasks.length === 0)).toBe(true);
+  });
+
+  it('provides the exact task views and resolves “Мои” from authenticated member context', () => {
+    const base = demoSeed.tasks[0]!;
+    const repository = createDemoRepository({
+      loadPersisted: false,
+      seed: {
+        ...demoSeed,
+        tasks: [
+          { ...base, id: 'mine', title: 'Моя задача', assigneeId: 'member-alina', dueAt: null },
+          { ...base, id: 'other', title: 'Чужая задача', assigneeId: 'member-owner', dueAt: null },
+          { ...base, id: 'unassigned', title: 'Без исполнителя', assigneeId: null, dueAt: null },
+          { ...base, id: 'overdue-view', title: 'Просроченная для вида', assigneeId: null, dueAt: '2026-08-01T10:00:00.000Z' },
+        ],
+      },
+    });
+    renderWorkspace(repository, { now: new Date('2026-08-02T12:00:00.000Z') }, 'member-alina');
+
+    for (const name of ['Мои', 'Сегодня', 'Просрочено', 'Без исполнителя', 'Все']) {
+      expect(screen.getByRole('button', { name })).toBeInTheDocument();
+    }
+    fireEvent.click(screen.getByRole('button', { name: 'Мои' }));
+    expect(screen.getByText('Моя задача')).toBeInTheDocument();
+    expect(screen.queryByText('Чужая задача')).not.toBeInTheDocument();
+    fireEvent.click(screen.getByRole('button', { name: 'Без исполнителя' }));
+    expect(screen.getByRole('button', { name: 'Открыть задачу Без исполнителя' })).toBeInTheDocument();
+    expect(screen.getByText('Просроченная для вида')).toBeInTheDocument();
+    fireEvent.click(screen.getByRole('button', { name: 'Просрочено' }));
+    expect(screen.getByText('Просроченная для вида')).toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: 'Открыть задачу Без исполнителя' })).not.toBeInTheDocument();
+  });
+
+  it('combines assignee, status, priority, deadline, and section filters and can reveal completed tasks', () => {
+    const base = demoSeed.tasks[0]!;
+    const repository = createDemoRepository({
+      loadPersisted: false,
+      seed: {
+        ...demoSeed,
+        tasks: [
+          { ...base, id: 'match', title: 'Полное совпадение', priority: 2, assigneeId: null, sectionId: 'section-service', statusId: 'status-in-progress', dueAt: null },
+          { ...base, id: 'done', title: 'Завершённая', priority: 2, assigneeId: null, sectionId: 'section-service', statusId: 'status-done', dueAt: null },
+          { ...base, id: 'wrong', title: 'Не совпадает', priority: 1, assigneeId: 'member-owner', sectionId: 'section-stock', statusId: 'status-new', dueAt: '2026-08-02T10:00:00.000Z' },
+        ],
+      },
+    });
+    renderWorkspace(repository);
+
+    fireEvent.change(screen.getByLabelText('Фильтр по исполнителю'), { target: { value: 'unassigned' } });
+    fireEvent.change(screen.getByLabelText('Фильтр по сроку'), { target: { value: 'no-deadline' } });
+    fireEvent.change(screen.getByLabelText('Фильтр по разделу'), { target: { value: 'section-service' } });
+    fireEvent.click(screen.getByRole('button', { name: 'P2' }));
+    fireEvent.click(screen.getByRole('button', { name: 'В работе' }));
+
+    expect(screen.getByText('Полное совпадение')).toBeInTheDocument();
+    expect(screen.queryByText('Не совпадает')).not.toBeInTheDocument();
+    expect(screen.queryByText('Завершённая')).not.toBeInTheDocument();
+    fireEvent.click(screen.getByRole('checkbox', { name: 'Показывать завершённые' }));
+    fireEvent.click(screen.getByRole('button', { name: 'В работе' }));
+    expect(screen.getByText('Завершённая')).toBeInTheDocument();
+  });
+
+  it('soft-deletes a task and exposes its immutable history', async () => {
+    const repository = createDemoRepository({ loadPersisted: false });
+    renderWorkspace(repository);
+    fireEvent.click(screen.getByRole('button', { name: /Открыть задачу Проверить запас/ }));
+
+    expect(screen.getByRole('heading', { name: 'История' })).toBeInTheDocument();
+    fireEvent.click(screen.getByRole('button', { name: 'Удалить задачу' }));
+
+    await waitFor(() => expect(screen.queryByText('Проверить запас кокосового угля')).not.toBeInTheDocument());
+    expect(repository.search('кокосового')).toEqual([]);
+  });
+
+  it('applies an explicit conflict retry once while preserving every draft field', async () => {
+    const repository = createDemoRepository({ loadPersisted: false });
+    const originalUpdate = repository.updateTask.bind(repository);
+    let first = true;
+    repository.updateTask = vi.fn((id, input, version) => {
+      if (first) {
+        first = false;
+        originalUpdate(id, { title: 'Изменено на другом устройстве' }, version);
+        throw new ConflictError(version, version + 1);
+      }
+      return originalUpdate(id, input, version);
+    });
+    renderWorkspace(repository);
+    fireEvent.click(screen.getByRole('button', { name: /Открыть задачу Проверить запас/ }));
+    fireEvent.change(screen.getByLabelText('Название'), { target: { value: 'Мой полный черновик' } });
+    fireEvent.change(screen.getByLabelText('Описание'), { target: { value: 'Все поля остаются' } });
+    fireEvent.change(screen.getByLabelText('Приоритет'), { target: { value: '5' } });
+    fireEvent.click(screen.getByRole('button', { name: 'Сохранить задачу' }));
+
+    expect(await screen.findByText(/Ваши данные сохранены/)).toBeInTheDocument();
+    expect(screen.getByLabelText('Название')).toHaveValue('Мой полный черновик');
+    fireEvent.click(screen.getByRole('button', { name: 'Повторить с моими данными' }));
+
+    await waitFor(() => expect(repository.snapshot().tasks[0]).toMatchObject({
+      title: 'Мой полный черновик', description: 'Все поля остаются', priority: 5, version: 3,
+    }));
+    expect(repository.updateTask).toHaveBeenCalledTimes(2);
+  });
+
+  it('loads an explicitly refreshed server task after a conflict without losing the local draft first', async () => {
+    const localRepository = createDemoRepository({ loadPersisted: false });
+    const original = localRepository.snapshot().tasks[0]!;
+    const remoteTask: Task = {
+      ...original,
+      title: 'Актуальная серверная версия',
+      description: 'Ответ с сервера',
+      priority: 2,
+      statusId: 'status-in-progress',
+      sectionId: 'section-service',
+      assigneeId: 'member-alina',
+      dueAt: '2026-08-06T10:00:00.000Z',
+      version: 2,
+    };
+    const gateway = {
+      ...createDemoGateway(localRepository),
+      updateTask: vi.fn().mockRejectedValue(new ConflictError(1, 2)),
+      refresh: vi.fn().mockResolvedValue({ ...localRepository.snapshot(), tasks: [remoteTask] }),
+    };
+    render(
+      <WorkspaceProvider gateway={gateway}>
+        <TaskWorkspace activeView="tasks" createRequest={0} />
+      </WorkspaceProvider>,
+    );
+    fireEvent.click(screen.getByRole('button', { name: /Открыть задачу Проверить запас/ }));
+    fireEvent.change(screen.getByLabelText('Название'), { target: { value: 'Мой локальный заголовок' } });
+    fireEvent.change(screen.getByLabelText('Описание'), { target: { value: 'Моё локальное описание' } });
+    fireEvent.change(screen.getByLabelText('Приоритет'), { target: { value: '5' } });
+    fireEvent.change(screen.getByLabelText('Статус'), { target: { value: 'status-waiting' } });
+    fireEvent.change(screen.getByLabelText('Исполнитель'), { target: { value: 'member-owner' } });
+    fireEvent.change(screen.getByLabelText('Раздел'), { target: { value: 'section-stock' } });
+    fireEvent.change(screen.getByLabelText('Срок'), { target: { value: '2026-08-05T15:30' } });
+    fireEvent.click(screen.getByRole('button', { name: 'Сохранить задачу' }));
+
+    expect(await screen.findByText(/Ваши данные сохранены/)).toBeInTheDocument();
+    expect(screen.getByLabelText('Название')).toHaveValue('Мой локальный заголовок');
+    expect(screen.getByLabelText('Описание')).toHaveValue('Моё локальное описание');
+    expect(screen.getByLabelText('Приоритет')).toHaveValue('5');
+    expect(screen.getByLabelText('Статус')).toHaveValue('status-waiting');
+    expect(screen.getByLabelText('Исполнитель')).toHaveValue('member-owner');
+    expect(screen.getByLabelText('Раздел')).toHaveValue('section-stock');
+    expect(screen.getByLabelText('Срок')).toHaveValue('2026-08-05T15:30');
+
+    fireEvent.click(screen.getByRole('button', { name: 'Загрузить актуальную версию' }));
+    await waitFor(() => expect(gateway.refresh).toHaveBeenCalledOnce());
+    await waitFor(() => expect(screen.getByLabelText('Название')).toHaveValue('Актуальная серверная версия'));
+    expect(screen.getByLabelText('Описание')).toHaveValue('Ответ с сервера');
+    expect(screen.getByLabelText('Приоритет')).toHaveValue('2');
+    expect(screen.getByLabelText('Статус')).toHaveValue('status-in-progress');
+    expect(screen.getByLabelText('Исполнитель')).toHaveValue('member-alina');
+    expect(screen.getByLabelText('Раздел')).toHaveValue('section-service');
+    expect(screen.getByLabelText('Срок')).toHaveValue('2026-08-06T13:00');
   });
 
   it('filters tasks by exact priority and status chips', () => {
@@ -116,7 +306,8 @@ describe('TaskWorkspace', () => {
     fireEvent.click(screen.getByRole('button', { name: 'Сохранить задачу' }));
 
     await waitFor(() => expect(repository.snapshot().tasks[0]).toMatchObject({ priority: 1, statusId: 'status-in-progress', assigneeId: 'member-owner' }));
-    expect(repository.snapshot().tasks[0]?.dueAt).toContain('2026-08-05T15:30');
+    expect(repository.snapshot().tasks[0]?.dueAt).toBe('2026-08-05T12:30:00.000Z');
+    expect(screen.getByLabelText('Срок')).toHaveValue('2026-08-05T15:30');
     const preview = screen.getByRole('region', { name: 'Предпросмотр описания' });
     expect(within(preview).getByRole('checkbox')).toBeChecked();
     expect(preview).toHaveTextContent('<script>alert(1)</script> важно');
@@ -158,7 +349,7 @@ describe('TaskWorkspace', () => {
     fireEvent.change(screen.getByLabelText('Название'), { target: { value: '   ' } });
     fireEvent.click(screen.getByRole('button', { name: 'Сохранить задачу' }));
 
-    expect(await screen.findByRole('alert')).toHaveTextContent('Введите название задачи.');
+    expect(await screen.findByRole('alert')).toHaveTextContent(/^Введите название задачи\.$/);
     expect(screen.getByLabelText('Название')).toHaveValue('   ');
     expect(repository.snapshot().tasks[0]?.title).toBe('Проверить запас кокосового угля');
   });
@@ -185,5 +376,21 @@ describe('TaskWorkspace', () => {
     );
     expect(await screen.findByLabelText('Название')).toHaveValue('Проверить запас кокосового угля');
     expect(consumed).toHaveBeenLastCalledWith(2);
+  });
+
+  it('moves focus into mobile details, closes on Escape, and restores the originating task card', async () => {
+    const repository = createDemoRepository({ loadPersisted: false });
+    renderWorkspace(repository);
+    const opener = screen.getByRole('button', { name: /Открыть задачу Проверить запас/ });
+
+    opener.focus();
+    fireEvent.click(opener);
+
+    const details = await screen.findByRole('complementary', { name: 'Детали задачи' });
+    await waitFor(() => expect(details).toHaveFocus());
+    fireEvent.keyDown(details, { key: 'Escape' });
+
+    await waitFor(() => expect(screen.queryByRole('complementary', { name: 'Детали задачи' })).not.toBeInTheDocument());
+    expect(opener).toHaveFocus();
   });
 });

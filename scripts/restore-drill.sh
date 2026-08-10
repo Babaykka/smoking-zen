@@ -11,7 +11,7 @@ SCRIPT_PARENT=.
 SCRIPT_DIR=$(CDPATH='' cd -- "$SCRIPT_PARENT" && pwd)
 PROJECT_DIR=$(CDPATH='' cd -- "$SCRIPT_DIR/.." && pwd)
 METADATA_HELPER="$SCRIPT_DIR/backup-metadata.mjs"
-ACL_HARDENING_FILE="$PROJECT_DIR/supabase/operations/restore_acl_0017.sql"
+ACL_HARDENING_FILE="$PROJECT_DIR/supabase/operations/restore_acl_0019.sql"
 SCRATCH=''
 
 cleanup() {

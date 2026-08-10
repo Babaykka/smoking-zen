@@ -1,8 +1,8 @@
 import { describe, expect, it } from 'vitest';
 
-import { matchesTaskFilter } from '@/domain/filters';
+import { matchesTaskFilter, type TaskFilter } from '@/domain/filters';
 import { searchWorkspace } from '@/domain/search';
-import type { Contact, KnowledgeItem, Task } from '@/domain/types';
+import type { Contact, KnowledgeItem, Task, TaskStatus } from '@/domain/types';
 
 const timestamps = {
   createdAt: '2026-08-01T09:00:00.000Z',
@@ -24,6 +24,23 @@ const task: Task = {
   dueAt: null,
   attachments: [],
 };
+
+const taskStatuses: TaskStatus[] = [
+  {
+    ...timestamps,
+    id: 'status-new',
+    name: 'Открыта',
+    position: 1,
+    isCompleted: false,
+  },
+  {
+    ...timestamps,
+    id: 'status-closed-custom',
+    name: 'Архивный финал',
+    position: 2,
+    isCompleted: true,
+  },
+];
 
 const knowledge: KnowledgeItem = {
   ...timestamps,
@@ -47,8 +64,40 @@ const contact: Contact = {
 
 describe('workspace filtering and search', () => {
   it('filters a task by its priority and active status', () => {
-    expect(matchesTaskFilter(task, { priorities: [2], statusIds: ['status-new'] })).toBe(true);
-    expect(matchesTaskFilter(task, { priorities: [3] })).toBe(false);
+    expect(matchesTaskFilter(task, { priorities: [2], statusIds: ['status-new'] }, taskStatuses)).toBe(true);
+    expect(matchesTaskFilter(task, { priorities: [3] }, taskStatuses)).toBe(false);
+  });
+
+  it('hides completed tasks by dictionary data unless completed visibility is enabled', () => {
+    const completed = { ...task, statusId: 'status-closed-custom' };
+
+    expect(matchesTaskFilter(completed, {}, taskStatuses)).toBe(false);
+    expect(matchesTaskFilter(completed, { includeCompleted: true }, taskStatuses)).toBe(true);
+    expect(matchesTaskFilter(task, {}, taskStatuses)).toBe(true);
+  });
+
+  it('combines assignee, section, priority, status, and Moscow deadline filters including null values', () => {
+    const now = new Date('2026-08-02T21:15:00.000Z');
+    const dueToday = {
+      ...task,
+      assigneeId: null,
+      sectionId: 'section-service',
+      priority: 1 as const,
+      dueAt: '2026-08-03T10:00:00.000Z',
+    };
+    const combined = {
+      priorities: [1],
+      statusIds: ['status-new'],
+      sectionIds: ['section-service'],
+      unassignedOnly: true,
+      deadline: 'today',
+      now,
+    } as TaskFilter;
+
+    expect(matchesTaskFilter(dueToday, combined, taskStatuses)).toBe(true);
+    expect(matchesTaskFilter({ ...dueToday, assigneeId: 'member-1' }, combined, taskStatuses)).toBe(false);
+    expect(matchesTaskFilter({ ...dueToday, dueAt: null }, combined, taskStatuses)).toBe(false);
+    expect(matchesTaskFilter({ ...dueToday, dueAt: null }, { deadline: 'no-deadline', now } as TaskFilter, taskStatuses)).toBe(true);
   });
 
   it('searches visible task, knowledge, and contact content only', () => {

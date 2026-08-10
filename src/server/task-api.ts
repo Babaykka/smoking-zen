@@ -4,7 +4,7 @@ import type { SupabaseClient } from '@supabase/supabase-js';
 
 import { ConflictError } from '@/data/workspace-repository';
 import type { CommentInput, TaskInput, TaskPatchInput } from '@/domain/schemas';
-import type { Attachment, Comment, Contact, ContactMethod, KnowledgeItem, Priority, Section, Task, TaskStatus, WorkspaceMember, WorkspaceSnapshot } from '@/domain/types';
+import type { Attachment, AuditEvent, Comment, Contact, ContactMethod, KnowledgeItem, Priority, Section, Task, TaskStatus, TrashItem, WorkspaceMember, WorkspaceSnapshot } from '@/domain/types';
 import { requireProductionEnvironment } from '@/server/env';
 import { readSessionCookie } from '@/server/http';
 import { isDatabaseVersionConflict, throwKnownRestoreDatabaseError } from '@/server/restore';
@@ -13,6 +13,13 @@ import { createServiceSupabaseClient, createSupabaseAccessStore } from '@/server
 import { SECURE_ITEM_SUMMARY_COLUMNS, secureItemSummaryFromRow } from '@/server/secure-item-api';
 
 export type TaskSessionActor = { userId: string; workspaceId: string; membershipId: string };
+
+export class CommentParentNotFoundError extends Error {
+  constructor() {
+    super('Задача для комментария не найдена.');
+    this.name = 'CommentParentNotFoundError';
+  }
+}
 
 export interface TaskApiStore {
   getWorkspaceData(workspaceId: string): Promise<WorkspaceSnapshot>;
@@ -98,7 +105,23 @@ function contactFromRow(value: unknown, methods: ContactMethod[]): Contact {
 
 function attachmentFromRow(value: unknown): Attachment {
   const row = value as Record<string, unknown>;
-  return { id: String(row.id), name: String(row.name), mimeType: String(row.mime_type), size: Number(row.size_bytes) };
+  return {
+    id: String(row.id), name: String(row.name), mimeType: String(row.mime_type), size: Number(row.size_bytes),
+    version: Number(row.version),
+  };
+}
+
+function auditEventFromRow(value: unknown): AuditEvent {
+  const row = value as Record<string, unknown>;
+  const rawEntity = String(row.entity_type);
+  const entity = rawEntity === 'secure_item' ? 'secureItem' : rawEntity;
+  if (!['task', 'comment', 'knowledge', 'contact', 'secureItem', 'attachment'].includes(entity)) {
+    throw new Error('Database operation failed.');
+  }
+  return {
+    id: String(row.id), workspaceId: String(row.workspace_id), entity: entity as AuditEvent['entity'],
+    entityId: String(row.entity_id), action: row.action as AuditEvent['action'], occurredAt: String(row.occurred_at),
+  };
 }
 
 function taskPatch(input: TaskPatchInput): Record<string, unknown> {
@@ -118,7 +141,7 @@ export function createSupabaseTaskStore(
   createActorClient: (actorUserId: string) => SupabaseClient = () => client,
 ): TaskApiStore {
   const readyAttachments = async (workspaceId: string, column: 'task_id' | 'knowledge_item_id', id: string): Promise<Attachment[]> => {
-    const result = await client.from('attachments').select('id,name,mime_type,size_bytes')
+    const result = await client.from('attachments').select('id,name,mime_type,size_bytes,version')
       .eq('workspace_id', workspaceId).eq(column, id).eq('state', 'ready').is('deleted_at', null).order('created_at') as DataResult;
     return (assertResult(result) as unknown[]).map(attachmentFromRow);
   };
@@ -136,11 +159,23 @@ export function createSupabaseTaskStore(
   return {
     async getWorkspaceData(workspaceId) {
       const visible = (table: string) => client.from(table).select('*').eq('workspace_id', workspaceId).is('deleted_at', null);
-      const [tasksResult, commentsResult, statusesResult, sectionsResult, membersResult, knowledgeResult, contactsResult, methodsResult, attachmentsResult, secureItemsResult] = await Promise.all([
+      const deleted = (table: string, columns = '*') => client.from(table).select(columns).eq('workspace_id', workspaceId).not('deleted_at', 'is', null);
+      const [
+        tasksResult, commentsResult, statusesResult, sectionsResult, membersResult, knowledgeResult, contactsResult,
+        methodsResult, attachmentsResult, secureItemsResult, deletedTasksResult, deletedKnowledgeResult,
+        deletedContactsResult, deletedSecureItemsResult, deletedAttachmentsResult, auditEventsResult,
+      ] = await Promise.all([
         visible('tasks'), visible('comments'), visible('task_statuses').order('position'), visible('sections').order('position'), visible('workspace_members'),
         visible('knowledge_items').order('updated_at', { ascending: false }), visible('contacts').order('name'), visible('contact_methods').order('position'),
         visible('attachments').eq('state', 'ready').order('created_at'),
         client.from('secure_items').select(SECURE_ITEM_SUMMARY_COLUMNS).eq('workspace_id', workspaceId).is('deleted_at', null).order('updated_at', { ascending: false }),
+        deleted('tasks').order('deleted_at', { ascending: false }),
+        deleted('knowledge_items').order('deleted_at', { ascending: false }),
+        deleted('contacts').order('deleted_at', { ascending: false }),
+        deleted('secure_items', SECURE_ITEM_SUMMARY_COLUMNS).order('deleted_at', { ascending: false }),
+        deleted('attachments').eq('state', 'ready').order('deleted_at', { ascending: false }),
+        client.from('audit_events').select('id,workspace_id,entity_type,entity_id,action,occurred_at')
+          .eq('workspace_id', workspaceId).order('occurred_at', { ascending: false }).limit(200),
       ]) as DataResult[];
       const tasks = assertResult(tasksResult) as unknown[];
       const comments = assertResult(commentsResult) as unknown[];
@@ -152,6 +187,12 @@ export function createSupabaseTaskStore(
       const methods = assertResult(methodsResult) as unknown[];
       const attachments = assertResult(attachmentsResult) as unknown[];
       const secureItems = assertResult(secureItemsResult) as unknown[];
+      const deletedTasks = assertResult(deletedTasksResult) as unknown[];
+      const deletedKnowledge = assertResult(deletedKnowledgeResult) as unknown[];
+      const deletedContacts = assertResult(deletedContactsResult) as unknown[];
+      const deletedSecureItems = assertResult(deletedSecureItemsResult) as unknown[];
+      const deletedAttachments = assertResult(deletedAttachmentsResult) as unknown[];
+      const auditEvents = assertResult(auditEventsResult) as unknown[];
       const methodsByContact = new Map<string, ContactMethod[]>();
       for (const method of methods) {
         const row = method as Record<string, unknown>;
@@ -166,12 +207,48 @@ export function createSupabaseTaskStore(
         if (typeof row.task_id === 'string') attachmentsByTask.set(row.task_id, [...(attachmentsByTask.get(row.task_id) ?? []), parsed]);
         if (typeof row.knowledge_item_id === 'string') attachmentsByKnowledge.set(row.knowledge_item_id, [...(attachmentsByKnowledge.get(row.knowledge_item_id) ?? []), parsed]);
       }
+      const activeTaskIds = new Set(tasks.map((item) => String((item as Record<string, unknown>).id)));
+      const activeKnowledgeIds = new Set(knowledge.map((item) => String((item as Record<string, unknown>).id)));
+      const trashItems: TrashItem[] = [
+        ...deletedTasks.map((value) => {
+          const item = taskFromRow(value);
+          return { entity: 'task' as const, id: item.id, title: item.title, version: item.version, deletedAt: item.deletedAt! };
+        }),
+        ...deletedKnowledge.map((value) => {
+          const item = knowledgeFromRow(value);
+          return { entity: 'knowledge' as const, id: item.id, title: item.title, version: item.version, deletedAt: item.deletedAt! };
+        }),
+        ...deletedContacts.map((value) => {
+          const item = contactFromRow(value, []);
+          return { entity: 'contact' as const, id: item.id, title: item.name, version: item.version, deletedAt: item.deletedAt! };
+        }),
+        ...deletedSecureItems.map((value) => {
+          const item = secureItemSummaryFromRow(value);
+          return { entity: 'secureItem' as const, id: item.id, title: item.title, version: item.version, deletedAt: item.deletedAt! };
+        }),
+        ...deletedAttachments.flatMap((value): TrashItem[] => {
+          const row = value as Record<string, unknown>;
+          const taskId = typeof row.task_id === 'string' ? row.task_id : null;
+          const knowledgeId = typeof row.knowledge_item_id === 'string' ? row.knowledge_item_id : null;
+          const parentType = taskId && activeTaskIds.has(taskId) ? 'task' as const
+            : knowledgeId && activeKnowledgeIds.has(knowledgeId) ? 'knowledge' as const : null;
+          const parentId = parentType === 'task' ? taskId : parentType === 'knowledge' ? knowledgeId : null;
+          if (!parentType || !parentId || row.deleted_at == null) return [];
+          const attachment = attachmentFromRow(row);
+          return [{
+            entity: 'attachment', id: attachment.id, title: attachment.name, version: attachment.version,
+            deletedAt: String(row.deleted_at), attachment, parentType, parentId,
+          }];
+        }),
+      ].sort((left, right) => Date.parse(right.deletedAt) - Date.parse(left.deletedAt));
       return {
         workspaceId,
-        tasks: tasks.map((task) => taskFromRow(task, attachmentsByTask.get(String((task as Record<string, unknown>).id)) ?? [])), comments: comments.map(commentFromRow), taskStatuses: statuses.map(statusFromRow),
+        tasks: tasks.map((task) => taskFromRow(task, attachmentsByTask.get(String((task as Record<string, unknown>).id)) ?? [])),
+        comments: comments.filter((comment) => activeTaskIds.has(String((comment as Record<string, unknown>).task_id))).map(commentFromRow),
+        taskStatuses: statuses.map(statusFromRow),
         sections: sections.map(sectionFromRow), members: members.map(memberFromRow), knowledge: knowledge.map((item) => knowledgeFromRow(item, attachmentsByKnowledge.get(String((item as Record<string, unknown>).id)) ?? [])),
         contacts: contacts.map((contact) => contactFromRow(contact, methodsByContact.get(String((contact as Record<string, unknown>).id)) ?? [])), secureItems: secureItems.map(secureItemSummaryFromRow),
-        auditEvents: [], notificationDeliveries: [],
+        auditEvents: auditEvents.map(auditEventFromRow), notificationDeliveries: [], trashItems,
       };
     },
 
@@ -199,11 +276,16 @@ export function createSupabaseTaskStore(
     },
 
     async deleteTask(workspaceId, id, expectedVersion, actorUserId) {
-      const timestamp = new Date().toISOString();
-      const result = await createActorClient(actorUserId).from('tasks').update({ deleted_at: timestamp, updated_at: timestamp, version: expectedVersion + 1 })
-        .eq('workspace_id', workspaceId).eq('id', id).eq('version', expectedVersion).is('deleted_at', null).select('*').maybeSingle() as DataResult;
-      const data = assertResult(result);
-      return data ? taskFromRow(data) : conflictOrMissing(workspaceId, id, expectedVersion);
+      const result = await createActorClient(actorUserId).rpc('set_task_deleted', {
+        p_workspace_id: workspaceId, p_task_id: id, p_expected_version: expectedVersion,
+      }) as DataResult;
+      if (isDatabaseVersionConflict(result.error) || result.error?.message === 'task_not_found') {
+        return conflictOrMissing(workspaceId, id, expectedVersion);
+      }
+      const rows = assertResult(result) as unknown[];
+      const row = rows[0];
+      if (!row) throw new Error('Не удалось удалить запись.');
+      return taskFromRow(row);
     },
 
     async restoreTask(workspaceId, id, expectedVersion, actorUserId) {
@@ -220,6 +302,7 @@ export function createSupabaseTaskStore(
 
     async createComment(workspaceId, input, actorUserId) {
       const result = await createActorClient(actorUserId).from('comments').insert({ workspace_id: workspaceId, task_id: input.taskId, author_id: input.authorId, body: input.body }).select('*').single() as DataResult;
+      if (result.error?.code === 'P0002' && result.error.message === 'comment_parent_not_found') throw new CommentParentNotFoundError();
       return commentFromRow(assertResult(result));
     },
   };

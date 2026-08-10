@@ -300,9 +300,18 @@ create table if not exists public.notification_outbox (
   foreign key (workspace_id, event_id) references public.audit_events(workspace_id, id)
 );
 
-create index if not exists notification_outbox_pending_idx
-  on public.notification_outbox (available_at, created_at)
-  where delivered_at is null and deleted_at is null;
+do $notification_outbox_legacy_index$
+begin
+  if exists (
+    select 1 from information_schema.columns
+    where table_schema = 'public' and table_name = 'notification_outbox' and column_name = 'deleted_at'
+  ) then
+    execute 'create index if not exists notification_outbox_pending_idx
+      on public.notification_outbox (available_at, created_at)
+      where delivered_at is null and deleted_at is null';
+  end if;
+end;
+$notification_outbox_legacy_index$;
 
 create table if not exists public.notification_deliveries (
   id uuid primary key default extensions.gen_random_uuid(),

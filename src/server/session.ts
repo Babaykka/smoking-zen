@@ -21,8 +21,9 @@ export type SessionCookie = {
   value: string;
   options: {
     httpOnly: true;
-    sameSite: 'lax';
+    sameSite: 'lax' | 'none';
     secure: boolean;
+    partitioned: boolean;
     path: '/';
     maxAge: number;
   };
@@ -43,7 +44,14 @@ function secretKey(secret: string): Uint8Array {
 }
 
 function cookieOptions(secure: boolean, maxAge: number): SessionCookie['options'] {
-  return { httpOnly: true, sameSite: 'lax', secure, path: '/', maxAge };
+  return {
+    httpOnly: true,
+    sameSite: secure ? 'none' : 'lax',
+    secure,
+    partitioned: secure,
+    path: '/',
+    maxAge,
+  };
 }
 
 function isUuid(value: unknown): value is string {

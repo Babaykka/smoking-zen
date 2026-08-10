@@ -1,4 +1,4 @@
-import { act, render, screen, waitFor } from '@testing-library/react';
+import { act, fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { StrictMode } from 'react';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
@@ -6,7 +6,11 @@ import { WorkspaceBootstrap } from '@/components/workspace-bootstrap';
 import { demoSeed } from '@/data/demo-seed';
 
 const workspaceId = '33333333-3333-4333-8333-333333333333';
-const productionConfig = { supabaseUrl: 'https://project.supabase.co', supabasePublishableKey: 'sb_publishable_test' };
+const productionConfig = {
+  supabaseUrl: 'https://project.supabase.co',
+  supabasePublishableKey: 'sb_publishable_test',
+  telegramLaunchUrl: 'https://t.me/smoking_zen_bot/workspace',
+};
 
 function response(data: unknown, status = 200) {
   return Promise.resolve(new Response(JSON.stringify({ data, error: status < 400 ? null : { code: 'failed', message: 'Ошибка' }, requestId: 'request-1' }), { status }));
@@ -80,10 +84,32 @@ describe('WorkspaceBootstrap', () => {
     render(<WorkspaceBootstrap demoGatewayFactory={demoGatewayFactory} mode="production" productionConfig={productionConfig} />);
 
     expect(await screen.findByRole('alert')).toHaveTextContent('Откройте приложение в Telegram');
+    expect(screen.getByRole('link', { name: 'Открыть в Telegram' })).toHaveAttribute(
+      'href',
+      'https://t.me/smoking_zen_bot/workspace',
+    );
     expect(demoGatewayFactory).not.toHaveBeenCalled();
     expect(screen.queryByText('Проверить запас кокосового угля')).not.toBeInTheDocument();
     expect(storageWrite).not.toHaveBeenCalled();
     storageWrite.mockRestore();
+  });
+
+  it('uses the authenticated membership id for the “Мои” task view', async () => {
+    Object.defineProperty(window, 'Telegram', { configurable: true, value: { WebApp: { initData: 'signed-telegram-init-data' } } });
+    const membershipId = '22222222-2222-4222-8222-222222222222';
+    const task = { ...demoSeed.tasks[0]!, workspaceId, assigneeId: membershipId, title: 'Моя задача из API' };
+    const fetcher = vi.fn()
+      .mockImplementationOnce(() => response({ membership: { workspaceId, membershipId } }))
+      .mockImplementationOnce(() => response({ token: 'memory-only-jwt', workspaceId, expiresAt: new Date(Date.now() + 300_000).toISOString() }))
+      .mockImplementationOnce(() => response({ ...demoSeed, workspaceId, tasks: [task] }));
+    const channel = { on: vi.fn().mockReturnThis(), subscribe: vi.fn().mockReturnThis() };
+    const client = { channel: vi.fn(() => channel), removeChannel: vi.fn(), realtime: { setAuth: vi.fn() } };
+
+    render(<WorkspaceBootstrap fetcher={fetcher} mode="production" productionConfig={productionConfig} realtimeClientFactory={() => client} />);
+    await screen.findByText('Моя задача из API');
+    fireEvent.click(screen.getByRole('button', { name: 'Мои' }));
+
+    expect(screen.getByText('Моя задача из API')).toBeInTheDocument();
   });
 
   it('fails closed when production browser configuration is absent', async () => {

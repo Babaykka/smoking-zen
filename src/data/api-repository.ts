@@ -2,7 +2,7 @@ import { ConflictError, type WorkspaceListener } from '@/data/workspace-reposito
 import { validateUpload, type AttachmentTarget, type SignedAttachmentDownload } from '@/domain/files';
 import type { CommentInput, ContactInput, ContactPatchInput, KnowledgeInput, KnowledgePatchInput, SecureItemInput, SecureItemPatchInput, TaskInput, TaskPatchInput } from '@/domain/schemas';
 import type { WorkspaceGateway } from '@/data/workspace-gateway';
-import type { Attachment, Comment, Contact, KnowledgeItem, SearchResult, SecureItemReveal, SecureItemSummary, Task, WorkspaceSnapshot } from '@/domain/types';
+import type { Attachment, Comment, Contact, InviteGrant, KnowledgeItem, SearchResult, SecureItemReveal, SecureItemSummary, Task, TrashItem, WorkspaceSnapshot } from '@/domain/types';
 
 type ApiEnvelope<T> = { data: T | null; error: { code: string; message: string } | null; requestId: string };
 type RealtimeSubscriber = (workspaceId: string, listener: () => void) => () => void;
@@ -35,6 +35,7 @@ function mergeSnapshot(current: WorkspaceSnapshot, incoming: Partial<WorkspaceSn
     secureItems: incoming.secureItems ?? current.secureItems,
     auditEvents: incoming.auditEvents ?? current.auditEvents,
     notificationDeliveries: incoming.notificationDeliveries ?? current.notificationDeliveries,
+    trashItems: incoming.trashItems ?? current.trashItems,
   };
 }
 
@@ -93,6 +94,13 @@ export function createApiRepository(options: ApiRepositoryOptions): WorkspaceGat
     return hydration;
   };
 
+  const refresh = async (): Promise<WorkspaceSnapshot> => {
+    const activeHydration = hydration;
+    if (activeHydration) await activeHydration;
+    await hydrate(true);
+    return clone(state);
+  };
+
   const unsubscribeRealtime = options.realtime(state.workspaceId, () => {
     if (!disposed) void hydrate(true).catch(() => { /* Keep the last known safe snapshot and retry on the next event. */ });
   });
@@ -121,6 +129,7 @@ export function createApiRepository(options: ApiRepositoryOptions): WorkspaceGat
     fileStorageMode: 'persistent',
     snapshot: () => clone(state),
     hydrate,
+    refresh,
     subscribe(listener: WorkspaceListener) {
       listeners.add(listener);
       return () => listeners.delete(listener);
@@ -147,12 +156,16 @@ export function createApiRepository(options: ApiRepositoryOptions): WorkspaceGat
     async deleteTask(id: string, expectedVersion: number): Promise<Task> {
       const deleted = await request<Task>(`/api/tasks/${encodeURIComponent(id)}`, 'DELETE', { expectedVersion });
       state.tasks = state.tasks.filter((task) => task.id !== id);
+      state.trashItems = [...(state.trashItems ?? []).filter((item) => !(item.entity === 'task' && item.id === id)), {
+        entity: 'task', id: deleted.id, title: deleted.title, version: deleted.version, deletedAt: deleted.deletedAt!,
+      }];
       notify();
       return clone(deleted);
     },
     async restoreTask(id: string, expectedVersion: number): Promise<Task> {
       const restored = await request<Task>(`/api/tasks/${encodeURIComponent(id)}`, 'PATCH', { action: 'restore', expectedVersion });
       state.tasks.push(restored);
+      state.trashItems = (state.trashItems ?? []).filter((item) => !(item.entity === 'task' && item.id === id));
       notify();
       return clone(restored);
     },
@@ -177,12 +190,16 @@ export function createApiRepository(options: ApiRepositoryOptions): WorkspaceGat
     async deleteKnowledge(id: string, expectedVersion: number): Promise<KnowledgeItem> {
       const deleted = await request<KnowledgeItem>(`/api/knowledge/${encodeURIComponent(id)}`, 'DELETE', { expectedVersion });
       state.knowledge = state.knowledge.filter((item) => item.id !== id);
+      state.trashItems = [...(state.trashItems ?? []).filter((item) => !(item.entity === 'knowledge' && item.id === id)), {
+        entity: 'knowledge', id: deleted.id, title: deleted.title, version: deleted.version, deletedAt: deleted.deletedAt!,
+      }];
       notify();
       return clone(deleted);
     },
     async restoreKnowledge(id: string, expectedVersion: number): Promise<KnowledgeItem> {
       const restored = await request<KnowledgeItem>(`/api/knowledge/${encodeURIComponent(id)}`, 'PATCH', { action: 'restore', expectedVersion });
       state.knowledge.push(restored);
+      state.trashItems = (state.trashItems ?? []).filter((item) => !(item.entity === 'knowledge' && item.id === id));
       notify();
       return clone(restored);
     },
@@ -201,14 +218,21 @@ export function createApiRepository(options: ApiRepositoryOptions): WorkspaceGat
     async deleteContact(id: string, expectedVersion: number): Promise<Contact> {
       const deleted = await request<Contact>(`/api/contacts/${encodeURIComponent(id)}`, 'DELETE', { expectedVersion });
       state.contacts = state.contacts.filter((item) => item.id !== id);
+      state.trashItems = [...(state.trashItems ?? []).filter((item) => !(item.entity === 'contact' && item.id === id)), {
+        entity: 'contact', id: deleted.id, title: deleted.name, version: deleted.version, deletedAt: deleted.deletedAt!,
+      }];
       notify();
       return clone(deleted);
     },
     async restoreContact(id: string, expectedVersion: number): Promise<Contact> {
       const restored = await request<Contact>(`/api/contacts/${encodeURIComponent(id)}`, 'PATCH', { action: 'restore', expectedVersion });
       state.contacts.push(restored);
+      state.trashItems = (state.trashItems ?? []).filter((item) => !(item.entity === 'contact' && item.id === id));
       notify();
       return clone(restored);
+    },
+    async createInvite(): Promise<InviteGrant> {
+      return request<InviteGrant>('/api/invites', 'POST', { role: 'member' });
     },
     async createSecureItem(input: SecureItemInput): Promise<SecureItemSummary> {
       const created = await request<SecureItemSummary>('/api/secure-items', 'POST', input);
@@ -225,6 +249,9 @@ export function createApiRepository(options: ApiRepositoryOptions): WorkspaceGat
     async deleteSecureItem(id: string, expectedVersion: number): Promise<SecureItemSummary> {
       const deleted = await request<SecureItemSummary>(`/api/secure-items/${encodeURIComponent(id)}`, 'DELETE', { expectedVersion });
       state.secureItems = state.secureItems.filter((item) => item.id !== id);
+      state.trashItems = [...(state.trashItems ?? []).filter((item) => !(item.entity === 'secureItem' && item.id === id)), {
+        entity: 'secureItem', id: deleted.id, title: deleted.title, version: deleted.version, deletedAt: deleted.deletedAt!,
+      }];
       notify();
       return clone(deleted);
     },
@@ -233,6 +260,7 @@ export function createApiRepository(options: ApiRepositoryOptions): WorkspaceGat
         action: 'restore', expectedVersion,
       });
       state.secureItems = [...state.secureItems.filter((item) => item.id !== id), restored];
+      state.trashItems = (state.trashItems ?? []).filter((item) => !(item.entity === 'secureItem' && item.id === id));
       notify();
       return clone(restored);
     },
@@ -286,6 +314,31 @@ export function createApiRepository(options: ApiRepositoryOptions): WorkspaceGat
     },
     async downloadAttachment(id: string): Promise<SignedAttachmentDownload> {
       return { url: `/api/files/${encodeURIComponent(id)}/download` };
+    },
+    async deleteAttachment(id: string, expectedVersion: number): Promise<TrashItem> {
+      const archived = await request<TrashItem>(`/api/files/${encodeURIComponent(id)}`, 'DELETE', { expectedVersion });
+      state.tasks = state.tasks.map((item) => ({ ...item, attachments: item.attachments.filter((attachment) => attachment.id !== id) }));
+      state.knowledge = state.knowledge.map((item) => ({ ...item, attachments: item.attachments.filter((attachment) => attachment.id !== id) }));
+      state.trashItems = [...(state.trashItems ?? []).filter((item) => !(item.entity === 'attachment' && item.id === id)), archived];
+      notify();
+      return clone(archived);
+    },
+    async restoreAttachment(id: string, expectedVersion: number): Promise<Attachment> {
+      const archived = (state.trashItems ?? []).find((item) => item.entity === 'attachment' && item.id === id);
+      if (!archived?.parentType || !archived.parentId) throw new Error('Связь файла с записью не найдена.');
+      const restored = await request<Attachment>(`/api/files/${encodeURIComponent(id)}`, 'PATCH', { action: 'restore', expectedVersion });
+      if (archived.parentType === 'task') {
+        state.tasks = state.tasks.map((item) => item.id === archived.parentId
+          ? { ...item, attachments: [...item.attachments.filter((attachment) => attachment.id !== id), restored] }
+          : item);
+      } else {
+        state.knowledge = state.knowledge.map((item) => item.id === archived.parentId
+          ? { ...item, attachments: [...item.attachments.filter((attachment) => attachment.id !== id), restored] }
+          : item);
+      }
+      state.trashItems = (state.trashItems ?? []).filter((item) => !(item.entity === 'attachment' && item.id === id));
+      notify();
+      return clone(restored);
     },
     async search(query: string, options?: { signal?: AbortSignal }): Promise<SearchResult[]> {
       return query.trim() ? request<SearchResult[]>('/api/search', 'POST', { query }, options?.signal) : [];

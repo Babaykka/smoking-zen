@@ -7,6 +7,74 @@ import { demoSeed } from '@/data/demo-seed';
 import { subscribeWorkspaceRealtime } from '@/data/realtime';
 
 describe('API task repository', () => {
+  it('creates a fixed member invitation without retaining its token in workspace state', async () => {
+    const invitation = {
+      invitationId: 'invite-1',
+      inviteLink: 'https://t.me/smoking_zen_bot/workspace?startapp=invite_opaque',
+      expiresAt: '2026-08-11T10:00:00.000Z',
+    };
+    const fetcher = vi.fn().mockResolvedValue(new Response(JSON.stringify({ data: invitation, error: null, requestId: 'invite' }), { status: 201 }));
+    const repository = createApiRepository({ initialSnapshot: demoSeed, fetcher, realtime: () => () => {} });
+
+    await expect(repository.createInvite()).resolves.toEqual(invitation);
+    expect(fetcher).toHaveBeenCalledWith('/api/invites', expect.objectContaining({
+      method: 'POST', body: JSON.stringify({ role: 'member' }),
+    }));
+    expect(JSON.stringify(repository.snapshot())).not.toContain('invite_opaque');
+  });
+  it('refreshes the losing context after a conflict and retries its complete draft exactly once', async () => {
+    let serverTask = structuredClone(demoSeed.tasks[0]!);
+    let successfulWrites = 0;
+    const fetcher = vi.fn(async (input: string | URL | Request, init?: RequestInit) => {
+      const url = String(input);
+      if (url === '/api/tasks' && (!init?.method || init.method === 'GET')) {
+        return new Response(JSON.stringify({
+          data: { ...demoSeed, tasks: [serverTask] }, error: null, requestId: 'refresh',
+        }), { status: 200 });
+      }
+      if (url === `/api/tasks/${serverTask.id}` && init?.method === 'PATCH') {
+        const body = JSON.parse(String(init.body)) as { expectedVersion: number; input: Record<string, unknown> };
+        if (body.expectedVersion !== serverTask.version) {
+          return new Response(JSON.stringify({
+            data: { expectedVersion: body.expectedVersion, actualVersion: serverTask.version },
+            error: { code: 'version_conflict', message: 'Конфликт версий.' }, requestId: 'conflict',
+          }), { status: 409 });
+        }
+        successfulWrites += 1;
+        serverTask = { ...serverTask, ...body.input, version: serverTask.version + 1 };
+        return new Response(JSON.stringify({ data: serverTask, error: null, requestId: 'updated' }), { status: 200 });
+      }
+      throw new Error(`Unexpected request: ${url}`);
+    });
+    const first = createApiRepository({ initialSnapshot: demoSeed, fetcher, realtime: () => () => {} });
+    const second = createApiRepository({ initialSnapshot: demoSeed, fetcher, realtime: () => () => {} });
+    const losingDraft = {
+      title: 'Черновик второго устройства',
+      description: 'Сохранены все поля',
+      priority: 5 as const,
+      statusId: 'status-waiting',
+      sectionId: 'section-service',
+      assigneeId: 'member-alina',
+      dueAt: '2026-08-05T12:30:00.000Z',
+    };
+
+    await first.updateTask(serverTask.id, { title: 'Победитель первого устройства' }, 1);
+    await expect(second.updateTask(serverTask.id, losingDraft, 1)).rejects.toMatchObject({
+      name: 'ConflictError', expectedVersion: 1, actualVersion: 2,
+    });
+    expect(second.pendingTaskInput(serverTask.id)).toEqual(losingDraft);
+    expect(second.snapshot().tasks[0]!.version).toBe(1);
+
+    const fresh = await second.refresh();
+    expect(fresh.tasks[0]).toMatchObject({ title: 'Победитель первого устройства', version: 2 });
+    expect(second.snapshot().tasks[0]).toEqual(fresh.tasks[0]);
+    await second.updateTask(serverTask.id, second.pendingTaskInput(serverTask.id)!, fresh.tasks[0]!.version);
+
+    expect(serverTask).toMatchObject({ ...losingDraft, version: 3 });
+    expect(successfulWrites).toBe(2);
+    expect(second.pendingTaskInput(serverTask.id)).toBeUndefined();
+  });
+
   it('hydrates through credentials-protected APIs and refetches after Realtime invalidation', async () => {
     let invalidate: (() => void) | undefined;
     const fetcher = vi.fn().mockResolvedValue(new Response(JSON.stringify({ data: demoSeed, error: null, requestId: 'request-1' }), { status: 200 }));
@@ -120,6 +188,36 @@ describe('API task repository', () => {
     expect(JSON.stringify(repository.snapshot())).not.toMatch(/storage\/v1|token=|storagePath/iu);
   });
 
+  it('moves a ready attachment to Trash and restores it without losing parent metadata', async () => {
+    const task = { ...demoSeed.tasks[0]!, attachments: [{
+      id: 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa', name: 'scheme.pdf', mimeType: 'application/pdf', size: 2048, version: 3,
+    }] };
+    const archived = {
+      entity: 'attachment', id: task.attachments[0]!.id, title: 'scheme.pdf', version: 4,
+      deletedAt: '2026-08-02T14:00:00.000Z', attachment: { ...task.attachments[0]!, version: 4 },
+      parentType: 'task', parentId: task.id,
+    };
+    const restored = { ...task.attachments[0]!, version: 5 };
+    const fetcher = vi.fn()
+      .mockResolvedValueOnce(new Response(JSON.stringify({ data: archived, error: null, requestId: 'archive-file' }), { status: 200 }))
+      .mockResolvedValueOnce(new Response(JSON.stringify({ data: restored, error: null, requestId: 'restore-file' }), { status: 200 }));
+    const repository = createApiRepository({ initialSnapshot: { ...demoSeed, tasks: [task] }, fetcher, realtime: () => () => {} });
+
+    await repository.deleteAttachment(archived.id, 3);
+    expect(repository.snapshot().tasks[0]!.attachments).toEqual([]);
+    expect(repository.snapshot().trashItems).toContainEqual(archived);
+    await repository.restoreAttachment(archived.id, 4);
+
+    expect(fetcher).toHaveBeenNthCalledWith(1, `/api/files/${archived.id}`, expect.objectContaining({
+      method: 'DELETE', body: JSON.stringify({ expectedVersion: 3 }),
+    }));
+    expect(fetcher).toHaveBeenNthCalledWith(2, `/api/files/${archived.id}`, expect.objectContaining({
+      method: 'PATCH', body: JSON.stringify({ action: 'restore', expectedVersion: 4 }),
+    }));
+    expect(repository.snapshot().tasks[0]!.attachments).toEqual([restored]);
+    expect(repository.snapshot().trashItems).not.toContainEqual(expect.objectContaining({ id: archived.id }));
+  });
+
   it('rejects a forbidden file locally before requesting an upload grant', async () => {
     const fetcher = vi.fn();
     const repository = createApiRepository({ initialSnapshot: demoSeed, fetcher, realtime: () => () => {} });
@@ -134,7 +232,7 @@ describe('API task repository', () => {
     const created = {
       ...demoSeed.secureItems[0]!, id: 'safe-new', title: 'Терминал', version: 1,
     };
-    const externalUrl = 'https://vault.bitwarden.com/#/items/memory-only-response';
+    const externalUrl = 'https://vault.bitwarden.com/#/vault?itemId=123e4567-e89b-12d3-a456-426614174000';
     const fetcher = vi.fn()
       .mockResolvedValueOnce(new Response(JSON.stringify({ data: created, error: null, requestId: 'create' }), { status: 201 }))
       .mockResolvedValueOnce(new Response(JSON.stringify({ data: { externalUrl }, error: null, requestId: 'reveal' }), { status: 200 }));

@@ -7,7 +7,7 @@ import {
 export type DatabaseError = { code?: string; message?: string } | null;
 
 export function isDatabaseVersionConflict(error: DatabaseError): boolean {
-  return error?.code === '40001' && error.message === 'version_conflict';
+  return error?.code === '40001' && (error.message === 'version_conflict' || error.message?.startsWith('version_conflict:') === true);
 }
 
 export function throwKnownRestoreDatabaseError(error: DatabaseError, notFoundMessage: string): void {

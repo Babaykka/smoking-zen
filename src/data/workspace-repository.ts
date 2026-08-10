@@ -1,5 +1,6 @@
 import type {
   Comment,
+  Attachment,
   Contact,
   KnowledgeItem,
   SearchResult,
@@ -8,6 +9,7 @@ import type {
   Task,
   WorkspaceEntity,
   WorkspaceSnapshot,
+  TrashItem,
 } from '@/domain/types';
 import type {
   CommentInput,
@@ -21,11 +23,12 @@ import type {
 } from '@/domain/schemas';
 
 export type RestorableRecord = Task | Comment | KnowledgeItem | Contact | SecureItemSummary;
+export type RestorableEntity = Exclude<WorkspaceEntity, 'attachment'>;
 export type WorkspaceListener = (snapshot: WorkspaceSnapshot) => void;
 
 export type WorkspacePersistence = {
   load(): unknown;
-  save(state: WorkspaceSnapshot): void;
+  save(value: unknown): void;
 };
 
 export class ConflictError extends Error {
@@ -77,6 +80,15 @@ export function assertRestorableRecord(
   }
 }
 
+export function assertRestorableRecordPreflight(
+  record: { version: number; deletedAt: string | null } | null | undefined,
+  expectedVersion: number,
+): asserts record is { version: number; deletedAt: string } {
+  if (!record) throw new RestoreNotFoundError();
+  if (record.version !== expectedVersion) throw new ConflictError(expectedVersion, record.version);
+  if (record.deletedAt === null) throw new RestoreNotDeletedError();
+}
+
 export interface WorkspaceRepository {
   snapshot(): WorkspaceSnapshot;
   createTask(input: TaskInput): Task;
@@ -94,8 +106,10 @@ export interface WorkspaceRepository {
   createSecureItem(input: SecureItemInput): SecureItemSummary;
   updateSecureItem(id: string, input: SecureItemPatchInput, expectedVersion: number): SecureItemSummary;
   deleteSecureItem(id: string, expectedVersion: number): SecureItemSummary;
+  deleteAttachment(id: string, expectedVersion: number): TrashItem;
+  restoreAttachment(id: string, expectedVersion: number): Attachment;
   revealSecureItem(id: string): SecureItemReveal;
-  restore(entity: WorkspaceEntity, id: string, expectedVersion: number): RestorableRecord;
+  restore(entity: RestorableEntity, id: string, expectedVersion: number): RestorableRecord;
   hydrate(): void;
   search(query: string): SearchResult[];
   subscribe(listener: WorkspaceListener): () => void;

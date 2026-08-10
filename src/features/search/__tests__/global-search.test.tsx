@@ -10,6 +10,21 @@ import { WorkspaceProvider } from '@/providers/workspace-provider';
 afterEach(() => vi.useRealTimers());
 
 describe('GlobalSearch', () => {
+  it('focuses the command search with either platform shortcut and clears it with Escape', () => {
+    const gateway = createDemoGateway(createDemoRepository({ loadPersisted: false }));
+    render(<WorkspaceProvider gateway={gateway}><GlobalSearch onOpen={() => {}} /></WorkspaceProvider>);
+    const input = screen.getByRole('combobox', { name: 'Поиск по штабу' });
+
+    fireEvent.keyDown(window, { key: 'k', ctrlKey: true });
+    expect(input).toHaveFocus();
+    fireEvent.change(input, { target: { value: 'уголь' } });
+    fireEvent.keyDown(input, { key: 'Escape' });
+    expect(input).not.toHaveFocus();
+    expect(input).toHaveValue('');
+    fireEvent.keyDown(window, { key: 'K', metaKey: true });
+    expect(input).toHaveFocus();
+  });
+
   it('finds an active Cyrillic task after the debounce', async () => {
     vi.useFakeTimers();
     const gateway = createDemoGateway(createDemoRepository({ loadPersisted: false }));
@@ -19,6 +34,17 @@ describe('GlobalSearch', () => {
     await act(async () => { await vi.advanceTimersByTimeAsync(275); });
     await act(async () => {});
     expect(screen.getByRole('option', { name: 'Проверить запас кокосового угля' })).toBeInTheDocument();
+  });
+
+  it('never persists or returns an unsafe URL sentinel through search', async () => {
+    const gateway = createDemoGateway(createDemoRepository({ loadPersisted: false }));
+    const sentinel = 'SIGNED_URL_SEARCH_SENTINEL';
+
+    await expect(gateway.createTask({
+      title: 'Небезопасная ссылка',
+      description: `https://example.com/guide?lang=${sentinel}`,
+    })).rejects.toThrow();
+    await expect(gateway.search(sentinel)).resolves.toEqual([]);
   });
 
   it('debounces and ignores a stale response after the query is cleared', async () => {

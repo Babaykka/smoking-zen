@@ -7,7 +7,7 @@ import type { Attachment } from '@/domain/types';
 import { AttachmentWidget } from '@/features/files/attachment-widget';
 import { WorkspaceProvider } from '@/providers/workspace-provider';
 
-const attachment: Attachment = { id: 'file-1', name: 'policy.txt', mimeType: 'text/plain', size: 18 };
+const attachment: Attachment = { id: 'file-1', name: 'policy.txt', mimeType: 'text/plain', size: 18, version: 1 };
 
 function renderWidget(overrides: { attachments?: Attachment[] } = {}) {
   const gateway = createDemoGateway(createDemoRepository({ loadPersisted: false }));
@@ -66,5 +66,15 @@ describe('AttachmentWidget', () => {
     await waitFor(() => expect(gateway.downloadAttachment).toHaveBeenCalledWith(attachment.id));
     expect(open).toHaveBeenCalledWith('https://download.example/file?token=ephemeral', '_blank', 'noopener,noreferrer');
     expect(document.body.textContent).not.toContain('token=ephemeral');
+  });
+
+  it('archives a ready attachment with its exact version and removes it from ordinary file controls', async () => {
+    const versioned = { ...attachment, version: 4 };
+    const gateway = renderWidget({ attachments: [versioned] });
+    gateway.deleteAttachment = vi.fn().mockResolvedValue({ ...versioned, version: 5 });
+
+    fireEvent.click(screen.getByRole('button', { name: 'Удалить policy.txt' }));
+
+    await waitFor(() => expect(gateway.deleteAttachment).toHaveBeenCalledWith(attachment.id, 4));
   });
 });

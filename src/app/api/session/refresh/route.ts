@@ -21,6 +21,9 @@ type RefreshDependencies = {
 export function createRefreshSessionHandler(dependencies: RefreshDependencies) {
   return async function refreshSessionHandler(request: Request): Promise<Response> {
     const requestId = dependencies.requestId();
+    if (request.method !== 'POST') {
+      return apiResponse(requestId, 405, null, { code: 'method_not_allowed', message: 'Метод не поддерживается.' });
+    }
     if (!hasSameOrigin(request, dependencies.appOrigin)) {
       return apiResponse(requestId, 403, null, { code: 'origin_denied', message: 'Запрос отклонён.' });
     }

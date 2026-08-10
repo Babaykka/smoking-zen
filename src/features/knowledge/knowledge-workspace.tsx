@@ -3,10 +3,12 @@
 import { useEffect, useRef, useState, type FormEvent } from 'react';
 
 import { SafeMarkdown } from '@/components/safe-markdown';
+import { AuditHistory } from '@/components/audit-history';
 import { AttachmentWidget } from '@/features/files/attachment-widget';
 import { ConflictError } from '@/data/workspace-repository';
 import { knowledgeInputSchema } from '@/domain/schemas';
 import type { KnowledgeItem, KnowledgeKind, SearchNavigationTarget } from '@/domain/types';
+import { useTelegramBackButton } from '@/lib/use-telegram-back-button';
 import { useWorkspace } from '@/providers/workspace-provider';
 
 type KnowledgeDraft = Pick<KnowledgeItem, 'title' | 'body' | 'kind' | 'linkUrl' | 'sectionId'>;
@@ -61,6 +63,7 @@ export function KnowledgeWorkspace({
       returnFocusRef.current = null;
     }, 0);
   };
+  useTelegramBackButton(selected !== null || creating, close);
   const save = async () => {
     if (!draft) return;
     const parsed = knowledgeInputSchema.safeParse(draft);
@@ -100,15 +103,15 @@ export function KnowledgeWorkspace({
       <header className="tasks-header"><div><p className="workspace-loading__eyebrow">Smoking Zen</p><h1>База знаний</h1></div><button className="task-secondary-button" onClick={(event) => { returnFocusRef.current = event.currentTarget; setCreating(true); setSelected(null); setExpectedVersion(0); setError(''); setDraft({ title: '', body: '', kind: 'note', linkUrl: null, sectionId: null }); }} type="button">Добавить материал</button></header>
       <div className="task-list">{snapshot.knowledge.map((item) => <button aria-label={`Открыть материал ${item.title}`} className="task-card" data-knowledge-id={item.id} key={item.id} onClick={(event) => { returnFocusRef.current = event.currentTarget; open(item); }} type="button"><span className="task-card__body"><strong>{item.title}</strong><small>{kindLabels[item.kind]}</small></span></button>)}</div>
     </div>
-    {(selected || creating) && draft && <aside aria-label="Детали материала" className="task-detail"><button autoFocus className="task-detail__close" onClick={close} type="button">Закрыть</button><form onSubmit={(event: FormEvent) => { event.preventDefault(); void save(); }}>
+    {(selected || creating) && draft && <aside aria-label="Детали материала" className="task-detail" onKeyDown={(event) => { if (event.key === 'Escape') { event.preventDefault(); close(); } }}><button autoFocus className="task-detail__close" onClick={close} type="button">Закрыть</button><form onSubmit={(event: FormEvent) => { event.preventDefault(); void save(); }}>
       <label>Название материала<input onChange={(event) => setDraft({ ...draft, title: event.target.value })} value={draft.title} /></label>
       <label>Содержание<textarea onChange={(event) => setDraft({ ...draft, body: event.target.value })} value={draft.body} /></label>
       <label>Тип<select onChange={(event) => setDraft({ ...draft, kind: event.target.value as KnowledgeKind, linkUrl: event.target.value === 'link' ? draft.linkUrl : null })} value={draft.kind}>{(Object.keys(kindLabels) as KnowledgeKind[]).map((kind) => <option key={kind} value={kind}>{kindLabels[kind]}</option>)}</select></label>
       {draft.kind === 'link' && <label>HTTPS-ссылка<input onChange={(event) => setDraft({ ...draft, linkUrl: event.target.value || null })} value={draft.linkUrl ?? ''} /></label>}
       <label>Раздел<select onChange={(event) => setDraft({ ...draft, sectionId: event.target.value || null })} value={draft.sectionId ?? ''}><option value="">Без раздела</option>{snapshot.sections.map((section) => <option key={section.id} value={section.id}>{section.name}</option>)}</select></label>
       <div aria-label="Предпросмотр материала"><SafeMarkdown value={draft.body} /></div><button className="task-primary-button" type="submit">Сохранить материал</button>
-    </form>{selected && <AttachmentWidget attachments={snapshot.knowledge.find((item) => item.id === selected.id)?.attachments ?? selected.attachments} target={{ type: 'knowledge', id: selected.id }} />}{selected && <button onClick={archive} type="button">Архивировать материал</button>}{error.includes('Черновик') && <button onClick={() => { void save(); }} type="button">Повторить сохранение</button>}</aside>}
-    {archived && <button onClick={restore} type="button">Восстановить материал</button>}
+    </form>{selected && <AttachmentWidget attachments={snapshot.knowledge.find((item) => item.id === selected.id)?.attachments ?? selected.attachments} target={{ type: 'knowledge', id: selected.id }} />}{selected && <AuditHistory entity="knowledge" entityId={selected.id} events={snapshot.auditEvents} label="История материала" />}{selected && <button className="task-secondary-button" onClick={archive} type="button">Архивировать материал</button>}{error.includes('Черновик') && <button className="task-secondary-button" onClick={() => { void save(); }} type="button">Повторить сохранение</button>}</aside>}
+    {archived && <button className="task-secondary-button" onClick={restore} type="button">Восстановить материал</button>}
     {error && <p className="workspace-error" role="alert">{error}</p>}
   </section>;
 }

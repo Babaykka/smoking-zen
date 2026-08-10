@@ -7,7 +7,9 @@ import {
   FileNotFoundError,
   FileNotReadyError,
   ParentNotFoundError,
+  UploadQuotaExceededError,
   UploadExpiredError,
+  UploadValidationBusyError,
   createPrivateFileStore,
   type FileBackend,
   type StoredAttachment,
@@ -19,6 +21,7 @@ const attachmentId = 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa';
 const quarantineObjectId = 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb';
 const readyObjectId = 'cccccccc-cccc-4ccc-8ccc-cccccccccccc';
 const cleanupLeaseId = 'eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee';
+const validationLeaseId = '99999999-9999-4999-8999-999999999999';
 const bytes = Buffer.from('Безопасный регламент смены.\n', 'utf8');
 
 const quarantine: StoredAttachment = {
@@ -34,14 +37,18 @@ const quarantine: StoredAttachment = {
   sha256: null,
   quarantineExpiresAt: '2026-08-02T14:05:00.000Z',
   completedAt: null,
+  version: 1,
+  deletedAt: null,
 };
 
 function backend(overrides: Partial<FileBackend> = {}): FileBackend {
   return {
     parentExists: vi.fn().mockResolvedValue(true),
-    insertQuarantine: vi.fn().mockResolvedValue(undefined),
-    deleteQuarantine: vi.fn().mockResolvedValue(undefined),
+    reserveQuarantine: vi.fn().mockImplementation(async (record) => record),
+    cancelReservation: vi.fn().mockResolvedValue(true),
     retireQuarantine: vi.fn().mockResolvedValue(false),
+    claimValidation: vi.fn().mockResolvedValue(validationLeaseId),
+    releaseValidation: vi.fn().mockResolvedValue(true),
     createSignedUploadUrl: vi.fn().mockImplementation(async (storagePath: string) =>
       `https://storage.example/storage/v1/object/upload/sign/workspace-files/${storagePath}?token=ephemeral`),
     getAttachment: vi.fn().mockResolvedValue(quarantine),
@@ -65,6 +72,7 @@ function backend(overrides: Partial<FileBackend> = {}): FileBackend {
     finishQueuedObjectRemoval: vi.fn().mockResolvedValue(true),
     removeObject: vi.fn().mockResolvedValue(undefined),
     createSignedDownloadUrl: vi.fn().mockResolvedValue('https://storage.example/private-download?token=ephemeral'),
+    setAttachmentDeleted: vi.fn().mockResolvedValue({ ...quarantine, state: 'ready', sha256: 'a'.repeat(64), completedAt: '2026-08-02T12:00:00.000Z', version: 2, deletedAt: '2026-08-02T12:00:00.000Z' }),
     ...overrides,
   };
 }
@@ -91,7 +99,7 @@ describe('private file lifecycle store', () => {
     });
 
     expect(fileBackend.parentExists).toHaveBeenCalledWith(workspaceId, { type: 'task', id: quarantine.taskId });
-    expect(fileBackend.insertQuarantine).toHaveBeenCalledWith(expect.objectContaining({
+    expect(fileBackend.reserveQuarantine).toHaveBeenCalledWith(expect.objectContaining({
       id: attachmentId,
       workspaceId,
       taskId: quarantine.taskId,
@@ -100,7 +108,7 @@ describe('private file lifecycle store', () => {
       createdBy: actorUserId,
       state: 'quarantine',
     }));
-    expect(JSON.stringify(vi.mocked(fileBackend.insertQuarantine).mock.calls)).not.toContain('private-upload');
+    expect(JSON.stringify(vi.mocked(fileBackend.reserveQuarantine).mock.calls)).not.toContain('private-upload');
     expect(signed).toMatchObject({
       id: attachmentId,
       uploadUrl: `https://storage.example/storage/v1/object/upload/sign/workspace-files/${quarantineObjectId}?token=ephemeral`,
@@ -111,13 +119,26 @@ describe('private file lifecycle store', () => {
     expect(signed.expiresAt).toBe('2026-08-02T14:05:00.000Z');
   });
 
-  it('deletes the quarantine row if signed-URL creation fails', async () => {
+  it('stops on the durable reservation quota before asking Storage for a signed grant', async () => {
+    const fileBackend = backend({
+      reserveQuarantine: vi.fn().mockRejectedValue(new UploadQuotaExceededError()),
+    });
+    const store = createPrivateFileStore(fileBackend, { idFactory: idFactory() });
+
+    await expect(store.signUpload(workspaceId, actorUserId, {
+      parent: { type: 'task', id: quarantine.taskId! }, file: preflight(),
+    })).rejects.toBeInstanceOf(UploadQuotaExceededError);
+    expect(fileBackend.createSignedUploadUrl).not.toHaveBeenCalled();
+    expect(fileBackend.cancelReservation).not.toHaveBeenCalled();
+  });
+
+  it('soft-cancels and retains the reservation if signed-URL creation fails', async () => {
     const fileBackend = backend({ createSignedUploadUrl: vi.fn().mockRejectedValue(new Error('provider secret token')) });
     const store = createPrivateFileStore(fileBackend, { idFactory: idFactory() });
     await expect(store.signUpload(workspaceId, actorUserId, {
       parent: { type: 'task', id: quarantine.taskId! }, file: preflight(),
     })).rejects.toThrow('Не удалось подготовить загрузку файла.');
-    expect(fileBackend.deleteQuarantine).toHaveBeenCalledWith(workspaceId, attachmentId, quarantineObjectId);
+    expect(fileBackend.cancelReservation).toHaveBeenCalledWith(workspaceId, attachmentId, quarantineObjectId);
     expect(fileBackend.retireQuarantine).not.toHaveBeenCalled();
   });
 
@@ -126,12 +147,12 @@ describe('private file lifecycle store', () => {
     const store = createPrivateFileStore(fileBackend, { clock: () => new Date('2036-08-02T12:00:00.000Z') });
 
     await expect(store.completeUpload(workspaceId, attachmentId)).resolves.toEqual({
-      id: attachmentId, name: quarantine.name, mimeType: quarantine.mimeType, size: bytes.length,
+      id: attachmentId, name: quarantine.name, mimeType: quarantine.mimeType, size: bytes.length, version: 1,
     });
     expect(fileBackend.retireQuarantine).toHaveBeenCalledWith(
       workspaceId, attachmentId, quarantine.storagePath, 'expired',
     );
-    expect(fileBackend.deleteQuarantine).not.toHaveBeenCalled();
+    expect(fileBackend.cancelReservation).not.toHaveBeenCalled();
   });
 
   it('uses the database expiry verdict when the application clock is far behind', async () => {
@@ -141,7 +162,7 @@ describe('private file lifecycle store', () => {
     await expect(store.completeUpload(workspaceId, attachmentId)).rejects.toBeInstanceOf(UploadExpiredError);
     expect(fileBackend.parentExists).not.toHaveBeenCalled();
     expect(fileBackend.downloadObject).not.toHaveBeenCalled();
-    expect(fileBackend.deleteQuarantine).not.toHaveBeenCalled();
+    expect(fileBackend.cancelReservation).not.toHaveBeenCalled();
   });
 
   it('validates every uploaded byte, writes a new ready object, and atomically queues the quarantine object for cleanup', async () => {
@@ -152,6 +173,9 @@ describe('private file lifecycle store', () => {
     });
     const completed = await store.completeUpload(workspaceId, attachmentId);
 
+    expect(fileBackend.claimValidation).toHaveBeenCalledWith(workspaceId, attachmentId, quarantine.storagePath);
+    expect(vi.mocked(fileBackend.claimValidation).mock.invocationCallOrder[0])
+      .toBeLessThan(vi.mocked(fileBackend.downloadObject).mock.invocationCallOrder[0]!);
     expect(fileBackend.downloadObject).toHaveBeenCalledWith(quarantine.storagePath);
     expect(fileBackend.uploadReadyObject).toHaveBeenCalledWith(
       attachmentId,
@@ -161,8 +185,30 @@ describe('private file lifecycle store', () => {
     expect(fileBackend.completeUpload).toHaveBeenCalledWith(quarantine, expect.objectContaining({
       storagePath: attachmentId,
       sha256: expect.stringMatching(/^[a-f0-9]{64}$/),
-    }));
-    expect(completed).toEqual({ id: attachmentId, name: 'policy.txt', mimeType: 'text/plain', size: bytes.length });
+    }), validationLeaseId);
+    expect(fileBackend.releaseValidation).not.toHaveBeenCalled();
+    expect(completed).toEqual({ id: attachmentId, name: 'policy.txt', mimeType: 'text/plain', size: bytes.length, version: 1 });
+  });
+
+  it('rejects a concurrent completion before downloading the same quarantine bytes', async () => {
+    const fileBackend = backend({ claimValidation: vi.fn().mockResolvedValue(null) });
+    const store = createPrivateFileStore(fileBackend);
+
+    await expect(store.completeUpload(workspaceId, attachmentId))
+      .rejects.toBeInstanceOf(UploadValidationBusyError);
+    expect(fileBackend.downloadObject).not.toHaveBeenCalled();
+    expect(fileBackend.releaseValidation).not.toHaveBeenCalled();
+  });
+
+  it('releases only its validation lease after a retryable provider failure', async () => {
+    const fileBackend = backend({ downloadObject: vi.fn().mockRejectedValue(new Error('provider unavailable')) });
+    const store = createPrivateFileStore(fileBackend);
+
+    await expect(store.completeUpload(workspaceId, attachmentId)).rejects.toThrow(/получить загруженный файл/iu);
+    expect(fileBackend.releaseValidation).toHaveBeenCalledWith(
+      workspaceId, attachmentId, quarantine.storagePath, validationLeaseId,
+    );
+    expect(fileBackend.completeUpload).not.toHaveBeenCalled();
   });
 
   it('reconciles an RPC response loss after completion committed with cleanup established before external writes', async () => {
@@ -195,6 +241,7 @@ describe('private file lifecycle store', () => {
       name: 'policy.txt',
       mimeType: 'text/plain',
       size: bytes.length,
+      version: 1,
     });
     expect(authoritative).toMatchObject({ state: 'ready', storagePath: attachmentId });
     expect(fileBackend.queueObjectCleanup).toHaveBeenCalledWith(
@@ -231,9 +278,12 @@ describe('private file lifecycle store', () => {
       name: 'policy.txt',
       mimeType: 'text/plain',
       size: bytes.length,
+      version: 1,
     });
     expect(fileBackend.uploadReadyObject).toHaveBeenCalledWith(attachmentId, bytes, 'text/plain');
-    expect(fileBackend.completeUpload).toHaveBeenCalledWith(quarantine, expect.objectContaining({ storagePath: attachmentId }));
+    expect(fileBackend.completeUpload).toHaveBeenCalledWith(
+      quarantine, expect.objectContaining({ storagePath: attachmentId }), validationLeaseId,
+    );
   });
 
   it('queues an unresolved ambiguous ready-object upload until completion can no longer reference it', async () => {
@@ -375,9 +425,9 @@ describe('private file lifecycle store', () => {
     await expect(store.completeUpload(workspaceId, attachmentId)).rejects.toBeInstanceOf(ParentNotFoundError);
     expect(fileBackend.parentExists).toHaveBeenCalledWith(workspaceId, { type: 'task', id: quarantine.taskId });
     expect(retireQuarantine).toHaveBeenLastCalledWith(
-      workspaceId, attachmentId, quarantine.storagePath, 'parent_missing',
+      workspaceId, attachmentId, quarantine.storagePath, 'parent_missing', validationLeaseId,
     );
-    expect(fileBackend.deleteQuarantine).not.toHaveBeenCalled();
+    expect(fileBackend.cancelReservation).not.toHaveBeenCalled();
     expect(fileBackend.removeObject).not.toHaveBeenCalled();
     expect(fileBackend.downloadObject).not.toHaveBeenCalled();
     expect(fileBackend.uploadReadyObject).not.toHaveBeenCalled();
@@ -397,9 +447,9 @@ describe('private file lifecycle store', () => {
 
     await expect(store.completeUpload(workspaceId, attachmentId)).rejects.toThrow(/HTML|TXT/iu);
     expect(retireQuarantine).toHaveBeenLastCalledWith(
-      workspaceId, attachmentId, quarantine.storagePath, 'invalid_content',
+      workspaceId, attachmentId, quarantine.storagePath, 'invalid_content', validationLeaseId,
     );
-    expect(fileBackend.deleteQuarantine).not.toHaveBeenCalled();
+    expect(fileBackend.cancelReservation).not.toHaveBeenCalled();
     expect(fileBackend.removeObject).not.toHaveBeenCalled();
   });
 
@@ -415,7 +465,7 @@ describe('private file lifecycle store', () => {
     const store = createPrivateFileStore(fileBackend);
 
     await expect(store.completeUpload(workspaceId, attachmentId)).rejects.toThrow(/HTML|TXT/iu);
-    expect(fileBackend.deleteQuarantine).not.toHaveBeenCalled();
+    expect(fileBackend.cancelReservation).not.toHaveBeenCalled();
     expect(fileBackend.removeObject).not.toHaveBeenCalled();
   });
 
@@ -434,7 +484,7 @@ describe('private file lifecycle store', () => {
       2, workspaceId, attachmentId, quarantine.storagePath, 'expired',
     );
     expect(fileBackend.uploadReadyObject).not.toHaveBeenCalled();
-    expect(fileBackend.deleteQuarantine).not.toHaveBeenCalled();
+    expect(fileBackend.cancelReservation).not.toHaveBeenCalled();
   });
 
   it('never signs a download unless the row is ready and always uses exactly 60 seconds', async () => {
@@ -556,7 +606,7 @@ describe('private file lifecycle store', () => {
       Array.from({ length: 21 }, (_, index) => `expired-${String(index).padStart(2, '0')}`),
     );
     expect(active).toEqual([]);
-    expect(fileBackend.deleteQuarantine).not.toHaveBeenCalled();
+    expect(fileBackend.cancelReservation).not.toHaveBeenCalled();
   });
 
   it('leaves a failed expired retirement discoverable and retries it safely', async () => {
@@ -603,5 +653,30 @@ describe('private file lifecycle store', () => {
     expect(fileBackend.removeObject).not.toHaveBeenCalledWith(attachmentId);
     expect(fileBackend.finishQueuedObjectRemoval).not.toHaveBeenCalled();
     expect(cleanup).toEqual({ removed: 0, failed: 0 });
+  });
+
+  it('archives and restores ready metadata without exposing or rewriting its Storage coordinates', async () => {
+    const ready = {
+      ...quarantine, state: 'ready' as const, storagePath: attachmentId, sha256: 'a'.repeat(64),
+      quarantineExpiresAt: null, completedAt: '2026-08-02T12:00:00.000Z', version: 4, deletedAt: null,
+    };
+    const setAttachmentDeleted = vi.fn()
+      .mockResolvedValueOnce({ ...ready, version: 5, deletedAt: '2026-08-02T13:00:00.000Z' })
+      .mockResolvedValueOnce({ ...ready, version: 6, deletedAt: null });
+    const fileBackend = backend({ setAttachmentDeleted });
+    const store = createPrivateFileStore(fileBackend);
+
+    await expect(store.archiveAttachment(workspaceId, attachmentId, 4)).resolves.toEqual({
+      entity: 'attachment', id: attachmentId, title: 'policy.txt', version: 5,
+      deletedAt: '2026-08-02T13:00:00.000Z',
+      attachment: { id: attachmentId, name: 'policy.txt', mimeType: 'text/plain', size: bytes.length, version: 5 },
+      parentType: 'task', parentId: quarantine.taskId,
+    });
+    await expect(store.restoreAttachment(workspaceId, attachmentId, 5)).resolves.toEqual({
+      id: attachmentId, name: 'policy.txt', mimeType: 'text/plain', size: bytes.length, version: 6,
+    });
+    expect(setAttachmentDeleted).toHaveBeenNthCalledWith(1, workspaceId, attachmentId, 4, false);
+    expect(setAttachmentDeleted).toHaveBeenNthCalledWith(2, workspaceId, attachmentId, 5, true);
+    expect(fileBackend.removeObject).not.toHaveBeenCalled();
   });
 });

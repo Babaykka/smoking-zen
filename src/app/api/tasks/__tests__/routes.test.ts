@@ -12,13 +12,14 @@ import {
   RestoreNotFoundError,
 } from '@/data/workspace-repository';
 import { demoSeed } from '@/data/demo-seed';
-import type { TaskApiStore, TaskSessionActor } from '@/server/task-api';
+import { CommentParentNotFoundError, type TaskApiStore, type TaskSessionActor } from '@/server/task-api';
 
 const actor: TaskSessionActor = {
   userId: '11111111-1111-4111-8111-111111111111',
   workspaceId: '33333333-3333-4333-8333-333333333333',
   membershipId: '22222222-2222-4222-8222-222222222222',
 };
+const taskId = '44444444-4444-4444-8444-444444444444';
 
 function store(): TaskApiStore {
   return {
@@ -61,12 +62,29 @@ describe('task routes', () => {
     expect(injected.status).toBe(400);
   });
 
+  it('rejects unsafe persisted task and comment URLs before store access', async () => {
+    const taskStore = store();
+    const tasks = createTasksHandler({ appOrigin: 'https://app.example', store: taskStore, authenticate: async () => actor, requestId: () => 'unsafe-task-url' });
+    const taskResponse = await tasks(jsonRequest('https://app.example/api/tasks', 'POST', {
+      title: 'Новая задача', description: 'https://example.com/guide?lang=ru',
+    }));
+    expect(taskResponse.status).toBe(400);
+    expect(taskStore.createTask).not.toHaveBeenCalled();
+
+    const comments = createCommentsHandler({ appOrigin: 'https://app.example', store: taskStore, authenticate: async () => actor, requestId: () => 'unsafe-comment-url' });
+    const commentResponse = await comments(jsonRequest('https://app.example/api/comments', 'POST', {
+      taskId, body: `https://example.com/files/${'%2561'.repeat(64)}`,
+    }));
+    expect(commentResponse.status).toBe(400);
+    expect(taskStore.createComment).not.toHaveBeenCalled();
+  });
+
   it('returns 409 for a stale version without overwriting', async () => {
     const taskStore = store();
     vi.mocked(taskStore.updateTask).mockRejectedValue(new ConflictError(1, 2));
     const handler = createTaskItemHandler({ appOrigin: 'https://app.example', store: taskStore, authenticate: async () => actor, requestId: () => 'request-3' });
 
-    const response = await handler(jsonRequest('https://app.example/api/tasks/task-1', 'PATCH', { input: { title: 'Моя версия' }, expectedVersion: 1 }), { params: Promise.resolve({ id: 'task-1' }) });
+    const response = await handler(jsonRequest(`https://app.example/api/tasks/${taskId}`, 'PATCH', { input: { title: 'Моя версия' }, expectedVersion: 1 }), { params: Promise.resolve({ id: taskId }) });
     expect(response.status).toBe(409);
     expect(await response.json()).toMatchObject({ data: { expectedVersion: 1, actualVersion: 2 }, error: { code: 'version_conflict' } });
   });
@@ -75,23 +93,23 @@ describe('task routes', () => {
     const taskStore = store();
     const handler = createTaskItemHandler({ appOrigin: 'https://app.example', store: taskStore, authenticate: async () => actor, requestId: () => 'request-patch' });
 
-    const response = await handler(jsonRequest('https://app.example/api/tasks/task-1', 'PATCH', {
+    const response = await handler(jsonRequest(`https://app.example/api/tasks/${taskId}`, 'PATCH', {
       input: { title: 'Только новое название' }, expectedVersion: 1,
-    }), { params: Promise.resolve({ id: 'task-1' }) });
+    }), { params: Promise.resolve({ id: taskId }) });
 
     expect(response.status).toBe(200);
-    expect(taskStore.updateTask).toHaveBeenCalledWith(actor.workspaceId, 'task-1', { title: 'Только новое название' }, 1, actor.userId);
+    expect(taskStore.updateTask).toHaveBeenCalledWith(actor.workspaceId, taskId, { title: 'Только новое название' }, 1, actor.userId);
   });
 
   it('soft deletes and restores a task with an expected version', async () => {
     const taskStore = store();
     const handler = createTaskItemHandler({ appOrigin: 'https://app.example', store: taskStore, authenticate: async () => actor, requestId: () => 'request-4' });
 
-    expect((await handler(jsonRequest('https://app.example/api/tasks/task-1', 'DELETE', { expectedVersion: 2 }), { params: Promise.resolve({ id: 'task-1' }) })).status).toBe(200);
-    expect(taskStore.deleteTask).toHaveBeenCalledWith(actor.workspaceId, 'task-1', 2, actor.userId);
+    expect((await handler(jsonRequest(`https://app.example/api/tasks/${taskId}`, 'DELETE', { expectedVersion: 2 }), { params: Promise.resolve({ id: taskId }) })).status).toBe(200);
+    expect(taskStore.deleteTask).toHaveBeenCalledWith(actor.workspaceId, taskId, 2, actor.userId);
 
-    expect((await handler(jsonRequest('https://app.example/api/tasks/task-1', 'PATCH', { action: 'restore', expectedVersion: 3 }), { params: Promise.resolve({ id: 'task-1' }) })).status).toBe(200);
-    expect(taskStore.restoreTask).toHaveBeenCalledWith(actor.workspaceId, 'task-1', 3, actor.userId);
+    expect((await handler(jsonRequest(`https://app.example/api/tasks/${taskId}`, 'PATCH', { action: 'restore', expectedVersion: 3 }), { params: Promise.resolve({ id: taskId }) })).status).toBe(200);
+    expect(taskStore.restoreTask).toHaveBeenCalledWith(actor.workspaceId, taskId, 3, actor.userId);
   });
 
   it('maps typed task restore failures to stable recovery responses', async () => {
@@ -106,8 +124,8 @@ describe('task routes', () => {
     for (const failure of failures) {
       vi.mocked(taskStore.restoreTask).mockRejectedValueOnce(failure.error);
       const response = await handler(
-        jsonRequest('https://app.example/api/tasks/task-1', 'PATCH', { action: 'restore', expectedVersion: 3 }),
-        { params: Promise.resolve({ id: 'task-1' }) },
+        jsonRequest(`https://app.example/api/tasks/${taskId}`, 'PATCH', { action: 'restore', expectedVersion: 3 }),
+        { params: Promise.resolve({ id: taskId }) },
       );
       expect(response.status).toBe(failure.status);
       expect(await response.json()).toMatchObject({ data: null, error: { code: failure.code } });
@@ -115,8 +133,8 @@ describe('task routes', () => {
 
     vi.mocked(taskStore.restoreTask).mockRejectedValueOnce(new ConflictError(2, 3));
     const conflict = await handler(
-      jsonRequest('https://app.example/api/tasks/task-1', 'PATCH', { action: 'restore', expectedVersion: 2 }),
-      { params: Promise.resolve({ id: 'task-1' }) },
+      jsonRequest(`https://app.example/api/tasks/${taskId}`, 'PATCH', { action: 'restore', expectedVersion: 2 }),
+      { params: Promise.resolve({ id: taskId }) },
     );
     expect(conflict.status).toBe(409);
     expect(await conflict.json()).toMatchObject({
@@ -127,9 +145,33 @@ describe('task routes', () => {
   it('creates comments with the authenticated membership as author', async () => {
     const taskStore = store();
     const handler = createCommentsHandler({ appOrigin: 'https://app.example', store: taskStore, authenticate: async () => actor, requestId: () => 'request-5' });
-    const response = await handler(jsonRequest('https://app.example/api/comments', 'POST', { taskId: 'task-1', authorId: 'attacker', body: 'Готово' }));
+    const response = await handler(jsonRequest('https://app.example/api/comments', 'POST', { taskId, authorId: 'attacker', body: 'Готово' }));
 
     expect(response.status).toBe(201);
-    expect(taskStore.createComment).toHaveBeenCalledWith(actor.workspaceId, { taskId: 'task-1', authorId: actor.membershipId, body: 'Готово' }, actor.userId);
+    expect(taskStore.createComment).toHaveBeenCalledWith(actor.workspaceId, { taskId, authorId: actor.membershipId, body: 'Готово' }, actor.userId);
+  });
+
+  it('rejects malformed and deleted comment parents without creating an orphan', async () => {
+    const taskStore = store();
+    const handler = createCommentsHandler({ appOrigin: 'https://app.example', store: taskStore, authenticate: async () => actor, requestId: () => 'request-comment-parent' });
+    const malformed = await handler(jsonRequest('https://app.example/api/comments', 'POST', { taskId: 'not-a-uuid', body: 'Готово' }));
+    expect(malformed.status).toBe(400);
+    expect(taskStore.createComment).not.toHaveBeenCalled();
+
+    vi.mocked(taskStore.createComment).mockRejectedValueOnce(new CommentParentNotFoundError());
+    const deleted = await handler(jsonRequest('https://app.example/api/comments', 'POST', { taskId, body: 'Готово' }));
+    expect(deleted.status).toBe(404);
+    expect(await deleted.json()).toMatchObject({ error: { code: 'task_not_found' } });
+  });
+
+  it('rejects malformed task identifiers before reaching a store', async () => {
+    const taskStore = store();
+    const handler = createTaskItemHandler({ appOrigin: 'https://app.example', store: taskStore, authenticate: async () => actor, requestId: () => 'bad-id' });
+    const response = await handler(
+      jsonRequest('https://app.example/api/tasks/not-a-uuid', 'DELETE', { expectedVersion: 1 }),
+      { params: Promise.resolve({ id: 'not-a-uuid' }) },
+    );
+    expect(response.status).toBe(400);
+    expect(taskStore.deleteTask).not.toHaveBeenCalled();
   });
 });

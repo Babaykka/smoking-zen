@@ -35,10 +35,23 @@ describe('KnowledgeWorkspace', () => {
   });
 
   it('renders neutral Markdown without scripts, unsafe links, or remote images', () => {
-    render(<SafeMarkdown value={'- [x] Готово\n[Безопасно](https://example.com)\n[Опасно](javascript:alert(1))\n![внешнее](https://example.com/image.png)\n<script>alert(1)</script>'} />);
+    render(<SafeMarkdown value={`- [x] Готово
+[Безопасно](https://example.com/guide)
+[HTTP](http://example.com/guide)
+[Доступ](https://user:password@example.com/guide)
+[Запрос](https://example.com/guide?lang=ru)
+[Azure](https://storage.example.com/guide.pdf?sv=2025-01-05&sig=secret)
+[Фрагмент](https://example.com/guide#opening)
+[Opaque](https://example.com/files/${'a'.repeat(64)})
+[Кодированный](https://example.com/files/${'%2561'.repeat(64)})
+[Опасно](javascript:alert(1))
+![внешнее](https://example.com/image.png)
+<script>alert(1)</script>`} />);
     expect(screen.getByRole('checkbox')).toBeChecked();
     expect(screen.getByRole('link', { name: 'Безопасно' })).toHaveAttribute('rel', 'noopener noreferrer');
-    expect(screen.queryByRole('link', { name: 'Опасно' })).toBeNull();
+    for (const name of ['HTTP', 'Доступ', 'Запрос', 'Azure', 'Фрагмент', 'Opaque', 'Кодированный', 'Опасно']) {
+      expect(screen.queryByRole('link', { name })).toBeNull();
+    }
     expect(document.querySelector('img')).toBeNull();
     expect(document.querySelector('script')).toBeNull();
   });
@@ -129,6 +142,20 @@ describe('KnowledgeWorkspace', () => {
     } finally {
       Object.defineProperty(window, 'innerWidth', { configurable: true, value: originalWidth });
     }
+  });
+
+  it('closes the knowledge detail with Escape and restores the opening card', async () => {
+    render(<WorkspaceProvider gateway={createDemoGateway(createDemoRepository({ loadPersisted: false }))}><KnowledgeWorkspace /></WorkspaceProvider>);
+    const card = screen.getByRole('button', { name: 'Открыть материал Плотная забивка чаши' });
+    card.focus();
+    fireEvent.click(card);
+
+    const closeButton = await screen.findByRole('button', { name: 'Закрыть' });
+    await waitFor(() => expect(closeButton).toHaveFocus());
+    fireEvent.keyDown(closeButton, { key: 'Escape' });
+
+    await waitFor(() => expect(screen.queryByRole('complementary', { name: 'Детали материала' })).not.toBeInTheDocument());
+    await waitFor(() => expect(card).toHaveFocus());
   });
 
   it('does not refocus the mobile detail when a new material finishes saving', async () => {

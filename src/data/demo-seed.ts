@@ -62,5 +62,5 @@ export const demoSeed: WorkspaceSnapshot = {
 };
 
 export const demoSecureItemRevealUrls: Readonly<Record<string, string>> = {
-  'secure-pos': 'https://vault.bitwarden.com/#/items/demo-pos',
+  'secure-pos': 'https://vault.bitwarden.com/#/vault?itemId=123e4567-e89b-12d3-a456-426614174000',
 };

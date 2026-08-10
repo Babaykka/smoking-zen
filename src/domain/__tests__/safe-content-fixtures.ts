@@ -47,6 +47,39 @@ export const safeSafeTextFixtures = [
   'Политика паролей и порядок плановой ротации.',
 ] as const;
 
+const opaquePathToken = 'a'.repeat(64);
+
+export const unsafeDecodedCodepointUrlFixtures = [
+  { label: 'percent-encoded NBSP', url: `https://example.com/files/%C2%A0${opaquePathToken}` },
+  { label: 'percent-encoded BOM', url: `https://example.com/files/%EF%BB%BF${opaquePathToken}` },
+  { label: 'raw OGHAM SPACE MARK', url: `https://example.com/files/\u1680${opaquePathToken}` },
+  { label: 'percent-encoded OGHAM SPACE MARK', url: `https://example.com/files/%E1%9A%80${opaquePathToken}` },
+  { label: 'raw NARROW NO-BREAK SPACE', url: `https://example.com/files/\u202f${opaquePathToken}` },
+  { label: 'percent-encoded NARROW NO-BREAK SPACE', url: `https://example.com/files/%E2%80%AF${opaquePathToken}` },
+  { label: 'percent-encoded NUL', url: `https://example.com/files/%00${opaquePathToken}` },
+  { label: 'raw NEXT LINE', url: `https://example.com/files/\u0085${opaquePathToken}` },
+] as const;
+
+export const unsafePersistedUrlTextFixtures = [
+  'Инструкция: http://example.com/guide',
+  'Инструкция: https://user:password@example.com/guide',
+  'Инструкция: https://example.com/guide?lang=ru',
+  'Инструкция: https://example.com/guide?',
+  'Инструкция: https://storage.example.com/container/guide.pdf?sv=2025-01-05&sig=azure-secret',
+  'Инструкция: https://example.com/guide#opening',
+  `Инструкция: https://example.com/files/${'a'.repeat(64)}`,
+  `Инструкция: https://example.com/files/${'%61'.repeat(64)}`,
+  `Инструкция: https://example.com/files/${'%2561'.repeat(64)}`,
+  'Инструкция: https://example.com/files/%zz',
+  ...unsafeDecodedCodepointUrlFixtures.map(({ url }) => `Инструкция: ${url}`),
+] as const;
+
+export const safePersistedUrlTextFixtures = [
+  'Инструкция: https://example.com/guides/opening-checklist-v2.pdf',
+  '[Регламент](https://example.com/guides/opening-checklist-v2.pdf)',
+  'Регламент открытия без внешней ссылки.',
+] as const;
+
 export const unsafeSafeUrlFixtures = [
   ...unicodeDashPunctuationFixtures.map((separator) =>
     `https://vault.bitwarden.com/#/items/${encodeURIComponent(`password${separator}hunter2`)}`),
@@ -68,9 +101,7 @@ export const unsafeSafeUrlFixtures = [
 ] as const;
 
 export const safeSafeUrlFixtures = [
-  'https://vault.bitwarden.com/#/items/example',
-  'https://vault.bitwarden.com/#/vault/item/123e4567-e89b-12d3-a456-426614174000',
-  'https://vault.bitwarden.com/#/items/example%20path',
-  'https://vault.bitwarden.com/#/items/example%E1%9A%80path',
-  'https://vault.bitwarden.com/?item=%25252525252541',
+  'https://vault.bitwarden.com',
+  'https://vault.bitwarden.com/?itemId=123e4567-e89b-12d3-a456-426614174000',
+  'https://vault.bitwarden.com/#/vault?itemId=123e4567-e89b-12d3-a456-426614174000',
 ] as const;

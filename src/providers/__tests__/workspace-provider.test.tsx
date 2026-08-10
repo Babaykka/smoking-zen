@@ -18,6 +18,11 @@ function FirstTaskTitle() {
   return <output>{snapshot.tasks[0]?.title}</output>;
 }
 
+function CurrentMember() {
+  const { currentMemberId } = useWorkspace();
+  return <output>{currentMemberId ?? 'none'}</output>;
+}
+
 describe('WorkspaceProvider', () => {
   it('renders a stable initial repository snapshot', () => {
     const repository = createDemoRepository({ persistence: { load: () => null, save: () => {} } });
@@ -29,6 +34,17 @@ describe('WorkspaceProvider', () => {
     );
 
     expect(screen.getByRole('status')).toHaveTextContent('1');
+  });
+
+  it('keeps the authenticated membership identity in workspace context', () => {
+    const repository = createDemoRepository({ loadPersisted: false });
+    render(
+      <WorkspaceProvider currentMemberId="member-alina" gateway={createDemoGateway(repository)}>
+        <CurrentMember />
+      </WorkspaceProvider>,
+    );
+
+    expect(screen.getByRole('status')).toHaveTextContent('member-alina');
   });
 
   it('starts from the deterministic seed then hydrates default local persistence after mount', async () => {
@@ -58,12 +74,14 @@ describe('WorkspaceProvider', () => {
       fileStorageMode: 'persistent',
       snapshot: () => demoSeed,
       hydrate: vi.fn().mockResolvedValue(undefined),
+      refresh: vi.fn().mockResolvedValue(demoSeed),
       subscribe: vi.fn(() => unsubscribe),
       createTask: vi.fn(), updateTask: vi.fn(), deleteTask: vi.fn(), restoreTask: vi.fn(), createComment: vi.fn(),
       createKnowledge: vi.fn(), updateKnowledge: vi.fn(), deleteKnowledge: vi.fn(), restoreKnowledge: vi.fn(),
       createContact: vi.fn(), updateContact: vi.fn(), deleteContact: vi.fn(), restoreContact: vi.fn(), search: vi.fn(),
+      createInvite: vi.fn(),
       createSecureItem: vi.fn(), updateSecureItem: vi.fn(), deleteSecureItem: vi.fn(), restoreSecureItem: vi.fn(), revealSecureItem: vi.fn(),
-      uploadAttachment: vi.fn(), downloadAttachment: vi.fn(),
+      uploadAttachment: vi.fn(), downloadAttachment: vi.fn(), deleteAttachment: vi.fn(), restoreAttachment: vi.fn(),
       dispose: vi.fn(),
     };
 

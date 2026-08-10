@@ -19,7 +19,7 @@ const row = {
   card_holder: null,
   card_purpose: null,
   last_four: '4242',
-  external_url: 'https://vault.bitwarden.com/#/items/private',
+  external_url: 'https://vault.bitwarden.com/#/vault?itemId=123e4567-e89b-12d3-a456-426614174000',
   version: 1,
   created_at: '2026-08-02T12:00:00.000Z',
   updated_at: '2026-08-02T12:00:00.000Z',
@@ -80,7 +80,7 @@ describe('Supabase secure-item adapter', () => {
   });
 
   it('never reveals a legacy database URL outside the current exact allowlist', async () => {
-    const legacyUrl = 'https://legacy.bitwarden.com/#/items/private';
+    const legacyUrl = 'https://legacy.bitwarden.com/#/vault?itemId=123e4567-e89b-12d3-a456-426614174000';
     const builder = query({ data: { external_url: legacyUrl }, error: null });
     const client = { from: vi.fn(() => builder) } as unknown as SupabaseClient;
     const store = createSupabaseSecureItemStore(client, () => client, []);
@@ -111,7 +111,7 @@ describe('Supabase secure-item adapter', () => {
   });
 
   it('reveals an exact current self-hosted origin configured for this process', async () => {
-    const externalUrl = 'https://vault.example.org/#/items/private';
+    const externalUrl = 'https://vault.example.org/#/vault?itemId=123e4567-e89b-12d3-a456-426614174000';
     const builder = query({ data: { external_url: externalUrl }, error: null });
     const client = { from: vi.fn(() => builder) } as unknown as SupabaseClient;
     const store = createSupabaseSecureItemStore(client, () => client, ['https://vault.example.org']);

@@ -70,10 +70,12 @@ jobs:
         run: pnpm test:scripts
       - name: ShellCheck
         run: pnpm lint:shell
-      - name: Chromium runtime
-        run: pnpm exec playwright install --with-deps chromium
-      - name: Desktop and mobile Playwright
-        run: pnpm exec playwright test --project=desktop-chromium --project=mobile-chromium
+      - name: Chromium and WebKit runtimes
+        run: pnpm exec playwright install --with-deps chromium webkit
+      - name: Complete non-credentialed Playwright matrix
+        run: pnpm test:e2e
+      - name: Production-start headers and browser gate
+        run: pnpm test:e2e:production
       - name: Reviewed Playwright failure report
         if: failure()
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1

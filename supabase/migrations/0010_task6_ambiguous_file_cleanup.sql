@@ -1,6 +1,21 @@
 -- Reconcile ambiguous provider commits without exposing semantic Storage object names.
 -- Existing workspace/state paths remain readable as legacy rows; every new object is opaque.
 
+-- A later migration changes this worker lease verdict from boolean to an opaque
+-- UUID. A full-chain replay must converge before CREATE OR REPLACE, which cannot
+-- change an existing function's return type.
+do $prepare_cleanup_signature$
+begin
+  if exists (
+    select 1 from pg_catalog.pg_proc as routine
+    where routine.oid = to_regprocedure('public.prepare_file_cleanup_object(uuid)')
+      and routine.prorettype = 'uuid'::regtype
+  ) then
+    drop function public.prepare_file_cleanup_object(uuid);
+  end if;
+end;
+$prepare_cleanup_signature$;
+
 alter table public.attachments add column if not exists storage_layout text not null default 'opaque';
 
 update public.attachments

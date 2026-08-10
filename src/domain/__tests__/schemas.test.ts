@@ -6,6 +6,7 @@ import {
   commentInputSchema,
   contactInputSchema,
   contactPatchSchema,
+  isSafePersistedHttpsUrl,
   knowledgeInputSchema,
   mergeKnowledgePatch,
   knowledgePatchSchema,
@@ -14,6 +15,11 @@ import {
   taskInputSchema,
 } from '@/domain/schemas';
 import { demoSeed } from '@/data/demo-seed';
+import {
+  safePersistedUrlTextFixtures,
+  unsafeDecodedCodepointUrlFixtures,
+  unsafePersistedUrlTextFixtures,
+} from '@/domain/__tests__/safe-content-fixtures';
 
 describe('workspace schemas', () => {
   it('keeps knowledge and contact patches non-defaulting while validating secret-safe fields', () => {
@@ -33,6 +39,11 @@ describe('workspace schemas', () => {
     expect(knowledgeInputSchema.safeParse({ title: 'Опасно', kind: 'link', linkUrl: 'https://user:pass@example.com' }).success).toBe(false);
     expect(knowledgeInputSchema.safeParse({ title: 'Опасно', kind: 'link', linkUrl: 'https://example.com/?token=abc' }).success).toBe(false);
     expect(knowledgeInputSchema.safeParse({ title: 'Опасно', kind: 'link', linkUrl: 'https://storage.example.com/?X-Amz-Signature=private' }).success).toBe(false);
+    expect(knowledgeInputSchema.safeParse({ title: 'Опасно', kind: 'link', linkUrl: 'https://example.com/guide?file=opaque' }).success).toBe(false);
+    expect(knowledgeInputSchema.safeParse({ title: 'Опасно', kind: 'link', linkUrl: 'https://example.com/guide#signed' }).success).toBe(false);
+    expect(knowledgeInputSchema.safeParse({ title: 'Опасно', kind: 'link', linkUrl: `https://example.com/files/${'a'.repeat(64)}` }).success).toBe(false);
+    expect(knowledgeInputSchema.safeParse({ title: 'Опасно', kind: 'link', linkUrl: `https://example.com/files/${'A1b2C3d4E5f6G7h8I9j0_K-lMnOpQrStUvWxYz'.repeat(2)}` }).success).toBe(false);
+    expect(knowledgeInputSchema.safeParse({ title: 'Регламент', kind: 'link', linkUrl: 'https://example.com/guides/opening-checklist-v2.pdf' }).success).toBe(true);
     expect(contactInputSchema.parse({
       name: 'Илья',
       methods: [
@@ -47,6 +58,56 @@ describe('workspace schemas', () => {
     ]);
     expect(contactInputSchema.safeParse({ name: 'Илья', methods: [{ kind: 'telegram', value: 'javascript:alert(1)' }] }).success).toBe(false);
   });
+
+  it.each([
+    `https://example.com/files/${'%61'.repeat(64)}`,
+    `https://example.com/files/${'%2561'.repeat(64)}`,
+    'https://example.com/files/%zz',
+  ])('rejects an invalid or nested-percent opaque knowledge path: %s', (linkUrl) => {
+    expect(knowledgeInputSchema.safeParse({ title: 'Опасно', kind: 'link', linkUrl }).success).toBe(false);
+    expect(knowledgePatchSchema.safeParse({ linkUrl }).success).toBe(false);
+  });
+
+  it.each(unsafeDecodedCodepointUrlFixtures)(
+    'rejects $label in direct and schema knowledge URLs', ({ url }) => {
+      expect(isSafePersistedHttpsUrl(url)).toBe(false);
+      expect(knowledgeInputSchema.safeParse({ title: 'Опасно', kind: 'link', linkUrl: url }).success).toBe(false);
+      expect(knowledgePatchSchema.safeParse({ linkUrl: url }).success).toBe(false);
+    },
+  );
+
+  it.each(unsafePersistedUrlTextFixtures)(
+    'rejects one unsafe URL policy across every persisted free-text field: %s', (value) => {
+      const secureBase = {
+        title: 'Касса', purpose: 'Доступ к кассе', owner: 'Управляющий',
+        externalUrl: 'https://vault.bitwarden.com',
+      };
+      const checks = [
+        taskInputSchema.safeParse({ title: value }),
+        taskInputSchema.safeParse({ title: 'Смена', description: value }),
+        commentInputSchema.safeParse({ taskId: 'task-1', authorId: 'member-1', body: value }),
+        knowledgeInputSchema.safeParse({ title: value, kind: 'note' }),
+        knowledgeInputSchema.safeParse({ title: 'Регламент', body: value, kind: 'note' }),
+        contactInputSchema.safeParse({ name: value, methods: [{ kind: 'phone', value: '+79990000000' }] }),
+        contactInputSchema.safeParse({ name: 'Мастер', notes: value, methods: [{ kind: 'phone', value: '+79990000000' }] }),
+        ...(['title', 'purpose', 'owner', 'cardBank', 'cardHolder', 'cardPurpose'] as const)
+          .map((field) => secureItemInputSchema.safeParse({ ...secureBase, [field]: value })),
+      ];
+      expect(checks.every(({ success }) => !success)).toBe(true);
+    },
+  );
+
+  it.each(safePersistedUrlTextFixtures)(
+    'preserves benign HTTPS no-query prose in every persisted aggregate: %s', (value) => {
+      expect(taskInputSchema.safeParse({ title: 'Смена', description: value }).success).toBe(true);
+      expect(commentInputSchema.safeParse({ taskId: 'task-1', authorId: 'member-1', body: value }).success).toBe(true);
+      expect(knowledgeInputSchema.safeParse({ title: 'Регламент', body: value, kind: 'note' }).success).toBe(true);
+      expect(contactInputSchema.safeParse({ name: 'Мастер', notes: value, methods: [{ kind: 'phone', value: '+79990000000' }] }).success).toBe(true);
+      expect(secureItemInputSchema.safeParse({
+        title: 'Касса', purpose: value, owner: 'Управляющий', externalUrl: 'https://vault.bitwarden.com',
+      }).success).toBe(true);
+    },
+  );
 
   it('keeps link URLs and contact method validation type-specific', () => {
     expect(knowledgeInputSchema.safeParse({ title: 'Ссылка', kind: 'link' }).success).toBe(false);
@@ -121,14 +182,14 @@ describe('workspace schemas', () => {
     expect(() =>
       secureItemInputSchema.parse({
         title: 'Касса',
-        externalUrl: 'https://vault.bitwarden.com/#/items/123',
+        externalUrl: 'https://vault.bitwarden.com/#/vault?itemId=123e4567-e89b-12d3-a456-426614174000',
         metadata: { password: 'not-allowed' },
       }),
     ).toThrow();
     expect(() =>
       secureItemInputSchema.parse({
         title: 'Касса',
-        externalUrl: 'https://vault.bitwarden.com/#/items/123',
+        externalUrl: 'https://vault.bitwarden.com/#/vault?itemId=123e4567-e89b-12d3-a456-426614174000',
         metadata: { cardNumber: '4242 4242 4242 4242' },
       }),
     ).toThrow();
@@ -197,7 +258,7 @@ describe('workspace schemas', () => {
       title: '',
       purpose: 'Доступ к кассе',
       owner: 'Управляющий',
-      externalUrl: 'https://vault.bitwarden.com/#/items/123',
+      externalUrl: 'https://vault.bitwarden.com/#/vault?itemId=123e4567-e89b-12d3-a456-426614174000',
     });
 
     expect(result.success).toBe(false);
@@ -220,7 +281,7 @@ describe('workspace schemas', () => {
       title: 42,
       purpose: 'Доступ к кассе',
       owner: 'Управляющий',
-      externalUrl: 'https://vault.bitwarden.com/#/items/123',
+      externalUrl: 'https://vault.bitwarden.com/#/vault?itemId=123e4567-e89b-12d3-a456-426614174000',
     });
 
     expect(taskType.success).toBe(false);
@@ -243,7 +304,7 @@ describe('workspace schemas', () => {
       title: 'Касса',
       purpose: 'Доступ к кассе',
       owner: 'Управляющий',
-      externalUrl: 'https://vault.bitwarden.com/#/items/123',
+      externalUrl: 'https://vault.bitwarden.com/#/vault?itemId=123e4567-e89b-12d3-a456-426614174000',
       card: { lastFour: '4242' },
     });
 
@@ -283,7 +344,7 @@ describe('workspace schemas', () => {
     };
 
     expect(taskInputSchema.parse({ title: 'Обновить меню', attachments: [attachment] }).attachments).toEqual([
-      attachment,
+      { ...attachment, version: 1 },
     ]);
     expect(() =>
       taskInputSchema.parse({

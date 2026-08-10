@@ -15,11 +15,14 @@ describe('readJsonObject', () => {
       size: 25 * 1024 * 1024,
     }));
     const urlPrefix = 'https://example.com/';
+    const safePath = 'guide-v2/'
+      .repeat(Math.ceil((2_000 - urlPrefix.length) / 'guide-v2/'.length))
+      .slice(0, 2_000 - urlPrefix.length);
     const payload = knowledgeInputSchema.parse({
       title: escaped.repeat(280),
       kind: 'link',
       body: escaped.repeat(30_000),
-      linkUrl: `${urlPrefix}${escaped.repeat(2_000 - urlPrefix.length)}`,
+      linkUrl: `${urlPrefix}${safePath}`,
       sectionId: escaped.repeat(200),
       attachments,
     });

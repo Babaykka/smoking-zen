@@ -14,7 +14,7 @@ describe('demo secure items', () => {
       save: (snapshot) => writes.push(structuredClone(snapshot)),
     };
     const repository = createDemoRepository({ persistence, loadPersisted: false });
-    const externalUrl = 'https://vault.bitwarden.com/#/items/memory-only';
+    const externalUrl = 'https://vault.bitwarden.com/#/vault?itemId=123e4567-e89b-12d3-a456-426614174000';
 
     const created = repository.createSecureItem({
       title: 'Касса',
@@ -39,15 +39,15 @@ describe('demo secure items', () => {
   it('uses a blank URL replacement without placing the previous URL in the patchable summary', () => {
     const repository = createDemoRepository({ loadPersisted: false });
     const created = repository.createSecureItem({
-      title: 'Касса', purpose: 'Доступ', owner: 'Владелец', externalUrl: 'https://vault.bitwarden.com/#/items/old',
+      title: 'Касса', purpose: 'Доступ', owner: 'Владелец', externalUrl: 'https://vault.bitwarden.com/#/vault?itemId=123e4567-e89b-12d3-a456-426614174000',
     });
     const updated = repository.updateSecureItem(created.id, {
-      owner: 'Управляющий', externalUrl: 'https://vault.bitwarden.eu/#/items/new',
+      owner: 'Управляющий', externalUrl: 'https://vault.bitwarden.eu/#/vault?itemId=223e4567-e89b-12d3-a456-426614174000',
     }, created.version);
 
     expect(updated).toMatchObject({ owner: 'Управляющий', version: 2 });
     expect(updated).not.toHaveProperty('externalUrl');
-    expect(repository.revealSecureItem(created.id)).toEqual({ externalUrl: 'https://vault.bitwarden.eu/#/items/new' });
+    expect(repository.revealSecureItem(created.id)).toEqual({ externalUrl: 'https://vault.bitwarden.eu/#/vault?itemId=223e4567-e89b-12d3-a456-426614174000' });
   });
 });
 

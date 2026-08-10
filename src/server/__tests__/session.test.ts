@@ -25,7 +25,7 @@ const IDENTITY = {
 };
 
 describe('session primitives', () => {
-  it('creates a 12-hour HttpOnly SameSite=Lax cookie that is Secure in production', async () => {
+  it('creates a 12-hour partitioned cross-site cookie when Secure is enabled', async () => {
     const cookie = await createSession(IDENTITY, { secret: SECRET, now: NOW, secure: true });
     const claims = decodeJwt(cookie.value);
 
@@ -33,8 +33,9 @@ describe('session primitives', () => {
       name: SESSION_COOKIE_NAME,
       options: {
         httpOnly: true,
-        sameSite: 'lax',
+        sameSite: 'none',
         secure: true,
+        partitioned: true,
         path: '/',
         maxAge: 43_200,
       },
@@ -42,6 +43,19 @@ describe('session primitives', () => {
     expect(claims.exp! - claims.iat!).toBe(43_200);
     await expect(readSession(cookie.value, { secret: SECRET, now: new Date(NOW.getTime() + 1_000) }))
       .resolves.toEqual(IDENTITY);
+  });
+
+  it('keeps a non-Secure development cookie Lax and non-partitioned', async () => {
+    const cookie = await createSession(IDENTITY, { secret: SECRET, now: NOW, secure: false });
+
+    expect(cookie.options).toEqual({
+      httpOnly: true,
+      sameSite: 'lax',
+      secure: false,
+      partitioned: false,
+      path: '/',
+      maxAge: 43_200,
+    });
   });
 
   it('rejects tampered and expired sessions and rotates a valid session identifier on refresh', async () => {
@@ -75,8 +89,9 @@ describe('session primitives', () => {
       value: '',
       options: {
         httpOnly: true,
-        sameSite: 'lax',
+        sameSite: 'none',
         secure: true,
+        partitioned: true,
         path: '/',
         maxAge: 0,
       },
@@ -103,7 +118,7 @@ describe('server environment', () => {
       TELEGRAM_BOT_TOKEN: `123456:${'A'.repeat(35)}`, TELEGRAM_BOT_USERNAME: 'smoking_zen_bot',
       TELEGRAM_MINI_APP_SHORT_NAME: 'workspace', TELEGRAM_WEBHOOK_SECRET: 'w'.repeat(32), INTERNAL_JOB_SECRET: 'j'.repeat(32),
       SESSION_SECRET: 's'.repeat(32), SUPABASE_URL: 'https://abcdefghijklmnopqrst.supabase.co',
-      SUPABASE_PUBLISHABLE_KEY: 'sb_publishable_test', SUPABASE_SERVICE_ROLE_KEY: 'service',
+      SUPABASE_PUBLISHABLE_KEY: 'sb_publishable_test', SUPABASE_SERVICE_ROLE_KEY: 'sb_secret_service',
       SUPABASE_JWT_ES256_PRIVATE_KEY: TEST_PRIVATE_KEY,
       SUPABASE_JWT_KID: 'trusted-es256-key', OWNER_TELEGRAM_ID: '123456789',
     });
@@ -120,7 +135,7 @@ describe('server environment', () => {
       TELEGRAM_BOT_TOKEN: `123456:${'A'.repeat(35)}`, TELEGRAM_BOT_USERNAME: 'smoking_zen_bot',
       TELEGRAM_MINI_APP_SHORT_NAME: 'workspace', TELEGRAM_WEBHOOK_SECRET: 'w'.repeat(32), INTERNAL_JOB_SECRET: 'j'.repeat(32),
       SESSION_SECRET: 's'.repeat(32), SUPABASE_URL: 'https://abcdefghijklmnopqrst.supabase.co',
-      SUPABASE_PUBLISHABLE_KEY: 'sb_publishable_test', SUPABASE_SERVICE_ROLE_KEY: 'service',
+      SUPABASE_PUBLISHABLE_KEY: 'sb_publishable_test', SUPABASE_SERVICE_ROLE_KEY: 'sb_secret_service',
       SUPABASE_JWT_ES256_PRIVATE_KEY: TEST_PRIVATE_KEY,
       SUPABASE_JWT_KID: 'trusted-es256-key', OWNER_TELEGRAM_ID: '123456789',
     };
@@ -140,7 +155,7 @@ describe('server environment', () => {
       TELEGRAM_MINI_APP_SHORT_NAME: 'workspace_staging', TELEGRAM_WEBHOOK_SECRET: 'w'.repeat(32),
       INTERNAL_JOB_SECRET: 'j'.repeat(32), SESSION_SECRET: 's'.repeat(32),
       SUPABASE_URL: 'https://abcdefghijklmnopqrst.supabase.co',
-      SUPABASE_PUBLISHABLE_KEY: 'sb_publishable_test', SUPABASE_SERVICE_ROLE_KEY: 'service',
+      SUPABASE_PUBLISHABLE_KEY: 'sb_publishable_test', SUPABASE_SERVICE_ROLE_KEY: 'sb_secret_service',
       SUPABASE_JWT_ES256_PRIVATE_KEY: TEST_PRIVATE_KEY,
       SUPABASE_JWT_KID: 'trusted-es256-key', OWNER_TELEGRAM_ID: '123456789',
     };
@@ -171,7 +186,7 @@ describe('server environment', () => {
       TELEGRAM_MINI_APP_SHORT_NAME: 'workspace_staging', TELEGRAM_WEBHOOK_SECRET: 'w'.repeat(32),
       INTERNAL_JOB_SECRET: 'j'.repeat(32), SESSION_SECRET: 's'.repeat(32),
       SUPABASE_URL: 'https://abcdefghijklmnopqrst.supabase.co',
-      SUPABASE_PUBLISHABLE_KEY: 'sb_publishable_test', SUPABASE_SERVICE_ROLE_KEY: 'service',
+      SUPABASE_PUBLISHABLE_KEY: 'sb_publishable_test', SUPABASE_SERVICE_ROLE_KEY: 'sb_secret_service',
       SUPABASE_JWT_ES256_PRIVATE_KEY: TEST_PRIVATE_KEY,
       SUPABASE_JWT_KID: 'trusted-es256-key', OWNER_TELEGRAM_ID: '123456789',
     };
@@ -193,5 +208,34 @@ describe('server environment', () => {
       SUPABASE_URL: 'https://supabase.internal.example',
       SUPABASE_SELF_HOSTED_ORIGINS: 'https://different.internal.example',
     })).toThrow(ServerConfigurationError);
+  });
+
+  it('keeps browser and service Supabase credentials cryptographically separated', () => {
+    const source = {
+      APP_MODE: 'production', DEPLOYMENT_ENVIRONMENT: 'staging', APP_ORIGIN: 'https://staging.smoking-zen.example',
+      TELEGRAM_BOT_TOKEN: `123456:${'A'.repeat(35)}`, TELEGRAM_BOT_USERNAME: 'smoking_zen_staging_bot',
+      TELEGRAM_MINI_APP_SHORT_NAME: 'workspace_staging', TELEGRAM_WEBHOOK_SECRET: 'w'.repeat(32),
+      INTERNAL_JOB_SECRET: 'j'.repeat(32), SESSION_SECRET: 's'.repeat(32),
+      SUPABASE_URL: 'https://abcdefghijklmnopqrst.supabase.co',
+      SUPABASE_PUBLISHABLE_KEY: 'sb_publishable_browser', SUPABASE_SERVICE_ROLE_KEY: 'sb_secret_server',
+      SUPABASE_JWT_ES256_PRIVATE_KEY: TEST_PRIVATE_KEY,
+      SUPABASE_JWT_KID: 'trusted-es256-key', OWNER_TELEGRAM_ID: '123456789',
+    };
+    const legacy = (role: string) => [
+      Buffer.from(JSON.stringify({ alg: 'HS256', typ: 'JWT' })).toString('base64url'),
+      Buffer.from(JSON.stringify({ role })).toString('base64url'),
+      Buffer.from('signature').toString('base64url'),
+    ].join('.');
+
+    expect(parseServerEnvironment(source)).toMatchObject({ supabasePublishableKey: 'sb_publishable_browser' });
+    expect(parseServerEnvironment({ ...source, SUPABASE_PUBLISHABLE_KEY: legacy('anon') }))
+      .toMatchObject({ supabasePublishableKey: legacy('anon') });
+    for (const patch of [
+      { SUPABASE_PUBLISHABLE_KEY: 'sb_secret_server' },
+      { SUPABASE_PUBLISHABLE_KEY: legacy('service_role') },
+      { SUPABASE_PUBLISHABLE_KEY: 'not-a-browser-key' },
+      { SUPABASE_PUBLISHABLE_KEY: source.SUPABASE_SERVICE_ROLE_KEY },
+      { SUPABASE_SERVICE_ROLE_KEY: source.SUPABASE_PUBLISHABLE_KEY },
+    ]) expect(() => parseServerEnvironment({ ...source, ...patch })).toThrow(ServerConfigurationError);
   });
 });

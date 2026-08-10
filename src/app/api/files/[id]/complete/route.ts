@@ -1,7 +1,13 @@
 import { FileValidationError } from '@/domain/files';
 import { ServerConfigurationError } from '@/server/env';
 import { createDefaultFileRouteDependencies, type FileRouteDependencies } from '@/server/files/file-api';
-import { FileNotFoundError, FileOperationError, ParentNotFoundError, UploadExpiredError } from '@/server/files/file-store';
+import {
+  FileNotFoundError,
+  FileOperationError,
+  ParentNotFoundError,
+  UploadExpiredError,
+  UploadValidationBusyError,
+} from '@/server/files/file-store';
 import { apiResponse, hasSameOrigin } from '@/server/http';
 
 type RouteContext = { params: Promise<{ id: string }> };
@@ -24,6 +30,7 @@ export function createFileCompletionHandler(dependencies: FileRouteDependencies)
       if (error instanceof FileNotFoundError) return apiResponse(requestId, 404, null, { code: 'file_not_found', message: error.message });
       if (error instanceof ParentNotFoundError) return apiResponse(requestId, 404, null, { code: 'parent_not_found', message: error.message });
       if (error instanceof UploadExpiredError) return apiResponse(requestId, 410, null, { code: 'upload_expired', message: error.message });
+      if (error instanceof UploadValidationBusyError) return apiResponse(requestId, 409, null, { code: 'upload_processing', message: error.message });
       if (error instanceof FileOperationError) return apiResponse(requestId, 503, null, { code: 'file_service_unavailable', message: error.message });
       return apiResponse(requestId, 500, null, { code: 'internal_error', message: 'Не удалось завершить загрузку файла.' });
     }

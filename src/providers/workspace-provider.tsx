@@ -8,16 +8,18 @@ import type { WorkspaceSnapshot } from '@/domain/types';
 type WorkspaceProviderProps = {
   children: ReactNode;
   gateway: WorkspaceGateway;
+  currentMemberId?: string | null;
 };
 
 export type WorkspaceContextValue = {
   repository: WorkspaceGateway;
   snapshot: WorkspaceSnapshot;
+  currentMemberId: string | null;
 };
 
 const WorkspaceContext = createContext<WorkspaceContextValue | null>(null);
 
-export function WorkspaceProvider({ children, gateway }: WorkspaceProviderProps) {
+export function WorkspaceProvider({ children, currentMemberId = null, gateway }: WorkspaceProviderProps) {
   const [snapshot, setSnapshot] = useState<WorkspaceSnapshot>(() => gateway.snapshot());
 
   useEffect(() => {
@@ -26,7 +28,7 @@ export function WorkspaceProvider({ children, gateway }: WorkspaceProviderProps)
     return unsubscribe;
   }, [gateway]);
 
-  const value = useMemo(() => ({ repository: gateway, snapshot }), [gateway, snapshot]);
+  const value = useMemo(() => ({ repository: gateway, snapshot, currentMemberId }), [currentMemberId, gateway, snapshot]);
 
   return <WorkspaceContext.Provider value={value}>{children}</WorkspaceContext.Provider>;
 }

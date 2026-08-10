@@ -45,7 +45,6 @@ describe('Supabase restore stores', () => {
   it.each([
     { state: 'missing' as const, error: RestoreNotFoundError },
     { state: 'not-deleted' as const, error: RestoreNotDeletedError },
-    { state: 'expired' as const, error: RestoreExpiredError },
     { state: 'stale' as const, error: ConflictError },
   ])('classifies a $state contact before its restore RPC', async ({ state, error }) => {
     const contactClient = clientFor('contacts', state);
@@ -54,6 +53,57 @@ describe('Supabase restore stores', () => {
     await expect(createSupabaseKnowledgeContactStore(contactClient, contactActor).restoreContact('workspace-1', 'record-1', 2, 'actor-1'))
       .rejects.toBeInstanceOf(error);
     expect(contactActor).not.toHaveBeenCalled();
+  });
+
+  it('lets the database clock decide the contact restore cutoff when the application clock is ahead', async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date('2026-09-01T00:00:00.000Z'));
+    try {
+      const readClient = clientFor('contacts', 'expired', '2026-08-01T00:00:00.000Z');
+      const restoredRow = {
+        id: 'record-1', workspace_id: 'workspace-1', version: 3,
+        created_at: '2026-08-01T00:00:00.000Z', updated_at: '2026-08-02T00:00:00.000Z', deleted_at: null,
+        name: 'Восстановленный контакт', category: 'service', notes: '',
+      };
+      let restored = false;
+      const from = vi.fn((selectedTable: string) => {
+        const chain = {
+          select: vi.fn(() => chain),
+          eq: vi.fn(() => chain),
+          is: vi.fn(() => chain),
+          order: vi.fn(async () => ({ data: [], error: null })),
+          maybeSingle: vi.fn(async () => ({
+            data: selectedTable === 'contacts'
+              ? restored
+                ? restoredRow
+                : {
+                    id: 'record-1', workspace_id: 'workspace-1', version: 2,
+                    deleted_at: '2026-08-01T00:00:00.000Z',
+                  }
+              : null,
+            error: null,
+          })),
+        };
+        return chain;
+      });
+      const databaseClient = { from } as unknown as SupabaseClient;
+      const actorClient = {
+        rpc: vi.fn(async () => {
+          restored = true;
+          return { data: [restoredRow], error: null };
+        }),
+        from,
+      } as unknown as SupabaseClient;
+      const createActorClient = vi.fn(() => actorClient);
+
+      await expect(createSupabaseKnowledgeContactStore(databaseClient, createActorClient)
+        .restoreContact('workspace-1', 'record-1', 2, 'actor-1')).resolves.toMatchObject({
+        id: 'record-1', version: 3, deletedAt: null,
+      });
+      expect(actorClient.rpc).toHaveBeenCalledWith('set_contact_deleted', expect.objectContaining({ p_restore: true }));
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   it.each([

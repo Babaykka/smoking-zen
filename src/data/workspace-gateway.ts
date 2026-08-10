@@ -1,12 +1,13 @@
 import type { WorkspaceRepository, WorkspaceListener } from '@/data/workspace-repository';
 import { validateUpload, type AttachmentTarget, type SignedAttachmentDownload } from '@/domain/files';
 import type { CommentInput, ContactInput, ContactPatchInput, KnowledgeInput, KnowledgePatchInput, SecureItemInput, SecureItemPatchInput, TaskInput, TaskPatchInput } from '@/domain/schemas';
-import type { Attachment, Comment, Contact, KnowledgeItem, SearchResult, SecureItemReveal, SecureItemSummary, Task, WorkspaceSnapshot } from '@/domain/types';
+import type { Attachment, Comment, Contact, InviteGrant, KnowledgeItem, SearchResult, SecureItemReveal, SecureItemSummary, Task, TrashItem, WorkspaceSnapshot } from '@/domain/types';
 
 export interface WorkspaceGateway {
   fileStorageMode: 'persistent' | 'metadata-only';
   snapshot(): WorkspaceSnapshot;
   hydrate(): Promise<void>;
+  refresh(): Promise<WorkspaceSnapshot>;
   subscribe(listener: WorkspaceListener): () => void;
   createTask(input: TaskInput): Promise<Task>;
   updateTask(id: string, input: TaskPatchInput, expectedVersion: number): Promise<Task>;
@@ -21,6 +22,7 @@ export interface WorkspaceGateway {
   updateContact(id: string, input: ContactPatchInput, expectedVersion: number): Promise<Contact>;
   deleteContact(id: string, expectedVersion: number): Promise<Contact>;
   restoreContact(id: string, expectedVersion: number): Promise<Contact>;
+  createInvite(): Promise<InviteGrant>;
   createSecureItem(input: SecureItemInput): Promise<SecureItemSummary>;
   updateSecureItem(id: string, input: SecureItemPatchInput, expectedVersion: number): Promise<SecureItemSummary>;
   deleteSecureItem(id: string, expectedVersion: number): Promise<SecureItemSummary>;
@@ -28,6 +30,8 @@ export interface WorkspaceGateway {
   revealSecureItem(id: string): Promise<SecureItemReveal>;
   uploadAttachment(target: AttachmentTarget, file: File, onProgress?: (percent: number) => void): Promise<Attachment>;
   downloadAttachment(id: string): Promise<SignedAttachmentDownload>;
+  deleteAttachment(id: string, expectedVersion: number): Promise<TrashItem>;
+  restoreAttachment(id: string, expectedVersion: number): Promise<Attachment>;
   search(query: string, options?: { signal?: AbortSignal }): Promise<SearchResult[]>;
   dispose?(): void;
 }
@@ -37,6 +41,10 @@ export function createDemoGateway(repository: WorkspaceRepository): WorkspaceGat
     fileStorageMode: 'metadata-only',
     snapshot: () => repository.snapshot(),
     async hydrate() { repository.hydrate(); },
+    async refresh() {
+      repository.hydrate();
+      return repository.snapshot();
+    },
     subscribe: (listener) => repository.subscribe(listener),
     async createTask(input) { return repository.createTask(input); },
     async updateTask(id, input, expectedVersion) { return repository.updateTask(id, input, expectedVersion); },
@@ -51,6 +59,14 @@ export function createDemoGateway(repository: WorkspaceRepository): WorkspaceGat
     async updateContact(id, input, expectedVersion) { return repository.updateContact(id, input, expectedVersion); },
     async deleteContact(id, expectedVersion) { return repository.deleteContact(id, expectedVersion); },
     async restoreContact(id, expectedVersion) { return repository.restore('contact', id, expectedVersion) as Contact; },
+    async createInvite() {
+      const demoToken = `${crypto.randomUUID()}${crypto.randomUUID()}`.replaceAll('-', '').slice(0, 43);
+      return {
+        invitationId: crypto.randomUUID(),
+        inviteLink: `https://t.me/smoking_zen_demo/workspace?startapp=invite_${demoToken}`,
+        expiresAt: new Date(Date.now() + 24 * 60 * 60 * 1_000).toISOString(),
+      };
+    },
     async createSecureItem(input) { return repository.createSecureItem(input); },
     async updateSecureItem(id, input, expectedVersion) { return repository.updateSecureItem(id, input, expectedVersion); },
     async deleteSecureItem(id, expectedVersion) { return repository.deleteSecureItem(id, expectedVersion); },
@@ -66,6 +82,7 @@ export function createDemoGateway(repository: WorkspaceRepository): WorkspaceGat
         name: validated.name,
         mimeType: validated.declaredMime,
         size: validated.size,
+        version: 1,
       };
       if (target.type === 'task') {
         const current = repository.snapshot().tasks.find((item) => item.id === target.id);
@@ -80,6 +97,8 @@ export function createDemoGateway(repository: WorkspaceRepository): WorkspaceGat
       return attachment;
     },
     async downloadAttachment() { throw new Error('В демо-режиме сохраняются только данные о файле, без его содержимого.'); },
+    async deleteAttachment(id, expectedVersion) { return repository.deleteAttachment(id, expectedVersion); },
+    async restoreAttachment(id, expectedVersion) { return repository.restoreAttachment(id, expectedVersion); },
     async search(query) { return repository.search(query); },
   };
 }
