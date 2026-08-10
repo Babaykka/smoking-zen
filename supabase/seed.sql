@@ -24,13 +24,36 @@ on conflict (workspace_id, user_id) do update set
   active = excluded.active,
   deleted_at = null;
 
-insert into public.task_statuses (id, workspace_id, name, position)
-values
-  ('40000000-0000-4000-8000-000000000001', '10000000-0000-4000-8000-000000000001', 'Новая', 1),
-  ('40000000-0000-4000-8000-000000000002', '10000000-0000-4000-8000-000000000001', 'В работе', 2),
-  ('40000000-0000-4000-8000-000000000003', '10000000-0000-4000-8000-000000000001', 'Ждёт', 3),
-  ('40000000-0000-4000-8000-000000000004', '10000000-0000-4000-8000-000000000001', 'Готово', 4)
-on conflict (workspace_id, name) do update set position = excluded.position, deleted_at = null;
+do $seed_statuses$
+begin
+  if exists (
+    select 1 from information_schema.columns
+    where table_schema = 'public' and table_name = 'task_statuses' and column_name = 'is_completed'
+  ) then
+    execute $sql$
+      insert into public.task_statuses (id, workspace_id, name, position, is_completed)
+      values
+        ('40000000-0000-4000-8000-000000000001', '10000000-0000-4000-8000-000000000001', 'Новая', 1, false),
+        ('40000000-0000-4000-8000-000000000002', '10000000-0000-4000-8000-000000000001', 'В работе', 2, false),
+        ('40000000-0000-4000-8000-000000000003', '10000000-0000-4000-8000-000000000001', 'Ждёт', 3, false),
+        ('40000000-0000-4000-8000-000000000004', '10000000-0000-4000-8000-000000000001', 'Готово', 4, true)
+      on conflict (workspace_id, name) do update set
+        position = excluded.position,
+        deleted_at = null
+    $sql$;
+  else
+    insert into public.task_statuses (id, workspace_id, name, position)
+    values
+      ('40000000-0000-4000-8000-000000000001', '10000000-0000-4000-8000-000000000001', 'Новая', 1),
+      ('40000000-0000-4000-8000-000000000002', '10000000-0000-4000-8000-000000000001', 'В работе', 2),
+      ('40000000-0000-4000-8000-000000000003', '10000000-0000-4000-8000-000000000001', 'Ждёт', 3),
+      ('40000000-0000-4000-8000-000000000004', '10000000-0000-4000-8000-000000000001', 'Готово', 4)
+    on conflict (workspace_id, name) do update set
+      position = excluded.position,
+      deleted_at = null;
+  end if;
+end
+$seed_statuses$;
 
 insert into public.sections (id, workspace_id, name, position)
 values
@@ -136,7 +159,7 @@ values (
   null,
   null,
   null,
-  'https://vault.bitwarden.com/#/items/example-non-secret-record'
+  'https://vault.bitwarden.com/#/items/example'
 )
 on conflict (id) do update set
   title = excluded.title,

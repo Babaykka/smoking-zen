@@ -43,6 +43,12 @@ describe('demo workspace repository', () => {
       'Ждёт',
       'Готово',
     ]);
+    expect(firstSnapshot.taskStatuses.map((status) => status.isCompleted)).toEqual([
+      false,
+      false,
+      false,
+      true,
+    ]);
 
     firstSnapshot.tasks[0]!.title = 'tampered';
     expect(repository.snapshot().tasks[0]!.title).not.toBe('tampered');

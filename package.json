@@ -3,7 +3,7 @@
   "version": "0.1.0",
   "private": true,
   "engines": {
-    "node": ">=24"
+    "node": "24.18.0"
   },
   "scripts": {
     "dev": "next dev",
@@ -11,7 +11,9 @@
     "lint": "eslint .",
     "typecheck": "tsc --noEmit",
     "test": "vitest run",
-    "test:e2e": "playwright test"
+    "test:e2e": "playwright test",
+    "test:scripts": "bats tests/scripts/*.bats",
+    "lint:shell": "shellcheck scripts/*.sh tests/scripts/test_helper.bash tests/scripts/*.bats"
   },
   "dependencies": {
     "@supabase/supabase-js": "^2.111.0",
@@ -42,5 +44,11 @@
     "vite": "^7.0.0",
     "vitest": "^4.0.18"
   },
-  "packageManager": "pnpm@10.14.0"
+  "packageManager": "pnpm@10.14.0",
+  "pnpm": {
+    "overrides": {
+      "next>postcss": "8.5.26",
+      "next>sharp": "0.35.3"
+    }
+  }
 }

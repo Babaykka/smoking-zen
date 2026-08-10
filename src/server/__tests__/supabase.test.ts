@@ -36,4 +36,32 @@ describe('Supabase access adapter', () => {
       p_language_code: null,
     });
   });
+
+  it('resolves only a strictly parsed database-authorized task launch', async () => {
+    const taskId = '40000000-0000-4000-8000-000000000001';
+    const rpc = vi.fn().mockResolvedValue({ data: [{ task_id: taskId }], error: null });
+    const store = createSupabaseAccessStore({ rpc } as unknown as SupabaseClient);
+
+    await expect(store.getAuthorizedTaskLaunch(
+      '11111111-1111-4111-8111-111111111111',
+      '33333333-3333-4333-8333-333333333333',
+      '22222222-2222-4222-8222-222222222222',
+      taskId,
+    )).resolves.toEqual({ taskId });
+    expect(rpc).toHaveBeenCalledWith('get_authorized_task_launch', {
+      p_user_id: '11111111-1111-4111-8111-111111111111',
+      p_workspace_id: '33333333-3333-4333-8333-333333333333',
+      p_membership_id: '22222222-2222-4222-8222-222222222222',
+      p_task_id: taskId,
+    });
+
+    rpc.mockResolvedValueOnce({ data: [{ task_id: 'RAW_DATABASE_SENTINEL' }], error: null });
+    const error = await store.getAuthorizedTaskLaunch(
+      '11111111-1111-4111-8111-111111111111',
+      '33333333-3333-4333-8333-333333333333',
+      '22222222-2222-4222-8222-222222222222',
+      taskId,
+    ).catch((caught: unknown) => caught);
+    expect(String(error)).not.toContain('RAW_DATABASE_SENTINEL');
+  });
 });

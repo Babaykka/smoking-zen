@@ -11,7 +11,12 @@ export type VerifiedTelegramUser = {
   username?: string;
   languageCode?: string;
   authDate: number;
+  launchIntent?: TelegramLaunchIntent;
 };
+
+export type TelegramLaunchIntent =
+  | { kind: 'task'; taskId: string }
+  | { kind: 'invite'; token: string };
 
 export class TelegramInitDataError extends Error {
   constructor() {
@@ -70,6 +75,15 @@ function unixSeconds(now: Date | number): number {
   return Math.floor(milliseconds / 1_000);
 }
 
+function parseLaunchIntent(value: string | null): TelegramLaunchIntent | undefined {
+  if (value === null) return undefined;
+  const task = /^task_([0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12})$/u.exec(value);
+  if (task) return { kind: 'task', taskId: task[1]! };
+  const invite = /^invite_([A-Za-z0-9_-]{43})$/u.exec(value);
+  if (invite) return { kind: 'invite', token: invite[1]! };
+  invalid();
+}
+
 export function verifyTelegramInitData(
   raw: string,
   botToken: string,
@@ -114,5 +128,7 @@ export function verifyTelegramInitData(
     authDate - currentSeconds > MAX_FUTURE_SKEW_SECONDS
   ) invalid();
 
-  return parseUser(rawUser, authDate);
+  const user = parseUser(rawUser, authDate);
+  const launchIntent = parseLaunchIntent(params.get('start_param'));
+  return launchIntent ? { ...user, launchIntent } : user;
 }

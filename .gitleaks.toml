@@ -1,0 +1,16 @@
+[extend]
+useDefault = true
+
+[[allowlists]]
+description = "Generated caches, manifests, dependencies, and local test reports"
+paths = [
+  '''^\.next/cache/''',
+  '''^\.next/dev/''',
+  '''^\.next/server/server-reference-manifest\.json$''',
+  '''^\.next/server/chunks/[a-z0-9_]+_next_dist_esm_build_templates_app-route_[a-z0-9_-]+\.js$''',
+  '''^\.next/[^/]*manifest[^/]*\.json$''',
+  '''^node_modules/''',
+  '''^coverage/''',
+  '''^test-results/''',
+  '''^playwright-report/''',
+]

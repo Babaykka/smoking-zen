@@ -1,11 +1,27 @@
-# Production configuration
+# Конфигурация production
 
-Production mode is fail-closed: set `APP_MODE=production`, configure every production variable from `.env.example`, and open the app through Telegram Mini Apps. Demo data is available only when `APP_MODE=demo` is set explicitly.
+Production работает только с `APP_MODE=production` и `DEPLOYMENT_ENVIRONMENT=production`. Разбор конфигурации ленивый: build не требует секретов. Защищённые серверные операции, которым нужен неполный набор production-настроек, завершаются generic 503 до чтения тела и эффектов; публичный UI при этом не раскрывает причину или значения. Demo включается исключительно явным `APP_MODE=demo` и не используется в Vercel Production или операционных workflow.
 
-Use the Supabase publishable key in the browser. Keep the service-role key and the ES256 PKCS#8 private key server-only. Import the corresponding ES256 public key into the Supabase trusted signing-key set and set `SUPABASE_JWT_KID` to that key's `kid`.
+## Vercel
 
-The server exchanges Telegram `initData` for an HTTP-only application session, verifies active workspace membership, and mints a five-minute JWT carrying the dedicated `smoking_zen_scope=realtime` claim. The browser keeps that JWT only in memory, refreshes it one minute before expiry, and applies each refreshed token to the existing private workspace channel. The claim authorizes receive-only access to the token's own private Realtime topic; it does not authorize direct table, RPC, Broadcast-send, or Storage access. Do not place Realtime tokens in URLs, browser storage, logs, or error messages.
+Создайте отдельные Environment для staging и production. Перенесите имена из `.env.example` как скалярные поля: не используйте PostgreSQL URI, JSON с несколькими ключами или секрет в public-переменной. `SUPABASE_PUBLISHABLE_KEY` может участвовать в клиентской конфигурации; `SUPABASE_SERVICE_ROLE_KEY`, Telegram bot token, session/internal/webhook secret и ES256 private key остаются только серверными. `APP_ORIGIN` — точный HTTPS-origin без path, query и завершающего слеша.
 
-Task and comment writes use a new service-role client for each request with a server-controlled audit actor header. The database accepts that actor only when the user is active in the same non-deleted workspace; invalid or cross-workspace actor values are recorded as `null`.
+Telegram username и Mini App short name считаются доверенной identity, поэтому задаются отдельно для каждого бота. Сервер сам создаёт консервативные ссылки `/startapp` на invite/task и не принимает link или destination от браузера. InitData поступает сырой строкой, подпись проверяется до launch-параметра, а сессия возвращается HTTP-only cookie.
 
-All browser business-data operations go through the Next API. Direct `anon` and `authenticated` privileges are revoked from current and future public tables, sequences, and functions; Storage object access remains server-only until the dedicated file flow is introduced.
+## Supabase
+
+Примените миграции строго по номеру. Импортируйте ES256 public key в trusted signing keys Supabase и укажите его `kid` в `SUPABASE_JWT_KID`. Сервер выдаёт пятиминутный JWT с `smoking_zen_scope=realtime`; браузер хранит его только в памяти и применяет к приватному `workspace:<uuid>` channel. В Realtime Settings выключите public channels. Политика разрешает authenticated только receive своей темы, запрещая Broadcast send и прямое чтение таблиц.
+
+Все бизнес-запросы проходят через Next API. Права `anon`/`authenticated` на public tables, sequences, functions и приватный Storage отозваны; service role создаётся на сервере на запрос. Audit actor из заголовка принимается только для активного пользователя того же workspace, иначе записывается `null`. Bucket `workspace-files` остаётся private.
+
+В Vault вручную создайте `smoking_zen_app_origin` и `smoking_zen_internal_job_secret`, затем примените файлы из `supabase/operations` в порядке, описанном там. Значения origin/secret не находятся в SQL или миграциях. Cron вызывает только фиксированные внутренние маршруты с телом `{}`.
+
+## GitHub Environments
+
+Production backup workflow получает machine-only DB SELECT+BYPASSRLS credential, project CA, Auth backup-reader credentials/UUID для короткоживущего Storage session token и независимые target credentials. DB host/user/database и Storage endpoint связаны одним 20-символьным project ref; `verify-full` обязателен. Target принадлежит другому S3 provider/account, не `*.supabase.co`; prefix содержит несколько безопасных сегментов, encryption задаётся явно. Workflow не получает `APP_MODE=demo`, app service role или Telegram token. Freshness использует те же неизменяемые `BACKUP_TARGET_*` coordinates и отдельные `BACKUP_FRESHNESS_TARGET_*` read/list credentials; restore — отдельные `RESTORE_ARCHIVE_*` read/list. Restore drill запускается вручную с отдельным project ref, пустыми app-схемами/bucket, server-side database marker и точным acknowledgement.
+
+GitHub Environment `production` разрешает запуск только из deployment branch `main`, требует reviewer и не допускает self-review. Оба production jobs дополнительно проверяют `github.ref == 'refs/heads/main'`, поэтому ручной dispatch произвольной ветки не получает секреты. Branch protection требует зелёный CI; checkout не сохраняет GitHub credential.
+
+Значение `BACKUP_POSTGRES_MAJOR` получают из read-only `show server_version_num`, а не из предположения о версии Supabase. Workflow разрешает только закреплённые клиенты PostgreSQL 17.10 и 18.4 с официальными SHA256. Сборка клиента обязана подтвердить OpenSSL, zlib, TLS-capable libpq и custom-format dump/TOC smoke. Backup прекращается до dump при несовпадении server/pg_dump/pg_restore major; restore до мутации сравнивает target server и `pg_restore` с version-полями manifest schema v2.
+
+Перед включением production пройдите последовательность из `readiness.md`, операционные проверки из `operations.md` и сценарий ротации из `rotation-runbook.md`. Значения staging нельзя переносить как production-значения, а успешная локальная имитация не заменяет credentialed staging backup/restore.

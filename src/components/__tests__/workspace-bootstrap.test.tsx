@@ -45,6 +45,34 @@ describe('WorkspaceBootstrap', () => {
     expect(realtimeClientFactory).toHaveBeenCalledWith(productionConfig, expect.objectContaining({ getAccessToken: expect.any(Function) }));
   });
 
+  it('opens only the server-authorized task directive after workspace hydration', async () => {
+    Object.defineProperty(window, 'Telegram', {
+      configurable: true,
+      value: { WebApp: { initData: 'signed-init-data-with-task-start-param', initDataUnsafe: { start_param: 'task_forged' } } },
+    });
+    const launchedTask = {
+      ...demoSeed.tasks[0]!,
+      id: '40000000-0000-4000-8000-000000000001',
+      workspaceId,
+      title: 'Задача из подписанного запуска',
+    };
+    const fetcher = vi.fn()
+      .mockImplementationOnce(() => response({
+        membership: { workspaceId }, launch: { kind: 'task', taskId: launchedTask.id },
+      }))
+      .mockImplementationOnce(() => response({ token: 'memory-only-jwt', workspaceId, expiresAt: new Date(Date.now() + 300_000).toISOString() }))
+      .mockImplementationOnce(() => response({ ...demoSeed, workspaceId, tasks: [launchedTask] }));
+    const channel = { on: vi.fn().mockReturnThis(), subscribe: vi.fn().mockReturnThis() };
+    const client = { channel: vi.fn(() => channel), removeChannel: vi.fn(), realtime: { setAuth: vi.fn() } };
+
+    render(<WorkspaceBootstrap fetcher={fetcher} mode="production" productionConfig={productionConfig} realtimeClientFactory={() => client} />);
+
+    expect(await screen.findByLabelText('Название')).toHaveValue('Задача из подписанного запуска');
+    expect(fetcher).toHaveBeenNthCalledWith(1, '/api/session/telegram', expect.objectContaining({
+      body: JSON.stringify({ initData: 'signed-init-data-with-task-start-param' }),
+    }));
+  });
+
   it('fails closed outside Telegram in production instead of falling back to demo', async () => {
     Object.defineProperty(window, 'Telegram', { configurable: true, value: undefined });
     const demoGatewayFactory = vi.fn();

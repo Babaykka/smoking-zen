@@ -1,0 +1,114 @@
+name: Production backup
+
+on:
+  schedule:
+    - cron: '15 23 * * *'
+  workflow_dispatch:
+    inputs:
+      dry_run:
+        description: 'Проверить доступы и план хранения без записи'
+        required: true
+        default: true
+        type: boolean
+
+permissions:
+  contents: read
+
+concurrency:
+  group: smoking-zen-production-backup
+  cancel-in-progress: false
+
+jobs:
+  backup:
+    if: github.ref == 'refs/heads/main'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    environment: production
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Node 24.18.0
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: 24.18.0
+      - name: Matching PostgreSQL client and rclone 1.75.0
+        env:
+          BACKUP_POSTGRES_MAJOR: ${{ vars.BACKUP_POSTGRES_MAJOR }}
+          RCLONE_SHA256: aa2804e08f48250e71009c727124b6341cd0288465804a9a09d14663cabafbaa
+        run: |
+          set -Eeuo pipefail
+          sudo apt-get update
+          sudo apt-get install --no-install-recommends --yes libssl-dev zlib1g-dev
+          tools="$RUNNER_TEMP/smoking-zen-tools"
+          mkdir -p "$tools/bin" "$tools/postgresql-src"
+          case "$BACKUP_POSTGRES_MAJOR" in
+            17)
+              postgresql_version=17.10
+              postgresql_sha256=078a03516dcdbdb705fecaf415ea3d13a956c589e46f09fed68a06fb00598c90
+              ;;
+            18)
+              postgresql_version=18.4
+              postgresql_sha256=81a81ec695fb0c7901407defaa1d2f7973617154cf27ba74e3a7ab8e64436094
+              ;;
+            *) exit 1 ;;
+          esac
+          curl --fail --silent --show-error --location \
+            "https://ftp.postgresql.org/pub/source/v${postgresql_version}/postgresql-${postgresql_version}.tar.bz2" \
+            --output "$tools/postgresql.tar.bz2"
+          printf '%s  %s\n' "$postgresql_sha256" "$tools/postgresql.tar.bz2" | sha256sum --check
+          tar -xjf "$tools/postgresql.tar.bz2" -C "$tools/postgresql-src" --strip-components=1
+          (cd "$tools/postgresql-src" && ./configure --prefix="$tools/postgresql" --without-readline --with-ssl=openssl --with-zlib)
+          make -C "$tools/postgresql-src" -j2 world-bin
+          make -C "$tools/postgresql-src" install-world-bin
+          test "$("$tools/postgresql/bin/pg_dump" --version | sed -E 's/.* ([0-9]+)\..*/\1/')" = "$BACKUP_POSTGRES_MAJOR"
+          pg_configure=$("$tools/postgresql/bin/pg_config" --configure)
+          case "$pg_configure" in *--with-ssl=openssl*) ;; *) exit 1 ;; esac
+          case "$pg_configure" in *--with-zlib*) ;; *) exit 1 ;; esac
+          ldd "$tools/postgresql/lib/libpq.so" | grep -F 'libssl.so' > /dev/null
+          smoke="$RUNNER_TEMP/smoking-zen-pg-smoke"
+          mkdir -m 700 "$smoke"
+          "$tools/postgresql/bin/initdb" --auth=trust --no-locale --pgdata="$smoke/data" > /dev/null
+          "$tools/postgresql/bin/pg_ctl" --pgdata="$smoke/data" --options="-c listen_addresses='' -c unix_socket_directories='$smoke'" --wait start > /dev/null
+          trap '"$tools/postgresql/bin/pg_ctl" --pgdata="$smoke/data" --mode=immediate stop > /dev/null 2>&1 || true' EXIT
+          "$tools/postgresql/bin/createdb" --host="$smoke" smoking_zen_smoke
+          "$tools/postgresql/bin/pg_dump" --host="$smoke" --format=custom --file="$smoke/dump.custom" smoking_zen_smoke
+          "$tools/postgresql/bin/pg_restore" --list "$smoke/dump.custom" > /dev/null
+          "$tools/postgresql/bin/pg_ctl" --pgdata="$smoke/data" --wait stop > /dev/null
+          trap - EXIT
+          curl --fail --silent --show-error --location \
+            https://downloads.rclone.org/v1.75.0/rclone-v1.75.0-linux-amd64.zip \
+            --output "$tools/rclone.zip"
+          printf '%s  %s\n' "$RCLONE_SHA256" "$tools/rclone.zip" | sha256sum --check
+          unzip -q "$tools/rclone.zip" -d "$tools"
+          install -m 0755 "$tools/rclone-v1.75.0-linux-amd64/rclone" "$tools/bin/rclone"
+          printf '%s\n' "$tools/bin" "$tools/postgresql/bin" >> "$GITHUB_PATH"
+      - name: Strict production backup
+        env:
+          BACKUP_PGHOST: ${{ vars.BACKUP_PGHOST }}
+          BACKUP_PGPORT: ${{ vars.BACKUP_PGPORT }}
+          BACKUP_PGDATABASE: ${{ vars.BACKUP_PGDATABASE }}
+          BACKUP_PGUSER: ${{ vars.BACKUP_PGUSER }}
+          BACKUP_PGPASSWORD: ${{ secrets.BACKUP_PGPASSWORD }}
+          BACKUP_PGSSLMODE: verify-full
+          BACKUP_PGSSLROOTCERT_BASE64: ${{ secrets.BACKUP_PGSSLROOTCERT_BASE64 }}
+          BACKUP_SOURCE_ENDPOINT: ${{ vars.BACKUP_SOURCE_ENDPOINT }}
+          BACKUP_SOURCE_PROJECT_REF: ${{ vars.BACKUP_SOURCE_PROJECT_REF }}
+          BACKUP_SOURCE_REGION: ${{ vars.BACKUP_SOURCE_REGION }}
+          BACKUP_SOURCE_AUTH_ANON_KEY: ${{ secrets.BACKUP_SOURCE_AUTH_ANON_KEY }}
+          BACKUP_SOURCE_AUTH_EMAIL: ${{ secrets.BACKUP_SOURCE_AUTH_EMAIL }}
+          BACKUP_SOURCE_AUTH_PASSWORD: ${{ secrets.BACKUP_SOURCE_AUTH_PASSWORD }}
+          BACKUP_SOURCE_AUTH_USER_ID: ${{ vars.BACKUP_SOURCE_AUTH_USER_ID }}
+          BACKUP_SOURCE_BUCKET: workspace-files
+          BACKUP_TARGET_ENDPOINT: ${{ vars.BACKUP_TARGET_ENDPOINT }}
+          BACKUP_TARGET_ACCESS_KEY_ID: ${{ secrets.BACKUP_TARGET_ACCESS_KEY_ID }}
+          BACKUP_TARGET_SECRET_ACCESS_KEY: ${{ secrets.BACKUP_TARGET_SECRET_ACCESS_KEY }}
+          BACKUP_TARGET_BUCKET: ${{ vars.BACKUP_TARGET_BUCKET }}
+          BACKUP_TARGET_PREFIX: ${{ vars.BACKUP_TARGET_PREFIX }}
+          BACKUP_TARGET_ENCRYPTION: ${{ vars.BACKUP_TARGET_ENCRYPTION }}
+          BACKUP_TARGET_KMS_KEY_ID: ${{ vars.BACKUP_TARGET_KMS_KEY_ID }}
+          BACKUP_TARGET_REGION: ${{ vars.BACKUP_TARGET_REGION }}
+          BACKUP_TARGET_FORCE_PATH_STYLE: ${{ vars.BACKUP_TARGET_FORCE_PATH_STYLE }}
+          BACKUP_DRY_RUN: ${{ inputs.dry_run && '1' || '0' }}
+        run: scripts/run-production-backup.sh

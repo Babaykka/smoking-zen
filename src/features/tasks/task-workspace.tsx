@@ -14,6 +14,8 @@ export type TaskWorkspaceProps = {
   createRequest: number;
   searchTarget?: SearchNavigationTarget;
   onSearchTargetConsumed?: (requestKey: number) => void;
+  launchTaskId?: string;
+  onLaunchTaskConsumed?: () => void;
   now?: Date;
 };
 
@@ -54,7 +56,10 @@ function draftFrom(task: Task): TaskDraft {
   };
 }
 
-export function TaskWorkspace({ activeView, createRequest, now = new Date(), searchTarget, onSearchTargetConsumed }: TaskWorkspaceProps) {
+export function TaskWorkspace({
+  activeView, createRequest, now = new Date(), searchTarget, onSearchTargetConsumed,
+  launchTaskId, onLaunchTaskConsumed,
+}: TaskWorkspaceProps) {
   const { repository, snapshot } = useWorkspace();
   const [quickOpen, setQuickOpen] = useState(false);
   const [acknowledgedCreateRequest, setAcknowledgedCreateRequest] = useState(createRequest);
@@ -106,6 +111,16 @@ export function TaskWorkspace({ activeView, createRequest, now = new Date(), sea
     }, 0);
     return () => window.clearTimeout(timer);
   }, [onSearchTargetConsumed, searchTarget]);
+
+  useEffect(() => {
+    if (!launchTaskId) return;
+    const timer = window.setTimeout(() => {
+      const task = tasksRef.current.find((item) => item.id === launchTaskId);
+      if (task) openTask(task);
+      onLaunchTaskConsumed?.();
+    }, 0);
+    return () => window.clearTimeout(timer);
+  }, [launchTaskId, onLaunchTaskConsumed]);
 
   const createTask = async (event: FormEvent) => {
     event.preventDefault();

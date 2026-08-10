@@ -60,7 +60,12 @@ function commentFromRow(value: unknown): Comment {
 
 function statusFromRow(value: unknown): TaskStatus {
   const row = value as Record<string, unknown>;
-  return { ...metadata(row), name: String(row.name), position: Number(row.position) };
+  return {
+    ...metadata(row),
+    name: String(row.name),
+    position: Number(row.position),
+    isCompleted: Boolean(row.is_completed),
+  };
 }
 
 function sectionFromRow(value: unknown): Section {

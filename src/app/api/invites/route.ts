@@ -8,11 +8,14 @@ import {
   createSupabaseAccessStore,
   type AccessStore,
 } from '@/server/supabase';
+import { buildInviteDeepLink } from '@/server/notifications/policy';
 
 type SessionActor = Pick<SessionIdentity, 'userId' | 'workspaceId' | 'membershipId' | 'role'>;
 
 type InviteDependencies = {
   appOrigin: string;
+  botUsername: string;
+  appShortName: string;
   store: AccessStore;
   now: () => Date;
   requestId: () => string;
@@ -44,6 +47,7 @@ export function createInviteHandler(dependencies: InviteDependencies) {
 
       const now = dependencies.now();
       const token = dependencies.generateToken();
+      const inviteLink = buildInviteDeepLink(dependencies.botUsername, dependencies.appShortName, token);
       const tokenHash = createHash('sha256').update(token, 'utf8').digest('hex');
       const expiresAt = new Date(now.getTime() + 24 * 60 * 60 * 1_000).toISOString();
       const invitation = await dependencies.store.createInvitation({
@@ -55,7 +59,7 @@ export function createInviteHandler(dependencies: InviteDependencies) {
       });
       return apiResponse(requestId, 201, {
         invitationId: invitation.id,
-        token,
+        inviteLink,
         expiresAt: invitation.expiresAt,
       }, null);
     } catch {
@@ -69,6 +73,8 @@ function defaultDependencies(): InviteDependencies {
   const store = createSupabaseAccessStore(createServiceSupabaseClient(environment));
   return {
     appOrigin: environment.appOrigin,
+    botUsername: environment.telegramBotUsername,
+    appShortName: environment.telegramMiniAppShortName,
     store,
     now: () => new Date(),
     requestId: () => randomUUID(),

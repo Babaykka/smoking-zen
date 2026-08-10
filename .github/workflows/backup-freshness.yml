@@ -1,0 +1,54 @@
+name: Backup freshness
+
+on:
+  schedule:
+    - cron: '30 4 * * *'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: smoking-zen-backup-freshness
+  cancel-in-progress: false
+
+jobs:
+  freshness:
+    if: github.ref == 'refs/heads/main'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    environment: production
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Node 24.18.0
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: 24.18.0
+      - name: rclone 1.75.0
+        env:
+          RCLONE_SHA256: aa2804e08f48250e71009c727124b6341cd0288465804a9a09d14663cabafbaa
+        run: |
+          set -Eeuo pipefail
+          tools="$RUNNER_TEMP/smoking-zen-tools"
+          mkdir -p "$tools/bin"
+          curl --fail --silent --show-error --location \
+            https://downloads.rclone.org/v1.75.0/rclone-v1.75.0-linux-amd64.zip \
+            --output "$tools/rclone.zip"
+          printf '%s  %s\n' "$RCLONE_SHA256" "$tools/rclone.zip" | sha256sum --check
+          unzip -q "$tools/rclone.zip" -d "$tools"
+          install -m 0755 "$tools/rclone-v1.75.0-linux-amd64/rclone" "$tools/bin/rclone"
+          printf '%s\n' "$tools/bin" >> "$GITHUB_PATH"
+      - name: Verify newest completed snapshot is at most 26 hours old
+        env:
+          BACKUP_SOURCE_PROJECT_REF: ${{ vars.BACKUP_SOURCE_PROJECT_REF }}
+          BACKUP_TARGET_ENDPOINT: ${{ vars.BACKUP_TARGET_ENDPOINT }}
+          BACKUP_FRESHNESS_TARGET_ACCESS_KEY_ID: ${{ secrets.BACKUP_FRESHNESS_TARGET_ACCESS_KEY_ID }}
+          BACKUP_FRESHNESS_TARGET_SECRET_ACCESS_KEY: ${{ secrets.BACKUP_FRESHNESS_TARGET_SECRET_ACCESS_KEY }}
+          BACKUP_TARGET_BUCKET: ${{ vars.BACKUP_TARGET_BUCKET }}
+          BACKUP_TARGET_PREFIX: ${{ vars.BACKUP_TARGET_PREFIX }}
+          BACKUP_TARGET_REGION: ${{ vars.BACKUP_TARGET_REGION }}
+          BACKUP_TARGET_FORCE_PATH_STYLE: ${{ vars.BACKUP_TARGET_FORCE_PATH_STYLE }}
+        run: scripts/check-backup-freshness.sh

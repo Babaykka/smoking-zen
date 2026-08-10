@@ -19,6 +19,7 @@ export type Attachment = {
 export type TaskStatus = RecordMetadata & {
   name: string;
   position: number;
+  isCompleted: boolean;
 };
 
 export type Section = RecordMetadata & {

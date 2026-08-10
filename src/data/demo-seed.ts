@@ -6,10 +6,10 @@ const createdAt = '2026-08-01T09:00:00.000Z';
 export const demoSeed: WorkspaceSnapshot = {
   workspaceId,
   taskStatuses: [
-    { id: 'status-new', workspaceId, name: 'Новая', position: 1, version: 1, createdAt, updatedAt: createdAt, deletedAt: null },
-    { id: 'status-in-progress', workspaceId, name: 'В работе', position: 2, version: 1, createdAt, updatedAt: createdAt, deletedAt: null },
-    { id: 'status-waiting', workspaceId, name: 'Ждёт', position: 3, version: 1, createdAt, updatedAt: createdAt, deletedAt: null },
-    { id: 'status-done', workspaceId, name: 'Готово', position: 4, version: 1, createdAt, updatedAt: createdAt, deletedAt: null },
+    { id: 'status-new', workspaceId, name: 'Новая', position: 1, isCompleted: false, version: 1, createdAt, updatedAt: createdAt, deletedAt: null },
+    { id: 'status-in-progress', workspaceId, name: 'В работе', position: 2, isCompleted: false, version: 1, createdAt, updatedAt: createdAt, deletedAt: null },
+    { id: 'status-waiting', workspaceId, name: 'Ждёт', position: 3, isCompleted: false, version: 1, createdAt, updatedAt: createdAt, deletedAt: null },
+    { id: 'status-done', workspaceId, name: 'Готово', position: 4, isCompleted: true, version: 1, createdAt, updatedAt: createdAt, deletedAt: null },
   ],
   sections: [
     { id: 'section-opening', workspaceId, name: 'Открытие', position: 1, version: 1, createdAt, updatedAt: createdAt, deletedAt: null },

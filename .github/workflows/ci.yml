@@ -1,0 +1,89 @@
+name: CI
+
+on:
+  push:
+  pull_request:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  verify:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Node 24.18.0
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: 24.18.0
+      - name: pnpm 10.14.0
+        uses: pnpm/action-setup@0977fd99725f1db4007ccb2928dbb4e90d06cc86 # v6.0.10
+        with:
+          version: 10.14.0
+      - name: Verify pnpm version
+        run: test "$(pnpm --version)" = 10.14.0
+      - name: Install exact shell and secret-scan tools
+        env:
+          SHELLCHECK_SHA256: 8c3be12b05d5c177a04c29e3c78ce89ac86f1595681cab149b65b97c4e227198
+          GITLEAKS_SHA256: 551f6fc83ea457d62a0d98237cbad105af8d557003051f41f3e7ca7b3f2470eb
+          BATS_COMMIT: eb7f42f8d608ac693d7a4b67474f6714ea68cfc5
+        run: |
+          set -Eeuo pipefail
+          tools="$RUNNER_TEMP/smoking-zen-tools"
+          mkdir -p "$tools/bin"
+          curl --fail --silent --show-error --location \
+            https://github.com/koalaman/shellcheck/releases/download/v0.11.0/shellcheck-v0.11.0.linux.x86_64.tar.xz \
+            --output "$tools/shellcheck.tar.xz"
+          printf '%s  %s\n' "$SHELLCHECK_SHA256" "$tools/shellcheck.tar.xz" | sha256sum --check
+          tar -xJf "$tools/shellcheck.tar.xz" -C "$tools"
+          install -m 0755 "$tools/shellcheck-v0.11.0/shellcheck" "$tools/bin/shellcheck"
+          curl --fail --silent --show-error --location \
+            https://github.com/gitleaks/gitleaks/releases/download/v8.30.1/gitleaks_8.30.1_linux_x64.tar.gz \
+            --output "$tools/gitleaks.tar.gz"
+          printf '%s  %s\n' "$GITLEAKS_SHA256" "$tools/gitleaks.tar.gz" | sha256sum --check
+          tar -xzf "$tools/gitleaks.tar.gz" -C "$tools/bin" gitleaks
+          git clone --filter=blob:none --no-checkout https://github.com/bats-core/bats-core.git "$tools/bats-src"
+          git -C "$tools/bats-src" fetch --depth 1 origin "$BATS_COMMIT"
+          git -C "$tools/bats-src" checkout --detach "$BATS_COMMIT"
+          test "$(git -C "$tools/bats-src" rev-parse HEAD)" = "$BATS_COMMIT"
+          "$tools/bats-src/install.sh" "$tools/bats"
+          printf '%s\n' "$tools/bin" "$tools/bats/bin" >> "$GITHUB_PATH"
+      - name: Frozen dependencies
+        run: pnpm install --frozen-lockfile
+      - name: Lint
+        run: pnpm lint
+      - name: Typecheck
+        run: pnpm typecheck
+      - name: Full Vitest and PGlite
+        run: pnpm test
+      - name: Fail-closed production build
+        run: APP_MODE=production pnpm build
+      - name: Backup and restore script tests
+        run: pnpm test:scripts
+      - name: ShellCheck
+        run: pnpm lint:shell
+      - name: Chromium runtime
+        run: pnpm exec playwright install --with-deps chromium
+      - name: Desktop and mobile Playwright
+        run: pnpm exec playwright test --project=desktop-chromium --project=mobile-chromium
+      - name: Reviewed Playwright failure report
+        if: failure()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: playwright-failure-report
+          path: playwright-report/
+          if-no-files-found: ignore
+          retention-days: 3
+          include-hidden-files: false
+      - name: Production dependency audit
+        run: pnpm audit --prod --audit-level high
+      - name: Secret scan, including generated and untracked files
+        run: scripts/scan-secrets.sh

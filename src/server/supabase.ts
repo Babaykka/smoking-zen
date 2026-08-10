@@ -39,10 +39,17 @@ export type RedeemInvitationInput = {
 };
 
 export interface AccessStore {
+  consumeTelegramSessionAttempt(telegramId: string): Promise<boolean>;
   bootstrapTelegramUser(input: BootstrapTelegramUserInput): Promise<MembershipAccess | null>;
   getActiveMembership(userId: string, workspaceId: string): Promise<MembershipAccess | null>;
   createInvitation(input: CreateInvitationInput): Promise<InvitationRecord>;
   redeemInvitation(input: RedeemInvitationInput): Promise<MembershipAccess>;
+  getAuthorizedTaskLaunch(
+    userId: string,
+    workspaceId: string,
+    membershipId: string,
+    taskId: string,
+  ): Promise<{ taskId: string } | null>;
 }
 
 export class AccessStoreError extends Error {
@@ -91,6 +98,21 @@ function invitationError(message: string): AccessStoreError {
   return new AccessStoreError('database_error');
 }
 
+const uuidPattern = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/iu;
+
+function parseTaskLaunch(value: unknown): { taskId: string } | null {
+  if (!Array.isArray(value)) throw new AccessStoreError('database_error');
+  if (value.length === 0) return null;
+  if (value.length !== 1 || !value[0] || typeof value[0] !== 'object' || Array.isArray(value[0])) {
+    throw new AccessStoreError('database_error');
+  }
+  const row = value[0] as Record<string, unknown>;
+  if (Object.keys(row).length !== 1 || typeof row.task_id !== 'string' || !uuidPattern.test(row.task_id)) {
+    throw new AccessStoreError('database_error');
+  }
+  return { taskId: row.task_id };
+}
+
 export function createServiceSupabaseClient(
   environment: ProductionServerEnvironment,
   requestHeaders: Readonly<Record<string, string>> = {},
@@ -103,6 +125,13 @@ export function createServiceSupabaseClient(
 
 export function createSupabaseAccessStore(client: SupabaseClient): AccessStore {
   return {
+    async consumeTelegramSessionAttempt(telegramId) {
+      const { data, error } = await client.rpc('consume_telegram_session_attempt', {
+        p_telegram_id: telegramId,
+      });
+      if (error || typeof data !== 'boolean') throw new AccessStoreError('database_error');
+      return data;
+    },
     async bootstrapTelegramUser(input) {
       const { data, error } = await client.rpc('bootstrap_telegram_user', {
         p_telegram_id: input.telegramUser.id,
@@ -157,6 +186,17 @@ export function createSupabaseAccessStore(client: SupabaseClient): AccessStore {
       const membership = parseMembership(data);
       if (!membership) throw new AccessStoreError('database_error');
       return membership;
+    },
+
+    async getAuthorizedTaskLaunch(userId, workspaceId, membershipId, taskId) {
+      const { data, error } = await client.rpc('get_authorized_task_launch', {
+        p_user_id: userId,
+        p_workspace_id: workspaceId,
+        p_membership_id: membershipId,
+        p_task_id: taskId,
+      });
+      if (error) throw new AccessStoreError('database_error');
+      return parseTaskLaunch(data);
     },
   };
 }

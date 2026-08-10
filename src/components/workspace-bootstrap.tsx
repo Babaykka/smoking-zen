@@ -51,8 +51,28 @@ function emptyWorkspace(workspaceId: string): WorkspaceSnapshot {
   };
 }
 
-function WorkspaceApplication({ gateway, mode }: { gateway: WorkspaceGateway; mode: 'demo' | 'production' }) {
-  const [activeView, setActiveView] = useState<ViewKey>('today');
+function taskLaunchFromSession(value: unknown): string | null {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return null;
+  const data = (value as Record<string, unknown>).data;
+  if (!data || typeof data !== 'object' || Array.isArray(data)) return null;
+  const launch = (data as Record<string, unknown>).launch;
+  if (launch === null || launch === undefined) return null;
+  if (!launch || typeof launch !== 'object' || Array.isArray(launch)) return null;
+  const candidate = launch as Record<string, unknown>;
+  return candidate.kind === 'task'
+    && typeof candidate.taskId === 'string'
+    && /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/iu.test(candidate.taskId)
+    ? candidate.taskId
+    : null;
+}
+
+function WorkspaceApplication({ gateway, mode, launchTaskId }: {
+  gateway: WorkspaceGateway;
+  mode: 'demo' | 'production';
+  launchTaskId: string | null;
+}) {
+  const [activeView, setActiveView] = useState<ViewKey>(launchTaskId ? 'tasks' : 'today');
+  const [pendingLaunchTaskId, setPendingLaunchTaskId] = useState(launchTaskId);
   const [createRequest, setCreateRequest] = useState(0);
   const [searchTarget, setSearchTarget] = useState<(SearchResult & SearchNavigationTarget) | null>(null);
   const searchRequestKey = useRef(0);
@@ -70,7 +90,14 @@ function WorkspaceApplication({ gateway, mode }: { gateway: WorkspaceGateway; mo
         {mode === 'demo' && <div className="demo-banner" role="status">Демо-режим: рабочие данные не подключены.</div>}
         <GlobalSearch onOpen={openSearchResult} />
         {activeView === 'today' || activeView === 'tasks' ? (
-          <TaskWorkspace activeView={activeView} createRequest={createRequest} onSearchTargetConsumed={consumeSearchTarget} searchTarget={searchTarget?.entity === 'task' ? searchTarget : undefined} />
+          <TaskWorkspace
+            activeView={activeView}
+            createRequest={createRequest}
+            launchTaskId={pendingLaunchTaskId ?? undefined}
+            onLaunchTaskConsumed={() => setPendingLaunchTaskId(null)}
+            onSearchTargetConsumed={consumeSearchTarget}
+            searchTarget={searchTarget?.entity === 'task' ? searchTarget : undefined}
+          />
         ) : activeView === 'knowledge' ? (
           <KnowledgeWorkspace onSearchTargetConsumed={consumeSearchTarget} searchTarget={searchTarget?.entity === 'knowledge' ? searchTarget : undefined} />
         ) : activeView === 'people' ? (
@@ -96,9 +123,10 @@ export function WorkspaceBootstrap({
   demoGatewayFactory = defaultDemoGatewayFactory,
   realtimeClientFactory = defaultRealtimeClientFactory,
 }: WorkspaceBootstrapProps) {
-  const [state, setState] = useState<{ gateway: WorkspaceGateway | null; error: string | null }>(() => ({
+  const [state, setState] = useState<{ gateway: WorkspaceGateway | null; error: string | null; launchTaskId: string | null }>(() => ({
     gateway: mode === 'demo' ? demoGatewayFactory() : null,
     error: null,
+    launchTaskId: null,
   }));
 
   useEffect(() => {
@@ -130,11 +158,11 @@ export function WorkspaceBootstrap({
       if (stopIfInactive()) return;
       const initData = (window as typeof window & { Telegram?: { WebApp?: { initData?: string } } }).Telegram?.WebApp?.initData;
       if (!initData) {
-        if (active) setState({ gateway: null, error: 'Откройте приложение в Telegram для безопасного входа.' });
+        if (active) setState({ gateway: null, error: 'Откройте приложение в Telegram для безопасного входа.', launchTaskId: null });
         return;
       }
       if (!productionConfig) {
-        if (active) setState({ gateway: null, error: 'Сервис временно недоступен.' });
+        if (active) setState({ gateway: null, error: 'Сервис временно недоступен.', launchTaskId: null });
         return;
       }
 
@@ -146,6 +174,9 @@ export function WorkspaceBootstrap({
         });
         if (stopIfInactive()) return;
         if (!sessionResponse.ok) throw new Error('Авторизация Telegram недействительна.');
+        const sessionPayload: unknown = await sessionResponse.json();
+        if (stopIfInactive()) return;
+        const launchTaskId = taskLaunchFromSession(sessionPayload);
 
         let realtimeClient: ProductionRealtimeClient | null = null;
         tokenManager = createRealtimeTokenManager({
@@ -168,11 +199,11 @@ export function WorkspaceBootstrap({
         });
         await gateway.hydrate();
         if (stopIfInactive()) return;
-        if (active) setState({ gateway, error: null });
+        if (active) setState({ gateway, error: null, launchTaskId });
       } catch (error) {
         if (!active || controller.signal.aborted) return;
         disposeResources();
-        setState({ gateway: null, error: error instanceof Error ? error.message : 'Сервис временно недоступен.' });
+        setState({ gateway: null, error: error instanceof Error ? error.message : 'Сервис временно недоступен.', launchTaskId: null });
       }
     })();
 
@@ -184,5 +215,5 @@ export function WorkspaceBootstrap({
 
   if (state.error) return <main className="bootstrap-state"><p role="alert">{state.error}</p></main>;
   if (!state.gateway) return <main className="bootstrap-state"><p role="status">Подключаем рабочее пространство…</p></main>;
-  return <WorkspaceApplication gateway={state.gateway} mode={mode} />;
+  return <WorkspaceApplication gateway={state.gateway} launchTaskId={state.launchTaskId} mode={mode} />;
 }

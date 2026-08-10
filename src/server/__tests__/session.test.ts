@@ -3,7 +3,9 @@
 import { decodeJwt } from 'jose';
 import { describe, expect, it } from 'vitest';
 
-import { parseServerEnvironment } from '@/server/env';
+import { parseServerEnvironment, ServerConfigurationError } from '@/server/env';
+
+const TEST_PRIVATE_KEY = ['-----BEGIN PRIVATE', ' KEY-----\ntest\n-----END PRIVATE', ' KEY-----'].join('');
 import {
   SESSION_COOKIE_NAME,
   clearSession,
@@ -44,7 +46,13 @@ describe('session primitives', () => {
 
   it('rejects tampered and expired sessions and rotates a valid session identifier on refresh', async () => {
     const cookie = await createSession(IDENTITY, { secret: SECRET, now: NOW, secure: false });
-    await expect(readSession(`${cookie.value.slice(0, -1)}x`, { secret: SECRET, now: NOW })).resolves.toBeNull();
+    const tamperedSegments = cookie.value.split('.');
+    const signature = tamperedSegments[2]!;
+    const changedFirstCharacter = signature[0] === 'A' ? 'B' : 'A';
+    tamperedSegments[2] = `${changedFirstCharacter}${signature.slice(1)}`;
+    const tamperedSession = tamperedSegments.join('.');
+    expect(tamperedSession).not.toBe(cookie.value);
+    await expect(readSession(tamperedSession, { secret: SECRET, now: NOW })).resolves.toBeNull();
     await expect(readSession(cookie.value, { secret: SECRET, now: new Date(NOW.getTime() + 43_201_000) }))
       .resolves.toBeNull();
 
@@ -91,10 +99,12 @@ describe('server environment', () => {
 
   it('parses the trusted ES256 signing key and publishable browser configuration in production', () => {
     const environment = parseServerEnvironment({
-      APP_MODE: 'production', APP_ORIGIN: 'https://app.example', TELEGRAM_BOT_TOKEN: 'bot-token',
-      SESSION_SECRET: 's'.repeat(32), SUPABASE_URL: 'https://project.supabase.co', SUPABASE_ANON_KEY: 'anon',
+      APP_MODE: 'production', DEPLOYMENT_ENVIRONMENT: 'production', APP_ORIGIN: 'https://app.example',
+      TELEGRAM_BOT_TOKEN: `123456:${'A'.repeat(35)}`, TELEGRAM_BOT_USERNAME: 'smoking_zen_bot',
+      TELEGRAM_MINI_APP_SHORT_NAME: 'workspace', TELEGRAM_WEBHOOK_SECRET: 'w'.repeat(32), INTERNAL_JOB_SECRET: 'j'.repeat(32),
+      SESSION_SECRET: 's'.repeat(32), SUPABASE_URL: 'https://abcdefghijklmnopqrst.supabase.co',
       SUPABASE_PUBLISHABLE_KEY: 'sb_publishable_test', SUPABASE_SERVICE_ROLE_KEY: 'service',
-      SUPABASE_JWT_ES256_PRIVATE_KEY: '-----BEGIN PRIVATE KEY-----\ntest\n-----END PRIVATE KEY-----',
+      SUPABASE_JWT_ES256_PRIVATE_KEY: TEST_PRIVATE_KEY,
       SUPABASE_JWT_KID: 'trusted-es256-key', OWNER_TELEGRAM_ID: '123456789',
     });
 
@@ -106,10 +116,12 @@ describe('server environment', () => {
 
   it('accepts only exact HTTPS origins in the self-hosted Bitwarden allowlist', () => {
     const base = {
-      APP_MODE: 'production', APP_ORIGIN: 'https://app.example', TELEGRAM_BOT_TOKEN: 'bot-token',
-      SESSION_SECRET: 's'.repeat(32), SUPABASE_URL: 'https://project.supabase.co', SUPABASE_ANON_KEY: 'anon',
+      APP_MODE: 'production', DEPLOYMENT_ENVIRONMENT: 'production', APP_ORIGIN: 'https://app.example',
+      TELEGRAM_BOT_TOKEN: `123456:${'A'.repeat(35)}`, TELEGRAM_BOT_USERNAME: 'smoking_zen_bot',
+      TELEGRAM_MINI_APP_SHORT_NAME: 'workspace', TELEGRAM_WEBHOOK_SECRET: 'w'.repeat(32), INTERNAL_JOB_SECRET: 'j'.repeat(32),
+      SESSION_SECRET: 's'.repeat(32), SUPABASE_URL: 'https://abcdefghijklmnopqrst.supabase.co',
       SUPABASE_PUBLISHABLE_KEY: 'sb_publishable_test', SUPABASE_SERVICE_ROLE_KEY: 'service',
-      SUPABASE_JWT_ES256_PRIVATE_KEY: '-----BEGIN PRIVATE KEY-----\ntest\n-----END PRIVATE KEY-----',
+      SUPABASE_JWT_ES256_PRIVATE_KEY: TEST_PRIVATE_KEY,
       SUPABASE_JWT_KID: 'trusted-es256-key', OWNER_TELEGRAM_ID: '123456789',
     };
     expect(parseServerEnvironment({
@@ -119,5 +131,67 @@ describe('server environment', () => {
       expect(() => parseServerEnvironment({ ...base, BITWARDEN_SELF_HOSTED_ORIGINS: value }))
         .toThrow('Production server configuration is incomplete.');
     }
+  });
+
+  it('strictly parses environment-specific Telegram and internal operation identities', () => {
+    const source = {
+      APP_MODE: 'production', DEPLOYMENT_ENVIRONMENT: 'staging', APP_ORIGIN: 'https://staging.smoking-zen.example',
+      TELEGRAM_BOT_TOKEN: `123456:${'A'.repeat(35)}`, TELEGRAM_BOT_USERNAME: 'smoking_zen_staging_bot',
+      TELEGRAM_MINI_APP_SHORT_NAME: 'workspace_staging', TELEGRAM_WEBHOOK_SECRET: 'w'.repeat(32),
+      INTERNAL_JOB_SECRET: 'j'.repeat(32), SESSION_SECRET: 's'.repeat(32),
+      SUPABASE_URL: 'https://abcdefghijklmnopqrst.supabase.co',
+      SUPABASE_PUBLISHABLE_KEY: 'sb_publishable_test', SUPABASE_SERVICE_ROLE_KEY: 'service',
+      SUPABASE_JWT_ES256_PRIVATE_KEY: TEST_PRIVATE_KEY,
+      SUPABASE_JWT_KID: 'trusted-es256-key', OWNER_TELEGRAM_ID: '123456789',
+    };
+
+    expect(parseServerEnvironment(source)).toMatchObject({
+      deploymentEnvironment: 'staging',
+      telegramBotUsername: 'smoking_zen_staging_bot',
+      telegramMiniAppShortName: 'workspace_staging',
+      telegramWebhookSecret: 'w'.repeat(32),
+      internalJobSecret: 'j'.repeat(32),
+    });
+    for (const patch of [
+      { DEPLOYMENT_ENVIRONMENT: 'preview' },
+      { APP_ORIGIN: 'https://staging.smoking-zen.example/path' },
+      { TELEGRAM_BOT_USERNAME: 'not-a-bot' },
+      { TELEGRAM_MINI_APP_SHORT_NAME: 'UpperCase' },
+      { TELEGRAM_WEBHOOK_SECRET: 'short' },
+      { INTERNAL_JOB_SECRET: 'contains whitespace '.repeat(3) },
+    ]) {
+      expect(() => parseServerEnvironment({ ...source, ...patch })).toThrow(ServerConfigurationError);
+    }
+  });
+
+  it('binds service-role traffic to an exact Supabase project origin or explicit self-hosted allowlist', () => {
+    const source = {
+      APP_MODE: 'production', DEPLOYMENT_ENVIRONMENT: 'staging', APP_ORIGIN: 'https://staging.smoking-zen.example',
+      TELEGRAM_BOT_TOKEN: `123456:${'A'.repeat(35)}`, TELEGRAM_BOT_USERNAME: 'smoking_zen_staging_bot',
+      TELEGRAM_MINI_APP_SHORT_NAME: 'workspace_staging', TELEGRAM_WEBHOOK_SECRET: 'w'.repeat(32),
+      INTERNAL_JOB_SECRET: 'j'.repeat(32), SESSION_SECRET: 's'.repeat(32),
+      SUPABASE_URL: 'https://abcdefghijklmnopqrst.supabase.co',
+      SUPABASE_PUBLISHABLE_KEY: 'sb_publishable_test', SUPABASE_SERVICE_ROLE_KEY: 'service',
+      SUPABASE_JWT_ES256_PRIVATE_KEY: TEST_PRIVATE_KEY,
+      SUPABASE_JWT_KID: 'trusted-es256-key', OWNER_TELEGRAM_ID: '123456789',
+    };
+    for (const value of [
+      'http://abcdefghijklmnopqrst.supabase.co',
+      'https://short.supabase.co',
+      'https://abcdefghijklmnopqrst.supabase.co/path',
+      'https://user@abcdefghijklmnopqrst.supabase.co',
+      'https://receiver.example',
+    ]) expect(() => parseServerEnvironment({ ...source, SUPABASE_URL: value })).toThrow(ServerConfigurationError);
+
+    expect(parseServerEnvironment({
+      ...source,
+      SUPABASE_URL: 'https://supabase.internal.example',
+      SUPABASE_SELF_HOSTED_ORIGINS: 'https://supabase.internal.example',
+    })).toMatchObject({ supabaseUrl: 'https://supabase.internal.example' });
+    expect(() => parseServerEnvironment({
+      ...source,
+      SUPABASE_URL: 'https://supabase.internal.example',
+      SUPABASE_SELF_HOSTED_ORIGINS: 'https://different.internal.example',
+    })).toThrow(ServerConfigurationError);
   });
 });

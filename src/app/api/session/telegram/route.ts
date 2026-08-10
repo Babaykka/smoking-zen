@@ -1,4 +1,4 @@
-import { randomUUID } from 'node:crypto';
+import { createHash, randomUUID } from 'node:crypto';
 
 import { apiResponse, hasSameOrigin, readJsonObject, setSessionCookie } from '@/server/http';
 import { requireProductionEnvironment, ServerConfigurationError } from '@/server/env';
@@ -38,6 +38,11 @@ function sessionIdentity(user: VerifiedTelegramUser, membership: MembershipAcces
   };
 }
 
+function invitationUnavailable(error: unknown): boolean {
+  if (!error || typeof error !== 'object' || !('code' in error)) return false;
+  return ['invitation_invalid', 'invitation_used', 'invitation_expired'].includes(String(error.code));
+}
+
 export function createTelegramSessionHandler(dependencies: TelegramSessionDependencies) {
   return async function telegramSessionHandler(request: Request): Promise<Response> {
     const requestId = dependencies.requestId();
@@ -45,7 +50,10 @@ export function createTelegramSessionHandler(dependencies: TelegramSessionDepend
       return apiResponse(requestId, 403, null, { code: 'origin_denied', message: 'Запрос отклонён.' });
     }
     const body = await readJsonObject(request);
-    if (!body || typeof body.initData !== 'string' || body.initData.length === 0 || body.initData.length > 16_384) {
+    if (
+      !body || typeof body.initData !== 'string' || body.initData.length === 0 || body.initData.length > 16_384
+      || Object.keys(body).some((key) => key !== 'initData')
+    ) {
       return apiResponse(requestId, 400, null, { code: 'invalid_request', message: 'Некорректный запрос.' });
     }
 
@@ -57,11 +65,22 @@ export function createTelegramSessionHandler(dependencies: TelegramSessionDepend
         now,
         dependencies.maxAgeSeconds ?? 300,
       );
-      const membership = await dependencies.store.bootstrapTelegramUser({
-        telegramUser,
-        ownerTelegramId: dependencies.ownerTelegramId,
-        workspaceName: dependencies.workspaceName ?? 'Smoking Zen',
-      });
+      if (!await dependencies.store.consumeTelegramSessionAttempt(telegramUser.id)) {
+        return apiResponse(requestId, 429, null, {
+          code: 'rate_limited',
+          message: 'Слишком много попыток. Повторите позже.',
+        });
+      }
+      const membership = telegramUser.launchIntent?.kind === 'invite'
+        ? await dependencies.store.redeemInvitation({
+          tokenHash: createHash('sha256').update(telegramUser.launchIntent.token, 'utf8').digest('hex'),
+          telegramUser,
+        })
+        : await dependencies.store.bootstrapTelegramUser({
+          telegramUser,
+          ownerTelegramId: dependencies.ownerTelegramId,
+          workspaceName: dependencies.workspaceName ?? 'Smoking Zen',
+        });
       if (!membership || !membership.active) {
         return apiResponse(requestId, 403, null, {
           code: 'membership_inactive',
@@ -69,13 +88,36 @@ export function createTelegramSessionHandler(dependencies: TelegramSessionDepend
         });
       }
 
+      let launch: { kind: 'task'; taskId: string } | null = null;
+      if (telegramUser.launchIntent?.kind === 'task') {
+        const authorized = await dependencies.store.getAuthorizedTaskLaunch(
+          membership.userId,
+          membership.workspaceId,
+          membership.membershipId,
+          telegramUser.launchIntent.taskId,
+        );
+        if (!authorized) {
+          return apiResponse(requestId, 403, null, {
+            code: 'launch_unavailable',
+            message: 'Задача недоступна.',
+          });
+        }
+        launch = { kind: 'task', taskId: authorized.taskId };
+      }
+
       const cookie = await dependencies.createSession(sessionIdentity(telegramUser, membership));
-      const response = apiResponse(requestId, 200, { membership }, null);
+      const response = apiResponse(requestId, 200, { membership, launch }, null);
       setSessionCookie(response, cookie);
       return response;
     } catch (error) {
       if (error instanceof TelegramInitDataError) {
         return apiResponse(requestId, 401, null, { code: 'telegram_invalid', message: 'Авторизация Telegram недействительна.' });
+      }
+      if (invitationUnavailable(error)) {
+        return apiResponse(requestId, 409, null, {
+          code: 'invitation_unavailable',
+          message: 'Приглашение недействительно или уже использовано.',
+        });
       }
       return apiResponse(requestId, 500, null, { code: 'internal_error', message: 'Не удалось выполнить запрос.' });
     }
