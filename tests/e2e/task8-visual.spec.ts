@@ -35,6 +35,7 @@ test.setTimeout(60_000);
 async function screenshot(page: Page, testInfo: TestInfo, name: string) {
   await page.screenshot({
     animations: 'disabled',
+    caret: 'initial',
     fullPage: true,
     path: `output/playwright/task8-final/${testInfo.project.name}-${name}.png`,
   });
@@ -130,6 +131,10 @@ test.beforeEach(async ({ page }, testInfo) => {
     });
   }
   await page.goto('/');
+  if (telegramFixtureProjects.has(testInfo.project.name)) {
+    await page.waitForFunction(() => document.documentElement.style
+      .getPropertyValue('--tg-viewport-stable-height').endsWith('px'));
+  }
 });
 
 test('renders primary workspaces, details, history, and forms without serious accessibility defects', async ({ page }, testInfo) => {
