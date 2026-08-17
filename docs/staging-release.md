@@ -1,0 +1,58 @@
+# Защищённый выпуск в staging
+
+Ручной workflow `Staging release controls` проверяет только ветку `main` через GitHub Environment `staging`. У него нет расписания, а исходный режим `migration_mode=none` вместе с `evidence_mode=draft` не изменяет базу и не разрешает production. Доступ к `staging` ограничивается `main` и минимальным кругом операторов с MFA. Отдельный Environment `staging-promotion` не содержит provider secrets, разрешён только для `main`, требует независимого reviewer, запрещает self-review и служит финальным go/no-go gate.
+
+Credentialed backup, freshness и restore выполняет отдельный ручной workflow `Staging data operations`. Операции `backup-dry-run`, `backup-snapshot` и `freshness` используют `staging`; `restore-drill` использует Environment `staging-drill`, разрешённый только для `main`, с независимым reviewer и запретом self-review. В `staging-drill` нет app service role, Telegram, production или backup-writer secrets: archive credentials дают только read/list, а изменяющие DB/Storage credentials принадлежат исключительно пустому уничтожаемому drill-проекту.
+
+## Паспорт контура
+
+Единственный версионируемый источник публичных идентичностей — `config/staging-identities.json`. До первого credentialed запуска замените примерные значения точными staging-значениями и только затем установите `configured: true` в отдельном reviewed commit. Паспорт остаётся каноническим JSON: два пробела для отступа, один завершающий LF, стабильный порядок полей и ни одного дублирующегося ключа; любое иное представление fail-closed отклоняют все preflight, migration и evidence gates. Файл содержит GitHub repository, origin приложения, staging и restore-drill project ref, Telegram bot ID/username/Direct Mini App short name, JWT `kid` и SHA-256 отпечаток SPKI публичной части ES256-ключа, а также точные endpoint/bucket/prefix независимого backup target. Приватный ключ, токены, пароли и пользовательские данные в этот файл не попадают.
+
+`STAGING_EXPECTED_*` в защищённом Environment должны совпадать с паспортом. Preflight отдельно связывает с ним фактический `APP_ORIGIN`, Supabase URL и backup coordinates, числовой ID из bot token, Telegram username/short name, `kid`, публичную часть приватного P-256 ключа и весь backup target. Одновременная подмена фактических и ожидаемых переменных поэтому не меняет доверенный контур.
+
+Перед каждым запуском обновите защищённые `STAGING_VAULT_APP_ORIGIN` и `STAGING_VAULT_INTERNAL_JOB_SECRET` из текущего read-only snapshot Supabase Vault. Они обязательны и должны совпасть с `APP_ORIGIN` и `INTERNAL_JOB_SECRET`. Session, webhook и internal-job secrets генерируются криптографически случайно (не повторяющейся строкой); preflight проверяет длину, алфавит и минимальное разнообразие, но не может доказать источник энтропии. Legacy Supabase JWT preflight связывает только канонический HS256 header, `iss`, `role`, `iat` и живой `exp`; это проверка claims/формата, а не подписи. Реальное полномочие ключа доказывается только успешной credentialed provider-проверкой. Gate `vaultCron` должен ссылаться hash на отдельный credentialed hosted artifact живой проверки; сохранённый snapshot, заполненный candidate или локальная валидация сами по себе такую связку не подтверждают.
+
+## Порядок запуска
+
+1. После зелёного CI запустите `migration_mode=none`, `evidence_mode=draft`. Preflight должен завершиться всеми строками `STAGING_PREFLIGHT_PASS_*`; ошибки содержат только стабильный код и не раскрывают значения.
+2. На свежем staging Supabase запустите `migration_mode=apply` и передайте точное acknowledgement `APPLY_STAGING_MIGRATIONS:<project-ref>`. Runner сверяет checkout, паспорт, PG host/user, TLS `verify-full`, полный список `0001`–`0019` и SHA-256 каждого файла, затем применяет недостающий ordered prefix одной транзакцией под advisory lock.
+3. Отдельным ручным запуском выполните `migration_mode=reapply` с тем же acknowledgement. Полная цепочка применяется повторно, а checksum ledger, release receipt и postflight-сентинелы `0019` должны сойтись. Сохраните безопасную строку `STAGING_MIGRATION_MANIFEST_SHA256:sha256:<hex>` для evidence.
+4. Разверните тот же 40-символьный commit на закреплённый staging origin. Миграции должны завершиться не позднее начала deployment.
+5. Выполните hosted-проверки RLS, private Realtime, Storage, Telegram, Vault/Cron, document pipeline, security и реальные iOS, Android, Desktop, Web A и Web K. Отрицательные проверки должны доказать запрет анонимного/cross-workspace чтения, Broadcast send, публичного Realtime, Storage write/other bucket, forged/stale Telegram auth, backup DB/Storage write и публикации active document. Для data plane отдельно запустите `Staging data operations`: `backup-dry-run`, один `backup-snapshot`, `freshness`, затем `restore-drill`. Restore принимает snapshot только с точным acknowledgement `RESTORE_ISOLATED_TARGET:<drill-project-ref>:<snapshot-id>`; до любых изменений preflight связывает его с паспортом, archive и пустым drill target.
+6. Создайте redacted evidence по `docs/staging-evidence.example.json`, установите `state: complete`, закодируйте готовый JSON одной строкой base64 и сохраните его как защищённый Environment secret `STAGING_EVIDENCE_BASE64`. Затем запустите `migration_mode=none`, `evidence_mode=complete` на том же commit. Любое сочетание complete evidence с `apply` или `reapply` отклоняется до preflight, чтобы база не менялась после зафиксированных проверок.
+7. Job `verify` отклоняет duplicate keys и unsafe content, затем записывает новый канонический mode-600 `staging-evidence.json`; исходные декодированные байты Environment secret не публикуются. Именно этот файл становится immutable candidate artifact. Для `state: complete` блок `approval` обязан оставаться `pending/false/null/null`: candidate технически не может сам объявить независимое одобрение. `STAGING_EVIDENCE_CANDIDATE_VALID` означает только, что candidate имеет допустимую структуру и совпадает с checkout, migration manifest и публичным паспортом контура; тот же результат можно получить локально на синтетических данных, поэтому он не является provider attestation. Независимый reviewer открывает artifact, сверяет каждый hash с указанным ниже credentialed source и только затем одобряет ожидающий job `promote` в `staging-promotion`. Job повторно валидирует ровно скачанный candidate и публикует redacted receipt, связанный с commit, workflow run и SHA-256 candidate. Production gate принимает только успешный `promote`, receipt и GitHub Environment audit trail.
+
+Apply и reapply — два осознанных изменяющих запуска. Режим `none` никогда не заменяет их. `Staging release controls` не выполняет Vercel deploy, Telegram webhook, backup snapshot или restore drill автоматически. `Staging data operations` также не запускается по расписанию и не является неявным продолжением release job: оператор выбирает ровно одну операцию, а restore дополнительно ожидает approval в `staging-drill`.
+
+## Credentialed data operations
+
+- `backup-dry-run` проверяет read-only DB/Storage identity и независимый target без публикации snapshot; его успех не заменяет `backup-snapshot`.
+- `backup-snapshot` публикует `manifest.json` последним и с immutable semantics. После retention скрипт заново скачивает опубликованный manifest, побайтово сверяет его с локальным и сохраняет точные байты в artifact `staging-backup-manifest-<run_id>-<run_attempt>` на 90 дней. Только после этого snapshot считается полным.
+- `freshness` использует отдельные read/list credentials, заново скачивает новейший полный manifest, проверяет его schema/source project и возраст самого старого компонента. Точные проверенные байты сохраняются в artifact `staging-freshness-manifest-<run_id>-<run_attempt>` на 90 дней.
+- `restore-drill` принимает один явный snapshot, читает archive read/list credentials и изменяет только закреплённый пустой drill project. Успешный run сохраняет redacted файл `staging-restore-evidence.json` в artifact `staging-restore-evidence-<run_id>-<run_attempt>` на 90 дней.
+
+Успешная локальная имитация этих скриптов не создаёт staging evidence. Для authority нужны успешный GitHub run из `main`, Environment audit trail соответствующего контура и доступный reviewer исходный artifact; для restore дополнительно требуется approval `staging-drill`.
+
+## Формат evidence
+
+В evidence нет URL, имён ресурсов, путей, Telegram ID, email, payload или секретов. Поле ресурса — строка `sha256:<hex>`, где hex считается по UTF-8 без завершающего перевода строки:
+
+- `github` — `githubRepository`;
+- `vercel` — `appOrigin`;
+- `supabaseStaging` — project ref, JWT `kid` и SPKI fingerprint, соединённые одним LF;
+- `supabaseDrill` — restore-drill project ref;
+- `telegram` — bot ID, username и short name, соединённые одним LF;
+- `s3Backup` — endpoint, bucket и prefix, соединённые одним LF.
+
+`release.commit` обязан совпасть с checkout workflow, `migration.revision` равен `0019`, а `migration.manifestSha256` берётся из успешного migration runner и независимо пересчитывается валидатором. Все gates проходят после deployment, candidate записывается после последней проверки, а независимый reviewer принимает или отклоняет уже неизменяемые canonical bytes во внешнем Environment gate. Каждая проверка должна быть не старше 26 часов на момент записи; `validUntil` не может отстоять от самой старой проверки более чем на 26 часов.
+
+`evidenceSha256` каждого gate считается по точным исходным байтам, без JSON parse/stringify, изменения пробелов, перевода строк или перекодирования. Сам redacted candidate не содержит URL и путей, поэтому reviewer фиксирует место источника в закрытом review record и проверяет hash повторно:
+
+- `hostedChecks.backup.evidenceSha256` — SHA-256 точных байтов immutable `manifest.json` по координате `<BACKUP_TARGET_PREFIX>/<snapshot-id>/manifest.json`, повторно скачанного и сверенного успешным `backup-snapshot`. Reviewer считает hash по скачанным байтам artifact `staging-backup-manifest-<run_id>-<run_attempt>` и связывает его с тем же GitHub run/audit trail;
+- `hostedChecks.freshness.evidenceSha256` — SHA-256 точных байтов того `manifest.json`, который успешный `freshness` run скачал и проверил. Reviewer считает hash по скачанным байтам artifact `staging-freshness-manifest-<run_id>-<run_attempt>`; одна строка `Backup freshness verified.` без artifact и GitHub run/audit trail доказательством не является;
+- `hostedChecks.restore.evidenceSha256` — SHA-256 точных скачанных байтов `staging-restore-evidence.json` из GitHub artifact `staging-restore-evidence-<run_id>-<run_attempt>`. Hash не считают по предпросмотру UI или повторно сериализованному JSON;
+- для остальных hosted/negative gates hash считается по точным байтам заранее согласованного redacted artifact из закрытого staging review record; запись обязана однозначно указывать gate, commit, run/device, checkedAt и место immutable source.
+
+После approval job `promote` сохраняет без изменения candidate `staging-evidence.json` и `staging-promotion-receipt.json` в artifact `staging-promotion-<run_id>-<run_attempt>`. Receipt содержит SHA-256 точных байтов candidate, commit и GitHub run identity; он не подтверждает provider state без исходных artifacts и Environment audit trail.
+
+`STAGING_EVIDENCE_CANDIDATE_VALID` не открывает production и не утверждает, что staging действительно проверен. Финальное независимое решение обозначается `STAGING_PROMOTION_APPROVED` только из job `promote`. Candidate, утверждённый redacted JSON и receipt сохраняются GitHub artifacts на 90 дней, а reviewer фиксируется GitHub Environment audit trail. Production остаётся закрытым до успешного snapshot, freshness, изолированного restore drill, полного hosted evidence и этого независимого решения go/no-go.

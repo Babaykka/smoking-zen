@@ -1,0 +1,710 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "Redacted staging rollout evidence",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schemaVersion",
+    "state",
+    "recordedAt",
+    "validUntil",
+    "release",
+    "resources",
+    "migration",
+    "hostedChecks",
+    "negativeCapabilities",
+    "recovery",
+    "approval"
+  ],
+  "properties": {
+    "schemaVersion": {
+      "const": 1
+    },
+    "state": {
+      "enum": [
+        "draft",
+        "complete"
+      ]
+    },
+    "recordedAt": {
+      "$ref": "#/$defs/nullableTimestamp"
+    },
+    "validUntil": {
+      "$ref": "#/$defs/nullableTimestamp"
+    },
+    "release": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "commit",
+        "deploymentStartedAt",
+        "deploymentCompletedAt"
+      ],
+      "properties": {
+        "commit": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{40}$",
+          "description": "Promotion validation requires the exact protected workflow checkout commit."
+        },
+        "deploymentStartedAt": {
+          "description": "For complete evidence, deployment starts only after migration.appliedAt.",
+          "$ref": "#/$defs/nullableTimestamp"
+        },
+        "deploymentCompletedAt": {
+          "$ref": "#/$defs/nullableTimestamp"
+        }
+      }
+    },
+    "resources": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "github",
+        "vercel",
+        "supabaseStaging",
+        "supabaseDrill",
+        "telegram",
+        "s3Backup"
+      ],
+      "properties": {
+        "github": {
+          "$ref": "#/$defs/sha256"
+        },
+        "vercel": {
+          "$ref": "#/$defs/sha256"
+        },
+        "supabaseStaging": {
+          "$ref": "#/$defs/sha256"
+        },
+        "supabaseDrill": {
+          "$ref": "#/$defs/sha256"
+        },
+        "telegram": {
+          "$ref": "#/$defs/sha256"
+        },
+        "s3Backup": {
+          "$ref": "#/$defs/sha256"
+        }
+      }
+    },
+    "migration": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "revision",
+        "manifestSha256",
+        "appliedAt"
+      ],
+      "properties": {
+        "revision": {
+          "type": "string",
+          "pattern": "^[0-9]{4}$"
+        },
+        "manifestSha256": {
+          "description": "Promotion validation recomputes this fingerprint from the exact ordered migration files.",
+          "$ref": "#/$defs/sha256"
+        },
+        "appliedAt": {
+          "description": "For complete evidence, the migration is applied no later than release.deploymentStartedAt.",
+          "$ref": "#/$defs/nullableTimestamp"
+        }
+      }
+    },
+    "hostedChecks": {
+      "$ref": "#/$defs/hostedChecks"
+    },
+    "negativeCapabilities": {
+      "$ref": "#/$defs/negativeCapabilities"
+    },
+    "recovery": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "backupAgeHours",
+        "rpoHours",
+        "dataPlaneRtoHours"
+      ],
+      "properties": {
+        "backupAgeHours": {
+          "$ref": "#/$defs/nullableMeasurement"
+        },
+        "rpoHours": {
+          "$ref": "#/$defs/nullableMeasurement"
+        },
+        "dataPlaneRtoHours": {
+          "$ref": "#/$defs/nullableMeasurement"
+        }
+      }
+    },
+    "approval": {
+      "$ref": "#/$defs/approval"
+    }
+  },
+  "allOf": [
+    {
+      "if": {
+        "properties": {
+          "state": {
+            "const": "complete"
+          }
+        },
+        "required": [
+          "state"
+        ]
+      },
+      "then": {
+        "properties": {
+          "recordedAt": {
+            "$ref": "#/$defs/timestamp"
+          },
+          "validUntil": {
+            "$ref": "#/$defs/timestamp"
+          },
+          "release": {
+            "type": "object",
+            "properties": {
+              "commit": {
+                "not": {
+                  "const": "0000000000000000000000000000000000000000"
+                }
+              },
+              "deploymentStartedAt": {
+                "$ref": "#/$defs/timestamp"
+              },
+              "deploymentCompletedAt": {
+                "$ref": "#/$defs/timestamp"
+              }
+            }
+          },
+          "migration": {
+            "type": "object",
+            "properties": {
+              "revision": {
+                "const": "0019"
+              },
+              "appliedAt": {
+                "$ref": "#/$defs/timestamp"
+              }
+            }
+          },
+          "hostedChecks": {
+            "$ref": "#/$defs/completeHostedChecks"
+          },
+          "negativeCapabilities": {
+            "$ref": "#/$defs/completeNegativeCapabilities"
+          },
+          "recovery": {
+            "type": "object",
+            "properties": {
+              "backupAgeHours": {
+                "type": "number",
+                "minimum": 0,
+                "maximum": 26
+              },
+              "rpoHours": {
+                "type": "number",
+                "minimum": 0,
+                "maximum": 24
+              },
+              "dataPlaneRtoHours": {
+                "type": "number",
+                "minimum": 0,
+                "maximum": 4
+              }
+            }
+          },
+          "approval": {
+            "$ref": "#/$defs/candidateApproval"
+          }
+        }
+      }
+    }
+  ],
+  "$defs": {
+    "timestamp": {
+      "type": "string",
+      "format": "date-time",
+      "pattern": "^[0-9]{4}-(?:0[1-9]|1[0-2])-(?:0[1-9]|[12][0-9]|3[01])T(?:[01][0-9]|2[0-3]):[0-5][0-9]:[0-5][0-9]\\.[0-9]{3}Z$"
+    },
+    "nullableTimestamp": {
+      "oneOf": [
+        {
+          "$ref": "#/$defs/timestamp"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "sha256": {
+      "type": "string",
+      "pattern": "^sha256:[0-9a-f]{64}$"
+    },
+    "nullableMeasurement": {
+      "oneOf": [
+        {
+          "type": "number",
+          "minimum": 0
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "gate": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "status",
+        "checkedAt",
+        "evidenceSha256"
+      ],
+      "properties": {
+        "status": {
+          "enum": [
+            "not-run",
+            "pass",
+            "fail"
+          ]
+        },
+        "checkedAt": {
+          "$ref": "#/$defs/nullableTimestamp"
+        },
+        "evidenceSha256": {
+          "oneOf": [
+            {
+              "$ref": "#/$defs/sha256"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        }
+      },
+      "oneOf": [
+        {
+          "properties": {
+            "status": {
+              "const": "not-run"
+            },
+            "checkedAt": {
+              "type": "null"
+            },
+            "evidenceSha256": {
+              "type": "null"
+            }
+          }
+        },
+        {
+          "properties": {
+            "status": {
+              "enum": [
+                "pass",
+                "fail"
+              ]
+            },
+            "checkedAt": {
+              "$ref": "#/$defs/timestamp"
+            },
+            "evidenceSha256": {
+              "$ref": "#/$defs/sha256"
+            }
+          }
+        }
+      ]
+    },
+    "completeGate": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "status",
+        "checkedAt",
+        "evidenceSha256"
+      ],
+      "properties": {
+        "status": {
+          "const": "pass"
+        },
+        "checkedAt": {
+          "$ref": "#/$defs/timestamp"
+        },
+        "evidenceSha256": {
+          "$ref": "#/$defs/sha256"
+        }
+      }
+    },
+    "nativeDevices": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "ios",
+        "android",
+        "desktop",
+        "webA",
+        "webK"
+      ],
+      "properties": {
+        "ios": {
+          "$ref": "#/$defs/gate"
+        },
+        "android": {
+          "$ref": "#/$defs/gate"
+        },
+        "desktop": {
+          "$ref": "#/$defs/gate"
+        },
+        "webA": {
+          "$ref": "#/$defs/gate"
+        },
+        "webK": {
+          "$ref": "#/$defs/gate"
+        }
+      }
+    },
+    "completeNativeDevices": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "ios",
+        "android",
+        "desktop",
+        "webA",
+        "webK"
+      ],
+      "properties": {
+        "ios": {
+          "$ref": "#/$defs/completeGate"
+        },
+        "android": {
+          "$ref": "#/$defs/completeGate"
+        },
+        "desktop": {
+          "$ref": "#/$defs/completeGate"
+        },
+        "webA": {
+          "$ref": "#/$defs/completeGate"
+        },
+        "webK": {
+          "$ref": "#/$defs/completeGate"
+        }
+      }
+    },
+    "hostedChecks": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "rls",
+        "realtime",
+        "storage",
+        "telegram",
+        "vaultCron",
+        "documentPipeline",
+        "backup",
+        "freshness",
+        "restore",
+        "nativeDevices",
+        "security"
+      ],
+      "properties": {
+        "rls": {
+          "$ref": "#/$defs/gate"
+        },
+        "realtime": {
+          "$ref": "#/$defs/gate"
+        },
+        "storage": {
+          "$ref": "#/$defs/gate"
+        },
+        "telegram": {
+          "$ref": "#/$defs/gate"
+        },
+        "vaultCron": {
+          "$ref": "#/$defs/gate"
+        },
+        "documentPipeline": {
+          "$ref": "#/$defs/gate"
+        },
+        "backup": {
+          "$ref": "#/$defs/gate"
+        },
+        "freshness": {
+          "$ref": "#/$defs/gate"
+        },
+        "restore": {
+          "$ref": "#/$defs/gate"
+        },
+        "nativeDevices": {
+          "$ref": "#/$defs/nativeDevices"
+        },
+        "security": {
+          "$ref": "#/$defs/gate"
+        }
+      }
+    },
+    "completeHostedChecks": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "rls",
+        "realtime",
+        "storage",
+        "telegram",
+        "vaultCron",
+        "documentPipeline",
+        "backup",
+        "freshness",
+        "restore",
+        "nativeDevices",
+        "security"
+      ],
+      "properties": {
+        "rls": {
+          "$ref": "#/$defs/completeGate"
+        },
+        "realtime": {
+          "$ref": "#/$defs/completeGate"
+        },
+        "storage": {
+          "$ref": "#/$defs/completeGate"
+        },
+        "telegram": {
+          "$ref": "#/$defs/completeGate"
+        },
+        "vaultCron": {
+          "$ref": "#/$defs/completeGate"
+        },
+        "documentPipeline": {
+          "$ref": "#/$defs/completeGate"
+        },
+        "backup": {
+          "$ref": "#/$defs/completeGate"
+        },
+        "freshness": {
+          "$ref": "#/$defs/completeGate"
+        },
+        "restore": {
+          "$ref": "#/$defs/completeGate"
+        },
+        "nativeDevices": {
+          "$ref": "#/$defs/completeNativeDevices"
+        },
+        "security": {
+          "$ref": "#/$defs/completeGate"
+        }
+      }
+    },
+    "negativeCapabilities": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "anonymousDataReadDenied",
+        "crossWorkspaceReadDenied",
+        "realtimeSendDenied",
+        "publicRealtimeDenied",
+        "storageWriteDenied",
+        "otherBucketReadDenied",
+        "forgedTelegramAuthDenied",
+        "staleTelegramAuthDenied",
+        "backupDatabaseWriteDenied",
+        "backupStorageWriteDenied",
+        "activeDocumentPublishDenied"
+      ],
+      "properties": {
+        "anonymousDataReadDenied": {
+          "$ref": "#/$defs/gate"
+        },
+        "crossWorkspaceReadDenied": {
+          "$ref": "#/$defs/gate"
+        },
+        "realtimeSendDenied": {
+          "$ref": "#/$defs/gate"
+        },
+        "publicRealtimeDenied": {
+          "$ref": "#/$defs/gate"
+        },
+        "storageWriteDenied": {
+          "$ref": "#/$defs/gate"
+        },
+        "otherBucketReadDenied": {
+          "$ref": "#/$defs/gate"
+        },
+        "forgedTelegramAuthDenied": {
+          "$ref": "#/$defs/gate"
+        },
+        "staleTelegramAuthDenied": {
+          "$ref": "#/$defs/gate"
+        },
+        "backupDatabaseWriteDenied": {
+          "$ref": "#/$defs/gate"
+        },
+        "backupStorageWriteDenied": {
+          "$ref": "#/$defs/gate"
+        },
+        "activeDocumentPublishDenied": {
+          "$ref": "#/$defs/gate"
+        }
+      }
+    },
+    "completeNegativeCapabilities": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "anonymousDataReadDenied",
+        "crossWorkspaceReadDenied",
+        "realtimeSendDenied",
+        "publicRealtimeDenied",
+        "storageWriteDenied",
+        "otherBucketReadDenied",
+        "forgedTelegramAuthDenied",
+        "staleTelegramAuthDenied",
+        "backupDatabaseWriteDenied",
+        "backupStorageWriteDenied",
+        "activeDocumentPublishDenied"
+      ],
+      "properties": {
+        "anonymousDataReadDenied": {
+          "$ref": "#/$defs/completeGate"
+        },
+        "crossWorkspaceReadDenied": {
+          "$ref": "#/$defs/completeGate"
+        },
+        "realtimeSendDenied": {
+          "$ref": "#/$defs/completeGate"
+        },
+        "publicRealtimeDenied": {
+          "$ref": "#/$defs/completeGate"
+        },
+        "storageWriteDenied": {
+          "$ref": "#/$defs/completeGate"
+        },
+        "otherBucketReadDenied": {
+          "$ref": "#/$defs/completeGate"
+        },
+        "forgedTelegramAuthDenied": {
+          "$ref": "#/$defs/completeGate"
+        },
+        "staleTelegramAuthDenied": {
+          "$ref": "#/$defs/completeGate"
+        },
+        "backupDatabaseWriteDenied": {
+          "$ref": "#/$defs/completeGate"
+        },
+        "backupStorageWriteDenied": {
+          "$ref": "#/$defs/completeGate"
+        },
+        "activeDocumentPublishDenied": {
+          "$ref": "#/$defs/completeGate"
+        }
+      }
+    },
+    "approval": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "status",
+        "independent",
+        "reviewerFingerprint",
+        "approvedAt"
+      ],
+      "properties": {
+        "status": {
+          "enum": [
+            "pending",
+            "rejected",
+            "approved"
+          ]
+        },
+        "independent": {
+          "type": "boolean"
+        },
+        "reviewerFingerprint": {
+          "oneOf": [
+            {
+              "$ref": "#/$defs/sha256"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "approvedAt": {
+          "$ref": "#/$defs/nullableTimestamp"
+        }
+      },
+      "oneOf": [
+        {
+          "properties": {
+            "status": {
+              "const": "pending"
+            },
+            "independent": {
+              "const": false
+            },
+            "reviewerFingerprint": {
+              "type": "null"
+            },
+            "approvedAt": {
+              "type": "null"
+            }
+          }
+        },
+        {
+          "properties": {
+            "status": {
+              "const": "rejected"
+            },
+            "independent": {
+              "type": "boolean"
+            },
+            "reviewerFingerprint": {
+              "$ref": "#/$defs/sha256"
+            },
+            "approvedAt": {
+              "type": "null"
+            }
+          }
+        },
+        {
+          "properties": {
+            "status": {
+              "const": "approved"
+            },
+            "independent": {
+              "type": "boolean"
+            },
+            "reviewerFingerprint": {
+              "$ref": "#/$defs/sha256"
+            },
+            "approvedAt": {
+              "$ref": "#/$defs/timestamp"
+            }
+          }
+        }
+      ]
+    },
+    "candidateApproval": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "status",
+        "independent",
+        "reviewerFingerprint",
+        "approvedAt"
+      ],
+      "properties": {
+        "status": {
+          "const": "pending"
+        },
+        "independent": {
+          "const": false
+        },
+        "reviewerFingerprint": {
+          "type": "null"
+        },
+        "approvedAt": {
+          "type": "null"
+        }
+      }
+    }
+  }
+}

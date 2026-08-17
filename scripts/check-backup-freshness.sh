@@ -11,10 +11,15 @@ SCRIPT_PARENT=.
 SCRIPT_DIR=$(CDPATH='' cd -- "$SCRIPT_PARENT" && pwd)
 METADATA_HELPER="$SCRIPT_DIR/backup-metadata.mjs"
 SCRATCH=''
+EVIDENCE_OUTPUT_PATH=${BACKUP_FRESHNESS_EVIDENCE_OUTPUT:-}
+EVIDENCE_OUTPUT_CREATED=0
 
 cleanup() {
   local status=$?
   trap - EXIT HUP INT TERM
+  if (( status != 0 && EVIDENCE_OUTPUT_CREATED == 1 )) && [[ -n "$EVIDENCE_OUTPUT_PATH" ]]; then
+    rm -f -- "$EVIDENCE_OUTPUT_PATH" 2>/dev/null || true
+  fi
   if [[ -n "$SCRATCH" && -d "$SCRATCH" ]]; then rm -r -- "$SCRATCH"; fi
   exit "$status"
 }
@@ -27,6 +32,51 @@ die() {
   printf '%s\n' 'Backup freshness verification failed.' >&2
   exit 1
 }
+validate_evidence_output() {
+  local destination=$1
+  [[ -z "$destination" ]] && return 0
+  [[ "$destination" != *$'\n'* && "$destination" != *$'\r'* ]] || die
+  [[ ! -e "$destination" && ! -L "$destination" ]] || die
+}
+publish_evidence() {
+  local source=$1 destination=$EVIDENCE_OUTPUT_PATH
+  [[ -n "$destination" ]] || return 0
+  [[ "$destination" != *$'\n'* && "$destination" != *$'\r'* ]] || die
+  [[ ! "$destination" -ef "$source" ]] || die
+  [[ ! -e "$destination" && ! -L "$destination" ]] || die
+
+  set -o noclobber
+  if ! { exec 4> "$destination"; } 2>/dev/null; then
+    set +o noclobber
+    die
+  fi
+  set +o noclobber
+  EVIDENCE_OUTPUT_CREATED=1
+
+  # shellcheck disable=SC2016
+  node -e '
+    const fs = require("fs");
+    const flags = fs.constants.O_RDONLY | (fs.constants.O_NOFOLLOW || 0);
+    const input = fs.openSync(process.argv[1], flags);
+    try {
+      const source = fs.fstatSync(input);
+      const destination = fs.fstatSync(4);
+      if (!source.isFile() || !destination.isFile()
+          || (source.dev === destination.dev && source.ino === destination.ino)) process.exit(1);
+      const bytes = fs.readFileSync(input);
+      let offset = 0;
+      while (offset < bytes.length) offset += fs.writeSync(4, bytes, offset);
+      fs.fchmodSync(4, 0o600);
+      fs.fsyncSync(4);
+    } finally {
+      fs.closeSync(input);
+    }
+  ' "$source" 4>&4 > /dev/null 2>> "$provider_log" || {
+    exec 4>&-
+    die
+  }
+  exec 4>&- || die
+}
 require_value() {
   local name=$1
   [[ -n ${!name:-} && ${!name} != *$'\n'* && ${!name} != *$'\r'* ]] || die
@@ -38,6 +88,8 @@ for variable in BACKUP_SOURCE_PROJECT_REF BACKUP_TARGET_ENDPOINT BACKUP_FRESHNES
   BACKUP_TARGET_FORCE_PATH_STYLE; do
   require_value "$variable"
 done
+validate_evidence_output "$EVIDENCE_OUTPUT_PATH"
+unset BACKUP_FRESHNESS_EVIDENCE_OUTPUT
 for tool in node rclone date mktemp chmod rm sort mkdir; do
   command -v "$tool" >/dev/null 2>&1 || die
 done
@@ -115,4 +167,5 @@ now="${now_id:0:4}-${now_id:4:2}-${now_id:6:2}T${now_id:9:2}:${now_id:11:2}:${no
 node "$METADATA_HELPER" freshness --manifest "$latest_manifest" --now "$now" \
   --source-project-ref "$BACKUP_SOURCE_PROJECT_REF" \
   > /dev/null 2>> "$provider_log" || die
+publish_evidence "$latest_manifest"
 printf '%s\n' 'Backup freshness verified.'

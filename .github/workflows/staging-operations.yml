@@ -1,0 +1,228 @@
+name: Staging data operations
+
+on:
+  workflow_dispatch:
+    inputs:
+      operation:
+        description: 'Operation on the pinned staging contour'
+        required: true
+        default: backup-dry-run
+        type: choice
+        options:
+          - backup-dry-run
+          - backup-snapshot
+          - freshness
+          - restore-drill
+      restore_snapshot_id:
+        description: 'Restore only: exact YYYYMMDDTHHMMSSZ snapshot id'
+        required: false
+        default: ''
+        type: string
+      restore_acknowledgement:
+        description: 'Restore only: RESTORE_ISOLATED_TARGET:<drill-project-ref>:<snapshot-id>'
+        required: false
+        default: ''
+        type: string
+
+permissions:
+  contents: read
+
+concurrency:
+  group: smoking-zen-staging-data-operations
+  cancel-in-progress: false
+
+jobs:
+  operate:
+    if: github.ref == 'refs/heads/main' && inputs.operation != 'restore-drill'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 90
+    environment: staging
+    steps:
+      - name: Checkout exact release commit
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+      - name: Node 24.18.0
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: 24.18.0
+      - name: Verify immutable checkout
+        run: |
+          set -Eeuo pipefail
+          test "$(git rev-parse HEAD)" = "$GITHUB_SHA"
+          test -z "$(git status --porcelain --untracked-files=no)"
+          test -f config/staging-identities.json
+          test ! -L config/staging-identities.json
+      - name: Fail-closed staging operation contour
+        env:
+          STAGING_OPERATIONS_OPERATION: ${{ inputs.operation }}
+          STAGING_ACTUAL_GITHUB_REPOSITORY: ${{ github.repository }}
+          BACKUP_SOURCE_PROJECT_REF: ${{ vars.BACKUP_SOURCE_PROJECT_REF }}
+          BACKUP_SOURCE_ENDPOINT: ${{ vars.BACKUP_SOURCE_ENDPOINT }}
+          BACKUP_TARGET_ENDPOINT: ${{ vars.BACKUP_TARGET_ENDPOINT }}
+          BACKUP_TARGET_BUCKET: ${{ vars.BACKUP_TARGET_BUCKET }}
+          BACKUP_TARGET_PREFIX: ${{ vars.BACKUP_TARGET_PREFIX }}
+        run: node scripts/staging-operations-preflight.mjs
+      - name: Install matching PostgreSQL client and rclone
+        uses: ./.github/actions/setup-backup-tools
+        with:
+          postgres-major: ${{ vars.BACKUP_POSTGRES_MAJOR }}
+      - name: Create dry-run or manifest-complete staging snapshot
+        if: inputs.operation == 'backup-dry-run' || inputs.operation == 'backup-snapshot'
+        env:
+          BACKUP_PGHOST: ${{ vars.BACKUP_PGHOST }}
+          BACKUP_PGPORT: ${{ vars.BACKUP_PGPORT }}
+          BACKUP_PGDATABASE: ${{ vars.BACKUP_PGDATABASE }}
+          BACKUP_PGUSER: ${{ vars.BACKUP_PGUSER }}
+          BACKUP_PGPASSWORD: ${{ secrets.BACKUP_PGPASSWORD }}
+          BACKUP_PGSSLMODE: verify-full
+          BACKUP_PGSSLROOTCERT_BASE64: ${{ secrets.BACKUP_PGSSLROOTCERT_BASE64 }}
+          BACKUP_SOURCE_ENDPOINT: ${{ vars.BACKUP_SOURCE_ENDPOINT }}
+          BACKUP_SOURCE_PROJECT_REF: ${{ vars.BACKUP_SOURCE_PROJECT_REF }}
+          BACKUP_SOURCE_REGION: ${{ vars.BACKUP_SOURCE_REGION }}
+          BACKUP_SOURCE_AUTH_ANON_KEY: ${{ secrets.BACKUP_SOURCE_AUTH_ANON_KEY }}
+          BACKUP_SOURCE_AUTH_EMAIL: ${{ secrets.BACKUP_SOURCE_AUTH_EMAIL }}
+          BACKUP_SOURCE_AUTH_PASSWORD: ${{ secrets.BACKUP_SOURCE_AUTH_PASSWORD }}
+          BACKUP_SOURCE_AUTH_USER_ID: ${{ vars.BACKUP_SOURCE_AUTH_USER_ID }}
+          BACKUP_SOURCE_BUCKET: workspace-files
+          BACKUP_TARGET_ENDPOINT: ${{ vars.BACKUP_TARGET_ENDPOINT }}
+          BACKUP_TARGET_ACCESS_KEY_ID: ${{ secrets.BACKUP_TARGET_ACCESS_KEY_ID }}
+          BACKUP_TARGET_SECRET_ACCESS_KEY: ${{ secrets.BACKUP_TARGET_SECRET_ACCESS_KEY }}
+          BACKUP_TARGET_BUCKET: ${{ vars.BACKUP_TARGET_BUCKET }}
+          BACKUP_TARGET_PREFIX: ${{ vars.BACKUP_TARGET_PREFIX }}
+          BACKUP_TARGET_ENCRYPTION: ${{ vars.BACKUP_TARGET_ENCRYPTION }}
+          BACKUP_TARGET_KMS_KEY_ID: ${{ vars.BACKUP_TARGET_KMS_KEY_ID }}
+          BACKUP_TARGET_REGION: ${{ vars.BACKUP_TARGET_REGION }}
+          BACKUP_TARGET_FORCE_PATH_STYLE: ${{ vars.BACKUP_TARGET_FORCE_PATH_STYLE }}
+          BACKUP_DRY_RUN: ${{ inputs.operation == 'backup-dry-run' && '1' || '0' }}
+          BACKUP_EVIDENCE_OUTPUT: ${{ runner.temp }}/staging-backup-manifest.json
+        run: scripts/run-production-backup.sh
+      - name: Upload exact immutable staging backup manifest
+        if: inputs.operation == 'backup-snapshot'
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: staging-backup-manifest-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/staging-backup-manifest.json
+          if-no-files-found: error
+          retention-days: 90
+          include-hidden-files: false
+      - name: Verify newest complete staging snapshot
+        if: inputs.operation == 'freshness'
+        env:
+          BACKUP_SOURCE_PROJECT_REF: ${{ vars.BACKUP_SOURCE_PROJECT_REF }}
+          BACKUP_TARGET_ENDPOINT: ${{ vars.BACKUP_TARGET_ENDPOINT }}
+          BACKUP_FRESHNESS_TARGET_ACCESS_KEY_ID: ${{ secrets.BACKUP_FRESHNESS_TARGET_ACCESS_KEY_ID }}
+          BACKUP_FRESHNESS_TARGET_SECRET_ACCESS_KEY: ${{ secrets.BACKUP_FRESHNESS_TARGET_SECRET_ACCESS_KEY }}
+          BACKUP_TARGET_BUCKET: ${{ vars.BACKUP_TARGET_BUCKET }}
+          BACKUP_TARGET_PREFIX: ${{ vars.BACKUP_TARGET_PREFIX }}
+          BACKUP_TARGET_REGION: ${{ vars.BACKUP_TARGET_REGION }}
+          BACKUP_TARGET_FORCE_PATH_STYLE: ${{ vars.BACKUP_TARGET_FORCE_PATH_STYLE }}
+          BACKUP_FRESHNESS_EVIDENCE_OUTPUT: ${{ runner.temp }}/staging-freshness-manifest.json
+        run: scripts/check-backup-freshness.sh
+      - name: Upload exact manifest verified by freshness
+        if: inputs.operation == 'freshness'
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: staging-freshness-manifest-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/staging-freshness-manifest.json
+          if-no-files-found: error
+          retention-days: 90
+          include-hidden-files: false
+
+  restore:
+    if: github.ref == 'refs/heads/main' && inputs.operation == 'restore-drill'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 90
+    environment: staging-drill
+    steps:
+      - name: Checkout exact release commit
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+      - name: Node 24.18.0
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: 24.18.0
+      - name: Verify immutable checkout
+        run: |
+          set -Eeuo pipefail
+          test "$(git rev-parse HEAD)" = "$GITHUB_SHA"
+          test -z "$(git status --porcelain --untracked-files=no)"
+          test -f config/staging-identities.json
+          test ! -L config/staging-identities.json
+      - name: Fail-closed isolated restore contour
+        env:
+          STAGING_OPERATIONS_OPERATION: restore-drill
+          STAGING_ACTUAL_GITHUB_REPOSITORY: ${{ github.repository }}
+          STAGING_OPERATIONS_RESTORE_SNAPSHOT_ID: ${{ inputs.restore_snapshot_id }}
+          STAGING_OPERATIONS_RESTORE_ACKNOWLEDGEMENT: ${{ inputs.restore_acknowledgement }}
+          BACKUP_SOURCE_PROJECT_REF: ${{ vars.BACKUP_SOURCE_PROJECT_REF }}
+          BACKUP_SOURCE_ENDPOINT: ${{ vars.BACKUP_SOURCE_ENDPOINT }}
+          BACKUP_TARGET_ENDPOINT: ${{ vars.BACKUP_TARGET_ENDPOINT }}
+          BACKUP_TARGET_BUCKET: ${{ vars.BACKUP_TARGET_BUCKET }}
+          BACKUP_TARGET_PREFIX: ${{ vars.BACKUP_TARGET_PREFIX }}
+          RESTORE_SOURCE_PROJECT_REF: ${{ vars.BACKUP_SOURCE_PROJECT_REF }}
+          RESTORE_TARGET_PROJECT_REF: ${{ vars.RESTORE_TARGET_PROJECT_REF }}
+          RESTORE_ARCHIVE_ENDPOINT: ${{ vars.BACKUP_TARGET_ENDPOINT }}
+          RESTORE_ARCHIVE_BUCKET: ${{ vars.BACKUP_TARGET_BUCKET }}
+          RESTORE_ARCHIVE_PREFIX: ${{ vars.BACKUP_TARGET_PREFIX }}
+          RESTORE_TARGET_ENDPOINT: ${{ vars.RESTORE_TARGET_ENDPOINT }}
+        run: node scripts/staging-operations-preflight.mjs
+      - name: Install matching PostgreSQL client and rclone
+        uses: ./.github/actions/setup-backup-tools
+        with:
+          postgres-major: ${{ vars.BACKUP_POSTGRES_MAJOR }}
+      - name: Restore one explicit snapshot into the isolated drill project
+        env:
+          BACKUP_PGHOST: ${{ vars.BACKUP_PGHOST }}
+          BACKUP_PGPORT: ${{ vars.BACKUP_PGPORT }}
+          BACKUP_PGDATABASE: ${{ vars.BACKUP_PGDATABASE }}
+          BACKUP_SOURCE_ENDPOINT: ${{ vars.BACKUP_SOURCE_ENDPOINT }}
+          BACKUP_SOURCE_BUCKET: workspace-files
+          RESTORE_SNAPSHOT_ID: ${{ inputs.restore_snapshot_id }}
+          RESTORE_TARGET_ENVIRONMENT: restore-drill
+          RESTORE_DESTRUCTIVE_ACKNOWLEDGEMENT: RESTORE_ISOLATED_TARGET
+          RESTORE_SOURCE_PROJECT_REF: ${{ vars.BACKUP_SOURCE_PROJECT_REF }}
+          RESTORE_TARGET_PROJECT_REF: ${{ vars.RESTORE_TARGET_PROJECT_REF }}
+          RESTORE_ARCHIVE_ENDPOINT: ${{ vars.BACKUP_TARGET_ENDPOINT }}
+          RESTORE_ARCHIVE_ACCESS_KEY_ID: ${{ secrets.RESTORE_ARCHIVE_ACCESS_KEY_ID }}
+          RESTORE_ARCHIVE_SECRET_ACCESS_KEY: ${{ secrets.RESTORE_ARCHIVE_SECRET_ACCESS_KEY }}
+          RESTORE_ARCHIVE_BUCKET: ${{ vars.BACKUP_TARGET_BUCKET }}
+          RESTORE_ARCHIVE_PREFIX: ${{ vars.BACKUP_TARGET_PREFIX }}
+          RESTORE_ARCHIVE_REGION: ${{ vars.BACKUP_TARGET_REGION }}
+          RESTORE_ARCHIVE_FORCE_PATH_STYLE: ${{ vars.BACKUP_TARGET_FORCE_PATH_STYLE }}
+          RESTORE_PGHOST: ${{ vars.RESTORE_PGHOST }}
+          RESTORE_PGPORT: ${{ vars.RESTORE_PGPORT }}
+          RESTORE_PGDATABASE: ${{ vars.RESTORE_PGDATABASE }}
+          RESTORE_PGUSER: ${{ vars.RESTORE_PGUSER }}
+          RESTORE_PGPASSWORD: ${{ secrets.RESTORE_PGPASSWORD }}
+          RESTORE_PGSSLMODE: verify-full
+          RESTORE_PGSSLROOTCERT_BASE64: ${{ secrets.RESTORE_PGSSLROOTCERT_BASE64 }}
+          RESTORE_TARGET_ENDPOINT: ${{ vars.RESTORE_TARGET_ENDPOINT }}
+          RESTORE_TARGET_ACCESS_KEY_ID: ${{ secrets.RESTORE_TARGET_ACCESS_KEY_ID }}
+          RESTORE_TARGET_SECRET_ACCESS_KEY: ${{ secrets.RESTORE_TARGET_SECRET_ACCESS_KEY }}
+          RESTORE_TARGET_BUCKET: workspace-files
+          RESTORE_TARGET_REGION: ${{ vars.RESTORE_TARGET_REGION }}
+          RESTORE_TARGET_FORCE_PATH_STYLE: ${{ vars.RESTORE_TARGET_FORCE_PATH_STYLE }}
+        run: scripts/restore-drill.sh
+      - name: Retain only the redacted restore evidence
+        env:
+          RESTORE_SNAPSHOT_ID: ${{ inputs.restore_snapshot_id }}
+          RESTORE_EVIDENCE_ARTIFACT: ${{ runner.temp }}/staging-restore-evidence.json
+        run: |
+          set -Eeuo pipefail
+          evidence="backups/restore-drill-$RESTORE_SNAPSHOT_ID.json"
+          test -f "$evidence"
+          test ! -L "$evidence"
+          install -m 0600 "$evidence" "$RESTORE_EVIDENCE_ARTIFACT"
+          rm -- "$evidence"
+      - name: Upload redacted restore evidence
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: staging-restore-evidence-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/staging-restore-evidence.json
+          if-no-files-found: error
+          retention-days: 90
+          include-hidden-files: false

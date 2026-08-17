@@ -20,4 +20,6 @@ Smoking Zen — приватный русскоязычный штаб кома�
 - `APP_MODE=production pnpm build` для production-сборки без runtime-секретов;
 - `pnpm audit --prod --audit-level high` для production-зависимостей.
 
+Credentialed staging проходит через ручные защищённые workflow `Staging release controls` и `Staging data operations`: `pnpm staging:preflight` проверяет точный контур, `pnpm staging:migrate` применяет или повторно проверяет полный порядок миграций, а `pnpm staging:evidence --require-complete <file>` проверяет только структуру и привязку redacted candidate. Даже `STAGING_EVIDENCE_CANDIDATE_VALID`, полученный локально, не подтверждает доступ к провайдерам и не разрешает production; полномочие появляется только после независимого GitHub Environment approval, успешных credentialed runs и связанного receipt/audit trail. Точный порядок, acknowledgement и границы внешних действий описаны в [руководстве по staging](docs/staging-release.md).
+
 Схема базы находится в `supabase/migrations`, проектные задания Cron — в `supabase/operations`, инструкции эксплуатации — в `docs`. Реальные ключи, токены и пароли хранятся только в защищённых переменных платформ, Supabase Vault или менеджере секретов; в репозиторий они не попадают.

@@ -15,7 +15,10 @@
     "test:e2e": "playwright test",
     "test:e2e:production": "playwright test --config=playwright.production.config.ts",
     "test:scripts": "bats tests/scripts/*.bats",
-    "lint:shell": "shellcheck scripts/*.sh tests/scripts/test_helper.bash tests/scripts/*.bats"
+    "lint:shell": "shellcheck scripts/*.sh tests/scripts/test_helper.bash tests/scripts/*.bats",
+    "staging:preflight": "node scripts/staging-preflight.mjs",
+    "staging:migrate": "scripts/apply-staging-migrations.sh",
+    "staging:evidence": "node scripts/validate-staging-evidence.mjs"
   },
   "dependencies": {
     "@supabase/supabase-js": "^2.111.0",
@@ -43,6 +46,7 @@
     "@types/react": "^19.0.2",
     "@types/react-dom": "^19.0.2",
     "@types/yauzl": "^3.4.0",
+    "ajv": "8.20.0",
     "eslint": "^9.17.0",
     "eslint-config-next": "^16.0.7",
     "jsdom": "^25.0.1",

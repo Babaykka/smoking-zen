@@ -1,0 +1,16 @@
+{
+  "schemaVersion": 1,
+  "configured": false,
+  "githubRepository": "example/smoking-zen",
+  "appOrigin": "https://staging.example.com",
+  "supabaseProjectRef": "abcdefghijklmnopqrst",
+  "supabaseDrillProjectRef": "zyxwvutsrqponmlkjihg",
+  "telegramBotId": "123456789",
+  "telegramBotUsername": "smoking_zen_staging_bot",
+  "telegramMiniAppShortName": "smoking_zen_staging",
+  "supabaseJwtKid": "smoking-zen-staging-1",
+  "supabaseJwtPublicKeySpkiSha256": "sha256:0000000000000000000000000000000000000000000000000000000000000000",
+  "backupTargetEndpoint": "https://backup.example.com/s3",
+  "backupTargetBucket": "smoking-zen-backups",
+  "backupTargetPrefix": "staging/daily"
+}

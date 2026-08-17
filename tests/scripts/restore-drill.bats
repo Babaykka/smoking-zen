@@ -175,7 +175,7 @@ make_snapshot() {
   [ "$hardening_line" -lt "$storage_line" ]
   evidence="$(project_root)/backups/restore-drill-$RESTORE_SNAPSHOT_ID.json"
   [ -f "$evidence" ]
-  mode=$(stat -f '%Lp' "$evidence" 2>/dev/null || stat -c '%a' "$evidence")
+  mode=$(stat -c '%a' "$evidence" 2>/dev/null || stat -f '%Lp' "$evidence")
   [ "$mode" = 600 ]
   [ ! -e "$(cat "$FAKE_CAPTURE_PGSSLROOTCERT")" ]
   content=$(cat "$evidence")

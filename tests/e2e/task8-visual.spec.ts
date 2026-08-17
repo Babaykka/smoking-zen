@@ -35,6 +35,7 @@ test.setTimeout(60_000);
 async function screenshot(page: Page, testInfo: TestInfo, name: string) {
   await page.screenshot({
     animations: 'disabled',
+    caret: 'initial',
     fullPage: true,
     path: `output/playwright/task8-final/${testInfo.project.name}-${name}.png`,
   });
@@ -130,6 +131,10 @@ test.beforeEach(async ({ page }, testInfo) => {
     });
   }
   await page.goto('/');
+  if (telegramFixtureProjects.has(testInfo.project.name)) {
+    await page.waitForFunction(() => document.documentElement.style
+      .getPropertyValue('--tg-viewport-stable-height').endsWith('px'));
+  }
 });
 
 test('renders primary workspaces, details, history, and forms without serious accessibility defects', async ({ page }, testInfo) => {
@@ -407,6 +412,14 @@ test('keeps the collapsed 320x568 task card clear by hiding the collision-prone 
   expect(geometry.cardNavigationCollision, JSON.stringify(geometry, null, 2)).toBe(false);
   expect(geometry.countNavigationCollision, JSON.stringify(geometry, null, 2)).toBe(false);
   await screenshot(page, testInfo, 'collapsed-320x568');
+});
+
+test('hides the redundant FAB on the 375x667 compact iOS viewport', async ({ page }, testInfo) => {
+  test.skip(!['mobile-chromium', 'small-ios-webkit'].includes(testInfo.project.name), 'Focused Chromium/WebKit compact-height proof.');
+  await page.setViewportSize({ width: 375, height: 667 });
+  await page.goto('/');
+  await expect(page.getByRole('button', { name: 'Быстрая задача' })).toBeVisible();
+  await expect(page.locator('.app-shell__floating-create')).toBeHidden();
 });
 
 test('uses effective inline size when the 360px viewport body is actually zoomed to 200%', async ({ page }, testInfo) => {

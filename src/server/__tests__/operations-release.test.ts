@@ -1,12 +1,56 @@
 import { readFileSync } from 'node:fs';
 import path from 'node:path';
+import Ajv2020 from 'ajv/dist/2020.js';
 
 import { describe, expect, it } from 'vitest';
 
 const root = process.cwd();
 const read = (filename: string) => readFileSync(path.join(root, filename), 'utf8');
 
+function workflowRunBodies(workflow: string) {
+  const lines = workflow.split(/\r?\n/u);
+  const bodies: string[] = [];
+  for (let index = 0; index < lines.length; index += 1) {
+    const match = /^(\s*)run:\s*(.*)$/u.exec(lines[index] ?? '');
+    if (!match) continue;
+    const indentation = match[1]?.length ?? 0;
+    const value = match[2] ?? '';
+    if (!/^[|>][-+]?(?:\s+#.*)?$/u.test(value)) {
+      bodies.push(value);
+      continue;
+    }
+    const block: string[] = [];
+    let cursor = index + 1;
+    while (cursor < lines.length) {
+      const line = lines[cursor] ?? '';
+      if (line.trim().length === 0) {
+        block.push(line);
+        cursor += 1;
+        continue;
+      }
+      const lineIndentation = /^\s*/u.exec(line)?.[0].length ?? 0;
+      if (lineIndentation <= indentation) break;
+      block.push(line);
+      cursor += 1;
+    }
+    bodies.push(block.join('\n'));
+    index = cursor - 1;
+  }
+  return bodies;
+}
+
 describe('Task 7 production operations release surface', () => {
+  it('keeps the staging evidence schema executable and its draft example conformant', () => {
+    const schema = JSON.parse(read('docs/staging-evidence.schema.json')) as object;
+    const example = JSON.parse(read('docs/staging-evidence.example.json')) as object;
+    const validator = new Ajv2020({
+      allErrors: true,
+      strict: true,
+      formats: { 'date-time': /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z$/u },
+    }).compile(schema);
+    expect(validator(example), JSON.stringify(validator.errors)).toBe(true);
+  });
+
   it('documents every scalar production, backup, and restore variable without embedding credentials', () => {
     const environment = read('.env.example');
     for (const name of [
@@ -206,6 +250,95 @@ describe('Task 7 production operations release surface', () => {
     expect(ci).not.toMatch(/\$\{\{\s*secrets\./u);
     expect(backup).not.toContain('pull_request:');
     expect(freshness).not.toContain('pull_request:');
+  });
+
+  it('ships a manual fail-closed staging release control plane', () => {
+    const staging = read('.github/workflows/staging-release.yml');
+    const environment = read('.env.example');
+    const identities = JSON.parse(read('config/staging-identities.json')) as Record<string, unknown>;
+    const preflight = read('scripts/staging-preflight.mjs');
+    const migrations = read('scripts/apply-staging-migrations.sh');
+    const evidence = read('scripts/validate-staging-evidence.mjs');
+    const stagingGuide = read('docs/staging-release.md');
+    const packageManifest = JSON.parse(read('package.json')) as { scripts?: Record<string, string> };
+
+    expect(staging).toContain('workflow_dispatch:');
+    expect(staging).not.toContain('schedule:');
+    expect(staging).not.toContain('pull_request:');
+    expect(staging).toContain('environment: staging');
+    expect(staging).toContain('environment: staging-promotion');
+    expect(staging).toContain('needs: verify');
+    expect(staging).toContain("if: github.ref == 'refs/heads/main'");
+    expect(staging).toContain('STAGING_ACTUAL_GITHUB_REPOSITORY: ${{ github.repository }}');
+    expect(staging).toContain('permissions:\n  contents: read');
+    expect(staging).toContain('persist-credentials: false');
+    expect(staging).toContain('scripts/staging-preflight.mjs');
+    expect(staging).toContain('scripts/apply-staging-migrations.sh');
+    expect(staging).toContain('scripts/validate-staging-evidence.mjs');
+    expect(staging).toContain('STAGING_MIGRATION_ACKNOWLEDGEMENT');
+    expect(staging).toContain('STAGING_VAULT_APP_ORIGIN: ${{ secrets.STAGING_VAULT_APP_ORIGIN }}');
+    expect(staging).toContain('STAGING_VAULT_INTERNAL_JOB_SECRET: ${{ secrets.STAGING_VAULT_INTERNAL_JOB_SECRET }}');
+    expect(staging).toContain('STAGING_RELEASE_COMMIT: ${{ github.sha }}');
+    expect(staging).toContain('STAGING_EVIDENCE_BASE64: ${{ secrets.STAGING_EVIDENCE_BASE64 }}');
+    expect(staging).toContain('if [[ "$STAGING_EVIDENCE_INPUT" == complete ]]');
+    expect(staging).toContain('test "$STAGING_MIGRATION_INPUT" = none');
+    expect(staging).toContain('staging-evidence-candidate-${{ github.run_id }}-${{ github.run_attempt }}');
+    expect(staging).toContain('evidence_input="$RUNNER_TEMP/staging-evidence-input.json"');
+    expect(staging).toContain('base64 --decode > "$evidence_input"');
+    expect(staging).toContain('--output "$evidence_artifact" "$evidence_input"');
+    expect(staging).not.toContain('base64 --decode > "$evidence_artifact"');
+    expect(staging).toContain('node scripts/validate-staging-evidence.mjs --require-complete "$evidence_artifact"');
+    expect(staging).toContain("authority: 'github-environment-audit'");
+    expect(staging).toContain("printf '%s\\n' STAGING_PROMOTION_APPROVED");
+    expect(staging).toContain('PGSSLMODE: verify-full');
+    expect(staging).not.toContain('APP_MODE: demo');
+    for (const body of workflowRunBodies(staging)) {
+      expect(body).not.toMatch(/\$\{\{\s*secrets\./u);
+    }
+    for (const line of staging.match(/^\s*uses:\s*.+$/gmu) ?? []) {
+      const action = line.trim().slice('uses: '.length);
+      expect(action.startsWith('./') || /@[0-9a-f]{40}\s+#\s+v?\d[^\s]*$/u.test(action)).toBe(true);
+    }
+
+    for (const name of [
+      'STAGING_EXPECTED_APP_ORIGIN', 'STAGING_EXPECTED_SUPABASE_PROJECT_REF',
+      'STAGING_ACTUAL_GITHUB_REPOSITORY',
+      'STAGING_EXPECTED_TELEGRAM_BOT_USERNAME', 'STAGING_EXPECTED_TELEGRAM_MINI_APP_SHORT_NAME',
+      'STAGING_EXPECTED_SUPABASE_JWT_KID', 'STAGING_MIGRATION_ACKNOWLEDGEMENT',
+      'STAGING_RELEASE_COMMIT', 'STAGING_MIGRATION_MODE',
+    ]) expect(environment).toMatch(new RegExp(`^${name}=`, 'mu'));
+    expect(environment).toMatch(/^BACKUP_TARGET_PREFIX=staging\//mu);
+
+    expect(identities.schemaVersion).toBe(1);
+    expect(typeof identities.configured).toBe('boolean');
+    for (const name of [
+      'githubRepository', 'appOrigin', 'supabaseProjectRef', 'supabaseDrillProjectRef',
+      'telegramBotId', 'telegramBotUsername', 'telegramMiniAppShortName', 'supabaseJwtKid',
+      'supabaseJwtPublicKeySpkiSha256', 'backupTargetEndpoint', 'backupTargetBucket',
+      'backupTargetPrefix',
+    ]) expect(identities).toHaveProperty(name);
+    expect(preflight).toContain('../config/staging-identities.json');
+    expect(preflight).toContain('createPublicKey');
+    expect(preflight).toContain('STAGING_VAULT_INTERNAL_JOB_SECRET');
+    expect(migrations).toContain('config/staging-identities.json');
+    expect(evidence).toContain('STAGING_RELEASE_COMMIT');
+    expect(evidence).toContain('migrationManifestSha256');
+    expect(evidence).toContain('oldestCheckAt');
+    expect(evidence).toContain('STAGING_EVIDENCE_DUPLICATE_KEY');
+    expect(evidence).toContain("document.approval.status !== 'pending'");
+
+    for (const phrase of [
+      'config/staging-identities.json', 'migration_mode=none', 'migration_mode=apply',
+      'migration_mode=reapply', 'evidence_mode=complete', 'STAGING_EVIDENCE_BASE64',
+      'STAGING_EVIDENCE_CANDIDATE_VALID',
+      'staging-backup-manifest-<run_id>-<run_attempt>',
+      'staging-freshness-manifest-<run_id>-<run_attempt>',
+      'staging-restore-evidence-<run_id>-<run_attempt>',
+    ]) expect(stagingGuide).toContain(phrase);
+
+    expect(packageManifest.scripts?.['staging:preflight']).toBe('node scripts/staging-preflight.mjs');
+    expect(packageManifest.scripts?.['staging:migrate']).toBe('scripts/apply-staging-migrations.sh');
+    expect(packageManifest.scripts?.['staging:evidence']).toBe('node scripts/validate-staging-evidence.mjs');
   });
 
   it('keeps secret-scan exclusions away from source and browser-shipped build output', () => {

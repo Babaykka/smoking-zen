@@ -26,7 +26,7 @@ setup_fake_tools() {
     'fi' \
     'if [[ ${FAKE_ASSERT_PG_CA:-0} == 1 && $name == pg* || ${FAKE_ASSERT_PG_CA:-0} == 1 && $name == psql ]]; then' \
     '  [[ -f ${PGSSLROOTCERT:-} ]] || exit 21' \
-    '  mode=$(stat -f "%Lp" "$PGSSLROOTCERT" 2>/dev/null || stat -c "%a" "$PGSSLROOTCERT")' \
+    '  mode=$(stat -c "%a" "$PGSSLROOTCERT" 2>/dev/null || stat -f "%Lp" "$PGSSLROOTCERT")' \
     '  [[ $mode == 600 ]] || exit 21; printf "%s\n" "$PGSSLROOTCERT" > "$FAKE_CAPTURE_PGSSLROOTCERT"' \
     'fi' \
     'if [[ ${FAKE_ASSERT_SOURCE_SESSION:-0} == 1 && $name == rclone ]]; then' \
@@ -62,7 +62,7 @@ setup_fake_tools() {
     '    output=""; for arg in "$@"; do case "$arg" in --file=*) output=${arg#--file=};; esac; done' \
     '    [[ -n $output ]] || exit 7' \
     '    printf "fake-custom-dump\n" > "$output"' \
-    '    stat -f "%Lp" "$PGPASSFILE" > "${FAKE_CAPTURE_PGPASS}.mode" 2>/dev/null || stat -c "%a" "$PGPASSFILE" > "${FAKE_CAPTURE_PGPASS}.mode"' \
+    '    stat -c "%a" "$PGPASSFILE" > "${FAKE_CAPTURE_PGPASS}.mode" 2>/dev/null || stat -f "%Lp" "$PGPASSFILE" > "${FAKE_CAPTURE_PGPASS}.mode"' \
     '    cp "$PGPASSFILE" "$FAKE_CAPTURE_PGPASS"' \
     '    printf "%s\n" "$PGPASSFILE" > "${FAKE_CAPTURE_PGPASS}.path" ;;' \
   '  pg_restore)' \

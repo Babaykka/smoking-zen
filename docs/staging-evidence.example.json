@@ -1,0 +1,171 @@
+{
+  "schemaVersion": 1,
+  "state": "draft",
+  "recordedAt": null,
+  "validUntil": null,
+  "release": {
+    "commit": "0000000000000000000000000000000000000000",
+    "deploymentStartedAt": null,
+    "deploymentCompletedAt": null
+  },
+  "resources": {
+    "github": "sha256:1111111111111111111111111111111111111111111111111111111111111111",
+    "vercel": "sha256:2222222222222222222222222222222222222222222222222222222222222222",
+    "supabaseStaging": "sha256:3333333333333333333333333333333333333333333333333333333333333333",
+    "supabaseDrill": "sha256:4444444444444444444444444444444444444444444444444444444444444444",
+    "telegram": "sha256:5555555555555555555555555555555555555555555555555555555555555555",
+    "s3Backup": "sha256:6666666666666666666666666666666666666666666666666666666666666666"
+  },
+  "migration": {
+    "revision": "0000",
+    "manifestSha256": "sha256:7777777777777777777777777777777777777777777777777777777777777777",
+    "appliedAt": null
+  },
+  "hostedChecks": {
+    "rls": {
+      "status": "not-run",
+      "checkedAt": null,
+      "evidenceSha256": null
+    },
+    "realtime": {
+      "status": "not-run",
+      "checkedAt": null,
+      "evidenceSha256": null
+    },
+    "storage": {
+      "status": "not-run",
+      "checkedAt": null,
+      "evidenceSha256": null
+    },
+    "telegram": {
+      "status": "not-run",
+      "checkedAt": null,
+      "evidenceSha256": null
+    },
+    "vaultCron": {
+      "status": "not-run",
+      "checkedAt": null,
+      "evidenceSha256": null
+    },
+    "documentPipeline": {
+      "status": "not-run",
+      "checkedAt": null,
+      "evidenceSha256": null
+    },
+    "backup": {
+      "status": "not-run",
+      "checkedAt": null,
+      "evidenceSha256": null
+    },
+    "freshness": {
+      "status": "not-run",
+      "checkedAt": null,
+      "evidenceSha256": null
+    },
+    "restore": {
+      "status": "not-run",
+      "checkedAt": null,
+      "evidenceSha256": null
+    },
+    "nativeDevices": {
+      "ios": {
+        "status": "not-run",
+        "checkedAt": null,
+        "evidenceSha256": null
+      },
+      "android": {
+        "status": "not-run",
+        "checkedAt": null,
+        "evidenceSha256": null
+      },
+      "desktop": {
+        "status": "not-run",
+        "checkedAt": null,
+        "evidenceSha256": null
+      },
+      "webA": {
+        "status": "not-run",
+        "checkedAt": null,
+        "evidenceSha256": null
+      },
+      "webK": {
+        "status": "not-run",
+        "checkedAt": null,
+        "evidenceSha256": null
+      }
+    },
+    "security": {
+      "status": "not-run",
+      "checkedAt": null,
+      "evidenceSha256": null
+    }
+  },
+  "negativeCapabilities": {
+    "anonymousDataReadDenied": {
+      "status": "not-run",
+      "checkedAt": null,
+      "evidenceSha256": null
+    },
+    "crossWorkspaceReadDenied": {
+      "status": "not-run",
+      "checkedAt": null,
+      "evidenceSha256": null
+    },
+    "realtimeSendDenied": {
+      "status": "not-run",
+      "checkedAt": null,
+      "evidenceSha256": null
+    },
+    "publicRealtimeDenied": {
+      "status": "not-run",
+      "checkedAt": null,
+      "evidenceSha256": null
+    },
+    "storageWriteDenied": {
+      "status": "not-run",
+      "checkedAt": null,
+      "evidenceSha256": null
+    },
+    "otherBucketReadDenied": {
+      "status": "not-run",
+      "checkedAt": null,
+      "evidenceSha256": null
+    },
+    "forgedTelegramAuthDenied": {
+      "status": "not-run",
+      "checkedAt": null,
+      "evidenceSha256": null
+    },
+    "staleTelegramAuthDenied": {
+      "status": "not-run",
+      "checkedAt": null,
+      "evidenceSha256": null
+    },
+    "backupDatabaseWriteDenied": {
+      "status": "not-run",
+      "checkedAt": null,
+      "evidenceSha256": null
+    },
+    "backupStorageWriteDenied": {
+      "status": "not-run",
+      "checkedAt": null,
+      "evidenceSha256": null
+    },
+    "activeDocumentPublishDenied": {
+      "status": "not-run",
+      "checkedAt": null,
+      "evidenceSha256": null
+    }
+  },
+  "recovery": {
+    "backupAgeHours": null,
+    "rpoHours": null,
+    "dataPlaneRtoHours": null
+  },
+  "approval": {
+    "status": "pending",
+    "independent": false,
+    "reviewerFingerprint": null,
+    "approvedAt": null
+  }
+}
