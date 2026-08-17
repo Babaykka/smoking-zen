@@ -409,6 +409,14 @@ test('keeps the collapsed 320x568 task card clear by hiding the collision-prone 
   await screenshot(page, testInfo, 'collapsed-320x568');
 });
 
+test('hides the redundant FAB on the 375x667 compact iOS viewport', async ({ page }, testInfo) => {
+  test.skip(!['mobile-chromium', 'small-ios-webkit'].includes(testInfo.project.name), 'Focused Chromium/WebKit compact-height proof.');
+  await page.setViewportSize({ width: 375, height: 667 });
+  await page.goto('/');
+  await expect(page.getByRole('button', { name: 'Быстрая задача' })).toBeVisible();
+  await expect(page.locator('.app-shell__floating-create')).toBeHidden();
+});
+
 test('uses effective inline size when the 360px viewport body is actually zoomed to 200%', async ({ page }, testInfo) => {
   test.skip(!['mobile-chromium', 'small-ios-webkit'].includes(testInfo.project.name), 'Focused Chromium/WebKit body zoom proof.');
   await page.setViewportSize({ width: 360, height: 800 });
