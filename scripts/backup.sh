@@ -13,6 +13,8 @@ METADATA_HELPER="$SCRIPT_DIR/backup-metadata.mjs"
 SCRATCH=''
 DATABASE_SNAPSHOT_PID=''
 DATABASE_SNAPSHOT_FD_OPEN=0
+EVIDENCE_OUTPUT_PATH=${BACKUP_EVIDENCE_OUTPUT:-}
+EVIDENCE_OUTPUT_CREATED=0
 
 cleanup() {
   local status=$?
@@ -24,6 +26,9 @@ cleanup() {
   if [[ -n "$DATABASE_SNAPSHOT_PID" ]]; then
     kill "$DATABASE_SNAPSHOT_PID" 2>/dev/null || true
     wait "$DATABASE_SNAPSHOT_PID" 2>/dev/null || true
+  fi
+  if (( status != 0 && EVIDENCE_OUTPUT_CREATED == 1 )) && [[ -n "$EVIDENCE_OUTPUT_PATH" ]]; then
+    rm -f -- "$EVIDENCE_OUTPUT_PATH" 2>/dev/null || true
   fi
   if [[ -n "$SCRATCH" && -d "$SCRATCH" ]]; then
     rm -rf -- "$SCRATCH"
@@ -38,6 +43,55 @@ trap 'exit 143' TERM
 die() {
   printf '%s\n' 'Backup operation failed.' >&2
   exit 1
+}
+
+validate_evidence_output() {
+  local destination=$1
+  [[ -z "$destination" ]] && return 0
+  [[ "$destination" != *$'\n'* && "$destination" != *$'\r'* ]] || die
+  [[ ! -e "$destination" && ! -L "$destination" ]] || die
+}
+
+publish_evidence() {
+  local source=$1 destination=$EVIDENCE_OUTPUT_PATH
+  [[ -n "$destination" ]] || return 0
+  [[ "$destination" != *$'\n'* && "$destination" != *$'\r'* ]] || die
+  [[ ! "$destination" -ef "$source" ]] || die
+  [[ ! -e "$destination" && ! -L "$destination" ]] || die
+
+  set -o noclobber
+  if ! { exec 4> "$destination"; } 2>/dev/null; then
+    set +o noclobber
+    die
+  fi
+  set +o noclobber
+  EVIDENCE_OUTPUT_CREATED=1
+
+  # Copy via the already-open exclusive descriptor so a path swap cannot
+  # redirect validated bytes into another file.
+  # shellcheck disable=SC2016
+  node -e '
+    const fs = require("fs");
+    const flags = fs.constants.O_RDONLY | (fs.constants.O_NOFOLLOW || 0);
+    const input = fs.openSync(process.argv[1], flags);
+    try {
+      const source = fs.fstatSync(input);
+      const destination = fs.fstatSync(4);
+      if (!source.isFile() || !destination.isFile()
+          || (source.dev === destination.dev && source.ino === destination.ino)) process.exit(1);
+      const bytes = fs.readFileSync(input);
+      let offset = 0;
+      while (offset < bytes.length) offset += fs.writeSync(4, bytes, offset);
+      fs.fchmodSync(4, 0o600);
+      fs.fsyncSync(4);
+    } finally {
+      fs.closeSync(input);
+    }
+  ' "$source" 4>&4 > /dev/null 2>> "$provider_log" || {
+    exec 4>&-
+    die
+  }
+  exec 4>&- || die
 }
 
 require_value() {
@@ -55,6 +109,8 @@ for variable in \
   BACKUP_TARGET_PREFIX BACKUP_TARGET_ENCRYPTION BACKUP_TARGET_REGION BACKUP_TARGET_FORCE_PATH_STYLE; do
   require_value "$variable"
 done
+validate_evidence_output "$EVIDENCE_OUTPUT_PATH"
+unset BACKUP_EVIDENCE_OUTPUT
 
 for tool in node rclone psql pg_dump pg_restore date mktemp chmod rm cp cmp mkdir mkfifo; do
   command -v "$tool" >/dev/null 2>&1 || die
@@ -498,4 +554,13 @@ while IFS= read -r expired_id; do
     > /dev/null 2>> "$provider_log" || die
 done < "$SCRATCH/delete.ids"
 
+evidence_manifest=$manifest
+if [[ -n "$EVIDENCE_OUTPUT_PATH" ]]; then
+  published_manifest="$SCRATCH/published-manifest.verify"
+  run_rclone copyto "$snapshot_remote/manifest.json" "$published_manifest" --config "$config_file" \
+    > /dev/null 2>> "$provider_log" || die
+  cmp -s "$manifest" "$published_manifest" || die
+  evidence_manifest=$published_manifest
+fi
+publish_evidence "$evidence_manifest"
 printf 'Backup completed: %s\n' "$snapshot_id"

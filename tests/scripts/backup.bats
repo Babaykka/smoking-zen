@@ -131,12 +131,58 @@ setup() {
 @test "backup dry run performs read-only preflight and no dump copy upload delete" {
   export FAKE_ASSERT_SOURCE_SESSION=1
   export BACKUP_DRY_RUN=1
+  export BACKUP_EVIDENCE_OUTPUT="$TEST_ROOT/backup-evidence.json"
   run "$BACKUP_SCRIPT"
   [ "$status" -eq 0 ]
+  [ ! -e "$BACKUP_EVIDENCE_OUTPUT" ]
   grep -q '^psql ' "$FAKE_LOG"
   grep -q '^rclone <lsf> <source:workspace-files>' "$FAKE_LOG"
   grep -q '^rclone <lsf>' "$FAKE_LOG"
   assert_no_external_mutation
+}
+
+@test "backup publishes private evidence with the exact verified remote manifest bytes" {
+  export BACKUP_EVIDENCE_OUTPUT="$TEST_ROOT/backup-evidence.json"
+  run "$BACKUP_SCRIPT"
+  [ "$status" -eq 0 ]
+
+  remote_manifest="$FAKE_REMOTE_ROOT/$BACKUP_TARGET_BUCKET/$BACKUP_TARGET_PREFIX/20260810T010203Z/manifest.json"
+  cmp "$remote_manifest" "$BACKUP_EVIDENCE_OUTPUT"
+  mode=$(stat -f '%Lp' "$BACKUP_EVIDENCE_OUTPUT" 2>/dev/null || stat -c '%a' "$BACKUP_EVIDENCE_OUTPUT")
+  [ "$mode" = 600 ]
+  grep -Eq '^rclone <copyto> <target:.*/manifest\.json> <.*/published-manifest\.verify>' "$FAKE_LOG"
+}
+
+@test "backup rejects unsafe evidence destinations before provider access" {
+  victim="$TEST_ROOT/victim.json"
+  printf '%s\n' 'do-not-overwrite' > "$victim"
+  link="$TEST_ROOT/evidence-link.json"
+  ln -s "$victim" "$link"
+
+  for destination in "$victim" "$link" "$TEST_ROOT/evidence"$'\n'"path.json"; do
+    : > "$FAKE_LOG"
+    valid_backup_env
+    export BACKUP_EVIDENCE_OUTPUT="$destination"
+    run "$BACKUP_SCRIPT"
+    [ "$status" -ne 0 ]
+    [ ! -s "$FAKE_LOG" ]
+    [ "$(cat "$victim")" = 'do-not-overwrite' ]
+  done
+}
+
+@test "backup leaves no evidence when published-manifest verification fails" {
+  export BACKUP_EVIDENCE_OUTPUT="$TEST_ROOT/backup-evidence.json"
+  export FAKE_RCLONE_FAIL_MATCH='published-manifest.verify'
+  run "$BACKUP_SCRIPT"
+  [ "$status" -ne 0 ]
+  [ ! -e "$BACKUP_EVIDENCE_OUTPUT" ]
+}
+
+@test "backup removes evidence when SIGPIPE interrupts final success reporting" {
+  export BACKUP_EVIDENCE_OUTPUT="$TEST_ROOT/backup-evidence.json"
+  run bash -o pipefail -c '"$1" | head -n 0' _ "$BACKUP_SCRIPT"
+  [ "$status" -ne 0 ]
+  [ ! -e "$BACKUP_EVIDENCE_OUTPUT" ]
 }
 
 @test "backup rejects a pg_dump or pg_restore major that differs from the source server before mutation" {
@@ -324,6 +370,7 @@ setup() {
 
 @test "backup retention deletion failure is nonzero and never targets malformed roots" {
   export FAKE_PURGE_FAIL=1
+  export BACKUP_EVIDENCE_OUTPUT="$TEST_ROOT/backup-evidence.json"
   list="$TEST_ROOT/dirs"
   node -e '
     const fs=require("fs"), path=require("path");
@@ -341,6 +388,9 @@ setup() {
   FAKE_TARGET_DIRS=$(cat "$list")
   export FAKE_TARGET_DIRS
   run "$BACKUP_SCRIPT"
+  [ "$status" -ne 0 ]
+  [ ! -e "$BACKUP_EVIDENCE_OUTPUT" ]
+  run grep -q 'published-manifest.verify' "$FAKE_LOG"
   [ "$status" -ne 0 ]
   run grep -q 'not-a-snapshot' "$FAKE_LOG"
   [ "$status" -ne 0 ]

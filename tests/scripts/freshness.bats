@@ -53,6 +53,60 @@ make_manifest() {
   [ "$status" -ne 0 ]
 }
 
+@test "freshness publishes private evidence with the exact manifest it validated" {
+  make_manifest 20260810T010203Z
+  export FAKE_TARGET_DIRS=$'20260810T010203Z/\n'
+  export FAKE_DATE_OUTPUT=20260810T020203Z
+  export BACKUP_FRESHNESS_EVIDENCE_OUTPUT="$TEST_ROOT/freshness-evidence.json"
+  run "$FRESHNESS_SCRIPT"
+  [ "$status" -eq 0 ]
+
+  remote_manifest="$FAKE_REMOTE_ROOT/$BACKUP_TARGET_BUCKET/$BACKUP_TARGET_PREFIX/20260810T010203Z/manifest.json"
+  cmp "$remote_manifest" "$BACKUP_FRESHNESS_EVIDENCE_OUTPUT"
+  mode=$(stat -f '%Lp' "$BACKUP_FRESHNESS_EVIDENCE_OUTPUT" 2>/dev/null || stat -c '%a' "$BACKUP_FRESHNESS_EVIDENCE_OUTPUT")
+  [ "$mode" = 600 ]
+}
+
+@test "freshness rejects unsafe evidence destinations before provider access" {
+  victim="$TEST_ROOT/victim.json"
+  printf '%s\n' 'do-not-overwrite' > "$victim"
+  link="$TEST_ROOT/evidence-link.json"
+  ln -s "$victim" "$link"
+
+  for destination in "$victim" "$link" "$TEST_ROOT/evidence"$'\n'"path.json"; do
+    : > "$FAKE_LOG"
+    valid_backup_env
+    export BACKUP_FRESHNESS_TARGET_ACCESS_KEY_ID=$BACKUP_TARGET_ACCESS_KEY_ID
+    export BACKUP_FRESHNESS_TARGET_SECRET_ACCESS_KEY=$BACKUP_TARGET_SECRET_ACCESS_KEY
+    unset BACKUP_TARGET_ACCESS_KEY_ID BACKUP_TARGET_SECRET_ACCESS_KEY
+    export BACKUP_FRESHNESS_EVIDENCE_OUTPUT="$destination"
+    run "$FRESHNESS_SCRIPT"
+    [ "$status" -ne 0 ]
+    [ ! -s "$FAKE_LOG" ]
+    [ "$(cat "$victim")" = 'do-not-overwrite' ]
+  done
+}
+
+@test "freshness leaves no evidence when validation fails" {
+  make_manifest 20260810T010203Z
+  export FAKE_TARGET_DIRS=$'20260810T010203Z/\n'
+  export FAKE_DATE_OUTPUT=20260811T030204Z
+  export BACKUP_FRESHNESS_EVIDENCE_OUTPUT="$TEST_ROOT/freshness-evidence.json"
+  run "$FRESHNESS_SCRIPT"
+  [ "$status" -ne 0 ]
+  [ ! -e "$BACKUP_FRESHNESS_EVIDENCE_OUTPUT" ]
+}
+
+@test "freshness removes evidence when SIGPIPE interrupts final success reporting" {
+  make_manifest 20260810T010203Z
+  export FAKE_TARGET_DIRS=$'20260810T010203Z/\n'
+  export FAKE_DATE_OUTPUT=20260810T020203Z
+  export BACKUP_FRESHNESS_EVIDENCE_OUTPUT="$TEST_ROOT/freshness-evidence.json"
+  run bash -o pipefail -c '"$1" | head -n 0' _ "$FRESHNESS_SCRIPT"
+  [ "$status" -ne 0 ]
+  [ ! -e "$BACKUP_FRESHNESS_EVIDENCE_OUTPUT" ]
+}
+
 @test "freshness fails safely when no completed manifest exists" {
   export FAKE_TARGET_DIRS=$'not-a-snapshot/\n20260810T010203Z/\n'
   run "$FRESHNESS_SCRIPT"

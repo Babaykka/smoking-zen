@@ -1,0 +1,59 @@
+name: Setup pinned backup tools
+description: Install a source-matching PostgreSQL client and checksum-pinned rclone
+
+inputs:
+  postgres-major:
+    description: PostgreSQL server major for pg_dump and pg_restore
+    required: true
+
+runs:
+  using: composite
+  steps:
+    - name: Build matching PostgreSQL client and install rclone
+      shell: bash
+      env:
+        BACKUP_POSTGRES_MAJOR: ${{ inputs.postgres-major }}
+        RCLONE_SHA256: aa2804e08f48250e71009c727124b6341cd0288465804a9a09d14663cabafbaa
+      run: |
+        set -Eeuo pipefail
+        sudo apt-get update
+        sudo apt-get install --no-install-recommends --yes libssl-dev zlib1g-dev
+
+        tools="$RUNNER_TEMP/smoking-zen-backup-tools"
+        mkdir -p "$tools/bin" "$tools/postgresql-src"
+        case "$BACKUP_POSTGRES_MAJOR" in
+          17)
+            postgresql_version=17.10
+            postgresql_sha256=078a03516dcdbdb705fecaf415ea3d13a956c589e46f09fed68a06fb00598c90
+            ;;
+          18)
+            postgresql_version=18.4
+            postgresql_sha256=81a81ec695fb0c7901407defaa1d2f7973617154cf27ba74e3a7ab8e64436094
+            ;;
+          *) exit 1 ;;
+        esac
+
+        curl --fail --silent --show-error --location \
+          "https://ftp.postgresql.org/pub/source/v${postgresql_version}/postgresql-${postgresql_version}.tar.bz2" \
+          --output "$tools/postgresql.tar.bz2"
+        printf '%s  %s\n' "$postgresql_sha256" "$tools/postgresql.tar.bz2" | sha256sum --check
+        tar -xjf "$tools/postgresql.tar.bz2" -C "$tools/postgresql-src" --strip-components=1
+        (cd "$tools/postgresql-src" && ./configure \
+          --prefix="$tools/postgresql" --without-readline --with-ssl=openssl --with-zlib)
+        make -C "$tools/postgresql-src" -j2 world-bin
+        make -C "$tools/postgresql-src" install-world-bin
+        test "$("$tools/postgresql/bin/pg_dump" --version | sed -E 's/.* ([0-9]+)\..*/\1/')" \
+          = "$BACKUP_POSTGRES_MAJOR"
+        pg_configure=$("$tools/postgresql/bin/pg_config" --configure)
+        case "$pg_configure" in *--with-ssl=openssl*) ;; *) exit 1 ;; esac
+        case "$pg_configure" in *--with-zlib*) ;; *) exit 1 ;; esac
+        ldd "$tools/postgresql/lib/libpq.so" | grep -F 'libssl.so' > /dev/null
+
+        curl --fail --silent --show-error --location \
+          https://downloads.rclone.org/v1.75.0/rclone-v1.75.0-linux-amd64.zip \
+          --output "$tools/rclone.zip"
+        printf '%s  %s\n' "$RCLONE_SHA256" "$tools/rclone.zip" | sha256sum --check
+        unzip -q "$tools/rclone.zip" -d "$tools"
+        install -m 0755 "$tools/rclone-v1.75.0-linux-amd64/rclone" "$tools/bin/rclone"
+
+        printf '%s\n' "$tools/bin" "$tools/postgresql/bin" >> "$GITHUB_PATH"

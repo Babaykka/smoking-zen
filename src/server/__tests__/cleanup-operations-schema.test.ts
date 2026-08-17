@@ -355,7 +355,7 @@ describe('Task 7 cleanup operations schema', () => {
     const taskId = await task(database, actor.workspace_id);
     const attachmentId = 'eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee';
     const quarantinePath = 'ffffffff-ffff-4fff-8fff-ffffffffffff';
-    const stagedAt = '2026-08-10T10:00:00.000000Z';
+    const stagedAt = new Date(Date.now() + 2 * 60 * 60 * 1_000).toISOString();
     await database.query(`
       insert into public.attachments (
         id, workspace_id, task_id, name, mime_type, size_bytes, storage_path,
