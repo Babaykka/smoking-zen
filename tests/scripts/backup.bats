@@ -148,7 +148,7 @@ setup() {
 
   remote_manifest="$FAKE_REMOTE_ROOT/$BACKUP_TARGET_BUCKET/$BACKUP_TARGET_PREFIX/20260810T010203Z/manifest.json"
   cmp "$remote_manifest" "$BACKUP_EVIDENCE_OUTPUT"
-  mode=$(stat -f '%Lp' "$BACKUP_EVIDENCE_OUTPUT" 2>/dev/null || stat -c '%a' "$BACKUP_EVIDENCE_OUTPUT")
+  mode=$(stat -c '%a' "$BACKUP_EVIDENCE_OUTPUT" 2>/dev/null || stat -f '%Lp' "$BACKUP_EVIDENCE_OUTPUT")
   [ "$mode" = 600 ]
   grep -Eq '^rclone <copyto> <target:.*/manifest\.json> <.*/published-manifest\.verify>' "$FAKE_LOG"
 }
@@ -178,9 +178,9 @@ setup() {
   [ ! -e "$BACKUP_EVIDENCE_OUTPUT" ]
 }
 
-@test "backup removes evidence when SIGPIPE interrupts final success reporting" {
+@test "backup removes evidence when final success reporting fails" {
   export BACKUP_EVIDENCE_OUTPUT="$TEST_ROOT/backup-evidence.json"
-  run bash -o pipefail -c '"$1" | head -n 0' _ "$BACKUP_SCRIPT"
+  run bash -c 'exec 1>&-; "$1"' _ "$BACKUP_SCRIPT"
   [ "$status" -ne 0 ]
   [ ! -e "$BACKUP_EVIDENCE_OUTPUT" ]
 }

@@ -69,7 +69,7 @@ write_fake_psql() {
     'for scratch in "$TMPDIR"/smoking-zen-staging-migrations.*; do' \
     '  [[ -d $scratch ]] || continue' \
     '  while IFS= read -r -d "" file; do' \
-    '    stat -f "%Lp" "$file" 2>/dev/null || stat -c "%a" "$file"' \
+    '    stat -c "%a" "$file" 2>/dev/null || stat -f "%Lp" "$file"' \
     '  done < <(find "$scratch" -type f -print0)' \
     'done > "$FAKE_TEMP_MODES"' \
     'if [[ ${FAKE_PSQL_EXIT:-0} != 0 ]]; then' \

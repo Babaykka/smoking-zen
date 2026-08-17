@@ -63,7 +63,7 @@ make_manifest() {
 
   remote_manifest="$FAKE_REMOTE_ROOT/$BACKUP_TARGET_BUCKET/$BACKUP_TARGET_PREFIX/20260810T010203Z/manifest.json"
   cmp "$remote_manifest" "$BACKUP_FRESHNESS_EVIDENCE_OUTPUT"
-  mode=$(stat -f '%Lp' "$BACKUP_FRESHNESS_EVIDENCE_OUTPUT" 2>/dev/null || stat -c '%a' "$BACKUP_FRESHNESS_EVIDENCE_OUTPUT")
+  mode=$(stat -c '%a' "$BACKUP_FRESHNESS_EVIDENCE_OUTPUT" 2>/dev/null || stat -f '%Lp' "$BACKUP_FRESHNESS_EVIDENCE_OUTPUT")
   [ "$mode" = 600 ]
 }
 
@@ -97,12 +97,12 @@ make_manifest() {
   [ ! -e "$BACKUP_FRESHNESS_EVIDENCE_OUTPUT" ]
 }
 
-@test "freshness removes evidence when SIGPIPE interrupts final success reporting" {
+@test "freshness removes evidence when final success reporting fails" {
   make_manifest 20260810T010203Z
   export FAKE_TARGET_DIRS=$'20260810T010203Z/\n'
   export FAKE_DATE_OUTPUT=20260810T020203Z
   export BACKUP_FRESHNESS_EVIDENCE_OUTPUT="$TEST_ROOT/freshness-evidence.json"
-  run bash -o pipefail -c '"$1" | head -n 0' _ "$FRESHNESS_SCRIPT"
+  run bash -c 'exec 1>&-; "$1"' _ "$FRESHNESS_SCRIPT"
   [ "$status" -ne 0 ]
   [ ! -e "$BACKUP_FRESHNESS_EVIDENCE_OUTPUT" ]
 }
