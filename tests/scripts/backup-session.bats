@@ -105,7 +105,7 @@ setup() {
 
 @test "script tests do not depend on a developer-specific executable path" {
   needle='/Users/'
-  needle+='hrach'
+  needle+='owner'
   run grep -R "$needle" "$BATS_TEST_DIRNAME"
   [ "$status" -ne 0 ]
 }

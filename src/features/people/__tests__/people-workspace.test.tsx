@@ -45,7 +45,7 @@ describe('PeopleWorkspace', () => {
 
   it('hides invitations from regular members and reports a generic owner-safe error', async () => {
     const memberGateway = createDemoGateway(createDemoRepository({ loadPersisted: false }));
-    render(<WorkspaceProvider currentMemberId="member-alina" gateway={memberGateway}><PeopleWorkspace /></WorkspaceProvider>);
+    render(<WorkspaceProvider currentMemberId="member-two" gateway={memberGateway}><PeopleWorkspace /></WorkspaceProvider>);
     expect(screen.queryByRole('button', { name: 'Создать приглашение' })).toBeNull();
 
     const ownerGateway = createDemoGateway(createDemoRepository({ loadPersisted: false }));
@@ -67,7 +67,7 @@ describe('PeopleWorkspace', () => {
     render(<WorkspaceProvider gateway={createDemoGateway(repository)}><PeopleWorkspace /></WorkspaceProvider>);
 
     expect(screen.getByRole('tab', { name: 'Команда' })).toHaveAttribute('aria-selected', 'true');
-    expect(screen.getByText('Илья · неактивен')).toBeInTheDocument();
+    expect(screen.getByText('Участник · неактивен')).toBeInTheDocument();
     fireEvent.click(screen.getByRole('tab', { name: 'Контакты' }));
     expect(screen.getByText('Поставщики')).toBeInTheDocument();
     expect(screen.getByText('Сервис и мастера')).toBeInTheDocument();
@@ -82,18 +82,18 @@ describe('PeopleWorkspace', () => {
     render(<WorkspaceProvider gateway={createDemoGateway(repository)}><PeopleWorkspace /></WorkspaceProvider>);
     fireEvent.click(screen.getByRole('tab', { name: 'Контакты' }));
     fireEvent.click(screen.getByRole('button', { name: 'Добавить контакт' }));
-    fireEvent.change(screen.getByLabelText('Имя контакта'), { target: { value: 'Мастер Антон' } });
+    fireEvent.change(screen.getByLabelText('Имя контакта'), { target: { value: 'Контакт мастера' } });
     fireEvent.change(screen.getByLabelText('Telegram'), { target: { value: '@bad/path' } });
     fireEvent.click(screen.getByRole('button', { name: 'Сохранить контакт' }));
     expect(await screen.findByRole('alert')).toHaveTextContent('корректный способ связи');
-    expect(screen.getByLabelText('Имя контакта')).toHaveValue('Мастер Антон');
+    expect(screen.getByLabelText('Имя контакта')).toHaveValue('Контакт мастера');
 
-    fireEvent.change(screen.getByLabelText('Telegram'), { target: { value: '@anton_help' } });
+    fireEvent.change(screen.getByLabelText('Telegram'), { target: { value: '@contact_one_help' } });
     fireEvent.change(screen.getByLabelText('WhatsApp'), { target: { value: '+7 (999) 123-45-67' } });
     fireEvent.click(screen.getByRole('button', { name: 'Сохранить контакт' }));
-    await waitFor(() => expect(screen.getByText('Мастер Антон')).toBeInTheDocument());
-    expect(screen.getByRole('link', { name: 'Telegram Мастер Антон' })).toHaveAttribute('href', 'https://t.me/anton_help');
-    expect(screen.getByRole('link', { name: 'WhatsApp Мастер Антон' })).toHaveAttribute('href', 'https://wa.me/79991234567');
+    await waitFor(() => expect(screen.getByText('Контакт мастера')).toBeInTheDocument());
+    expect(screen.getByRole('link', { name: 'Telegram Контакт мастера' })).toHaveAttribute('href', 'https://t.me/contact_one_help');
+    expect(screen.getByRole('link', { name: 'WhatsApp Контакт мастера' })).toHaveAttribute('href', 'https://wa.me/79991234567');
   });
 
   it('supports roving keyboard focus and automatic activation for People tabs', () => {

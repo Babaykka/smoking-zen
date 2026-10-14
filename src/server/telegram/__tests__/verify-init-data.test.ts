@@ -8,15 +8,15 @@ const BOT_TOKEN = '123456:TEST_ONLY_BOT_TOKEN';
 const AUTH_DATE_SECONDS = 1_722_513_600;
 const VALID_INIT_DATA = new URLSearchParams([
   ['query_id', 'AAHdF6IQAAAAAN0XohDhrOrc'],
-  ['user', '{"id":4503599627370495,"first_name":"Алина","last_name":"Петрова","username":"alina_zen","language_code":"ru"}'],
+  ['user', '{"id":4503599627370495,"first_name":"Участник","last_name":"Бета","username":"user_two_zen","language_code":"ru"}'],
   ['auth_date', String(AUTH_DATE_SECONDS)],
-  ['hash', 'ff277315c072e32557064cb8a69f7044570beac02f71dfd2dbdcf7d3ad5a3b71'],
+  ['hash', '4ccdf6aa9d40e12bf033768de707f4a396ca11704233d69011c16e664fe59f82'],
 ]).toString();
 
 function signedInitData(startParam?: string, authDate = AUTH_DATE_SECONDS): string {
   const params = new URLSearchParams([
     ['query_id', 'AAHdF6IQAAAAAN0XohDhrOrc'],
-    ['user', '{"id":4503599627370495,"first_name":"Алина","username":"alina_zen"}'],
+    ['user', '{"id":4503599627370495,"first_name":"Участник","username":"user_two_zen"}'],
     ['auth_date', String(authDate)],
   ]);
   if (startParam !== undefined) params.set('start_param', startParam);
@@ -40,9 +40,9 @@ describe('verifyTelegramInitData', () => {
       ),
     ).toEqual({
       id: '4503599627370495',
-      firstName: 'Алина',
-      lastName: 'Петрова',
-      username: 'alina_zen',
+      firstName: 'Участник',
+      lastName: 'Бета',
+      username: 'user_two_zen',
       languageCode: 'ru',
       authDate: AUTH_DATE_SECONDS,
     });

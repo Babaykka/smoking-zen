@@ -54,7 +54,7 @@ describe('API task repository', () => {
       priority: 5 as const,
       statusId: 'status-waiting',
       sectionId: 'section-service',
-      assigneeId: 'member-alina',
+      assigneeId: 'member-two',
       dueAt: '2026-08-05T12:30:00.000Z',
     };
 

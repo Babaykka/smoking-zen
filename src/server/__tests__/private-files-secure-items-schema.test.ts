@@ -112,7 +112,7 @@ describe('private file and secure-item schema runtime', () => {
         workspace_id, title, purpose, owner, review_date,
         card_bank, card_holder, card_purpose, last_four, external_url
       ) values ($1, 'Терминал', 'Оплата поставщикам', 'Управляющий', '2026-12-01',
-        'Банк', 'Иван П.', 'Закупки', '4242', 'https://vault.bitwarden.eu/#/vault/item-safe-example')
+        'Банк', 'Участник Дельта', 'Закупки', '4242', 'https://vault.bitwarden.eu/#/vault/item-safe-example')
     `, [owner.workspace_id]);
 
     const columns = await database.query<{ column_name: string }>(`
@@ -130,7 +130,7 @@ describe('private file and secure-item schema runtime', () => {
     `, [owner.workspace_id]);
     expect(summary.rows).toEqual([{
       title: 'Терминал', purpose: 'Оплата поставщикам', owner: 'Управляющий', review_date: '2026-12-01',
-      card_bank: 'Банк', card_holder: 'Иван П.', card_purpose: 'Закупки', last_four: '4242',
+      card_bank: 'Банк', card_holder: 'Участник Дельта', card_purpose: 'Закупки', last_four: '4242',
     }]);
   });
 

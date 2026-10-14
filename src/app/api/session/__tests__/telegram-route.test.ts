@@ -24,7 +24,7 @@ const OWNER_MEMBERSHIP: MembershipAccess = {
   workspaceId: '33333333-3333-4333-8333-333333333333',
   role: 'owner',
   active: true,
-  displayName: 'Алина',
+  displayName: 'Участник',
 };
 
 function request(path: string, body: unknown, cookie?: string) {
@@ -79,7 +79,7 @@ describe('Telegram session route', () => {
       store,
       now: () => NOW,
       requestId: () => `request-${bootstrapCalls + 1}`,
-      verifyInitData: () => ({ id: OWNER_TELEGRAM_ID, firstName: 'Алина', authDate: 1_722_513_600 }),
+      verifyInitData: () => ({ id: OWNER_TELEGRAM_ID, firstName: 'Участник', authDate: 1_722_513_600 }),
       createSession: async () => COOKIE,
     });
 
@@ -112,7 +112,7 @@ describe('Telegram session route', () => {
       store: createStore({ bootstrapTelegramUser: async () => ({ ...OWNER_MEMBERSHIP, active: false }) }),
       now: () => NOW,
       requestId: () => 'request-inactive',
-      verifyInitData: () => ({ id: OWNER_TELEGRAM_ID, firstName: 'Алина', authDate: 1_722_513_600 }),
+      verifyInitData: () => ({ id: OWNER_TELEGRAM_ID, firstName: 'Участник', authDate: 1_722_513_600 }),
       createSession: async () => {
         sessionIssued = true;
         return COOKIE;
@@ -138,7 +138,7 @@ describe('Telegram session route', () => {
       store: createStore(),
       now: () => NOW,
       requestId: () => 'request-oversized',
-      verifyInitData: () => ({ id: OWNER_TELEGRAM_ID, firstName: 'Алина', authDate: 1_722_513_600 }),
+      verifyInitData: () => ({ id: OWNER_TELEGRAM_ID, firstName: 'Участник', authDate: 1_722_513_600 }),
       createSession: async () => COOKIE,
     });
     const oversized = new Request(`${APP_ORIGIN}/api/session/telegram`, {
@@ -172,7 +172,7 @@ describe('Telegram session route', () => {
       now: () => NOW,
       requestId: () => 'request-signed-invite',
       verifyInitData: () => ({
-        id: '123456789', firstName: 'Иван', authDate: 1_722_513_600,
+        id: '123456789', firstName: 'Участник', authDate: 1_722_513_600,
         launchIntent: { kind: 'invite', token },
       }),
       createSession: async () => COOKIE,
@@ -206,7 +206,7 @@ describe('Telegram session route', () => {
         now: () => NOW,
         requestId: () => 'request-unavailable-invite',
         verifyInitData: () => ({
-          id: '123456789', firstName: 'Иван', authDate: 1_722_513_600,
+          id: '123456789', firstName: 'Участник', authDate: 1_722_513_600,
           launchIntent: { kind: 'invite', token },
         }),
         createSession: async () => COOKIE,
@@ -238,7 +238,7 @@ describe('Telegram session route', () => {
       now: () => NOW,
       requestId: () => 'request-task-launch',
       verifyInitData: () => ({
-        id: OWNER_TELEGRAM_ID, firstName: 'Алина', authDate: 1_722_513_600,
+        id: OWNER_TELEGRAM_ID, firstName: 'Участник', authDate: 1_722_513_600,
         launchIntent: { kind: 'task', taskId },
       }),
       createSession: async () => COOKIE,
@@ -262,7 +262,7 @@ describe('Telegram session route', () => {
       verifyInitData: () => {
         verifyCalls += 1;
         return {
-          id: OWNER_TELEGRAM_ID, firstName: 'Алина', authDate: 1_722_513_600,
+          id: OWNER_TELEGRAM_ID, firstName: 'Участник', authDate: 1_722_513_600,
           launchIntent: { kind: 'task' as const, taskId },
         };
       },
