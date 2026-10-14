@@ -14,7 +14,7 @@ describe('Supabase access adapter', () => {
         workspace_id: '33333333-3333-4333-8333-333333333333',
         role: 'member',
         active: true,
-        display_name: 'Иван',
+        display_name: 'Участник',
       }],
       error: null,
     });
@@ -22,7 +22,7 @@ describe('Supabase access adapter', () => {
 
     const input = {
       tokenHash: 'a'.repeat(64),
-      telegramUser: { id: '123456789', firstName: 'Иван', authDate: 1_722_513_600 },
+      telegramUser: { id: '123456789', firstName: 'Участник', authDate: 1_722_513_600 },
       redeemedAt: '2026-08-02T10:00:00.000Z',
     };
     await store.redeemInvitation(input);
@@ -30,7 +30,7 @@ describe('Supabase access adapter', () => {
     expect(rpc).toHaveBeenCalledWith('redeem_workspace_invitation', {
       p_token_hash: 'a'.repeat(64),
       p_telegram_id: '123456789',
-      p_first_name: 'Иван',
+      p_first_name: 'Участник',
       p_last_name: null,
       p_username: null,
       p_language_code: null,

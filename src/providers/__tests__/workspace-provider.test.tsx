@@ -39,12 +39,12 @@ describe('WorkspaceProvider', () => {
   it('keeps the authenticated membership identity in workspace context', () => {
     const repository = createDemoRepository({ loadPersisted: false });
     render(
-      <WorkspaceProvider currentMemberId="member-alina" gateway={createDemoGateway(repository)}>
+      <WorkspaceProvider currentMemberId="member-two" gateway={createDemoGateway(repository)}>
         <CurrentMember />
       </WorkspaceProvider>,
     );
 
-    expect(screen.getByRole('status')).toHaveTextContent('member-alina');
+    expect(screen.getByRole('status')).toHaveTextContent('member-two');
   });
 
   it('starts from the deterministic seed then hydrates default local persistence after mount', async () => {

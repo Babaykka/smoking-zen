@@ -45,18 +45,18 @@ describe('workspace schemas', () => {
     expect(knowledgeInputSchema.safeParse({ title: 'Опасно', kind: 'link', linkUrl: `https://example.com/files/${'A1b2C3d4E5f6G7h8I9j0_K-lMnOpQrStUvWxYz'.repeat(2)}` }).success).toBe(false);
     expect(knowledgeInputSchema.safeParse({ title: 'Регламент', kind: 'link', linkUrl: 'https://example.com/guides/opening-checklist-v2.pdf' }).success).toBe(true);
     expect(contactInputSchema.parse({
-      name: 'Илья',
+      name: 'Участник',
       methods: [
         { kind: 'phone', value: '+7 (999) 000-00-00' },
-        { kind: 'telegram', value: '@ilya_test' },
+        { kind: 'telegram', value: '@user_three_test' },
         { kind: 'whatsapp', value: '+7 (999) 000-00-00' },
       ],
     }).methods).toEqual([
       { kind: 'phone', value: '+79990000000' },
-      { kind: 'telegram', value: 'ilya_test' },
+      { kind: 'telegram', value: 'user_three_test' },
       { kind: 'whatsapp', value: '79990000000' },
     ]);
-    expect(contactInputSchema.safeParse({ name: 'Илья', methods: [{ kind: 'telegram', value: 'javascript:alert(1)' }] }).success).toBe(false);
+    expect(contactInputSchema.safeParse({ name: 'Участник', methods: [{ kind: 'telegram', value: 'javascript:alert(1)' }] }).success).toBe(false);
   });
 
   it.each([
@@ -114,8 +114,8 @@ describe('workspace schemas', () => {
     expect(knowledgeInputSchema.parse({ title: 'Заметка', kind: 'note', linkUrl: 'https://example.com' }).linkUrl).toBeNull();
     expect(contactInputSchema.safeParse({ name: 'Телефон', methods: [{ kind: 'phone', value: '+123456789012345' }] }).success).toBe(true);
     expect(contactInputSchema.safeParse({ name: 'Телефон', methods: [{ kind: 'phone', value: '+1234567890123456' }] }).success).toBe(false);
-    expect(contactInputSchema.safeParse({ name: 'Телеграм', methods: [{ kind: 'telegram', value: '@ilya' }] }).success).toBe(false);
-    expect(contactInputSchema.safeParse({ name: 'Телеграм', methods: [{ kind: 'telegram', value: '@ilya_test' }] }).success).toBe(true);
+    expect(contactInputSchema.safeParse({ name: 'Телеграм', methods: [{ kind: 'telegram', value: '@usr' }] }).success).toBe(false);
+    expect(contactInputSchema.safeParse({ name: 'Телеграм', methods: [{ kind: 'telegram', value: '@user_three_test' }] }).success).toBe(true);
   });
 
   it('rejects raw credentials and PAN values in every contact method without blocking E.164 phones', () => {
@@ -232,7 +232,7 @@ describe('workspace schemas', () => {
 
   it('returns concise Russian messages for contact validation errors', () => {
     const emptyName = contactInputSchema.safeParse({ name: '', methods: [{ kind: 'phone', value: '+79990000000' }] });
-    const noMethods = contactInputSchema.safeParse({ name: 'Илья', methods: [] });
+    const noMethods = contactInputSchema.safeParse({ name: 'Участник', methods: [] });
 
     expect(emptyName.success).toBe(false);
     expect(noMethods.success).toBe(false);
@@ -298,8 +298,8 @@ describe('workspace schemas', () => {
     const attachmentObject = attachmentInputSchema.safeParse(null);
     const taskAttachment = taskInputSchema.safeParse({ title: 'Смена', attachments: [null] });
     const taskAttachments = taskInputSchema.safeParse({ title: 'Смена', attachments: 'не список' });
-    const contactMethod = contactInputSchema.safeParse({ name: 'Илья', methods: [null] });
-    const contactMethods = contactInputSchema.safeParse({ name: 'Илья', methods: 'не список' });
+    const contactMethod = contactInputSchema.safeParse({ name: 'Участник', methods: [null] });
+    const contactMethods = contactInputSchema.safeParse({ name: 'Участник', methods: 'не список' });
     const secureNested = secureItemInputSchema.safeParse({
       title: 'Касса',
       purpose: 'Доступ к кассе',
@@ -325,14 +325,14 @@ describe('workspace schemas', () => {
   it('accepts a contact with phone, Telegram, and WhatsApp methods', () => {
     expect(
       contactInputSchema.parse({
-        name: 'Илья',
+        name: 'Участник',
         methods: [
           { kind: 'phone', value: '+79990000000' },
-          { kind: 'telegram', value: '@ilya_test' },
+          { kind: 'telegram', value: '@user_three_test' },
           { kind: 'whatsapp', value: '+79990000000' },
         ],
       }),
-    ).toMatchObject({ name: 'Илья', methods: [{ kind: 'phone' }, { kind: 'telegram' }, { kind: 'whatsapp' }] });
+    ).toMatchObject({ name: 'Участник', methods: [{ kind: 'phone' }, { kind: 'telegram' }, { kind: 'whatsapp' }] });
   });
 
   it('accepts attachment metadata at the 25 MiB limit and rejects one byte over it', () => {

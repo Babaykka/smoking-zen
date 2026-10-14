@@ -14,10 +14,10 @@ test('creates knowledge and contacts, then opens task, knowledge and contact fro
   await page.getByRole('link', { name: 'Люди' }).first().click();
   await page.getByRole('tab', { name: 'Контакты' }).click();
   await page.getByRole('button', { name: 'Добавить контакт' }).click();
-  await page.getByLabel('Имя контакта').fill('Мастер Антон');
-  await page.getByLabel('Telegram').fill('@anton_help');
+  await page.getByLabel('Имя контакта').fill('Контакт мастера');
+  await page.getByLabel('Telegram').fill('@contact_one_help');
   await page.getByRole('button', { name: 'Сохранить контакт' }).click();
-  await expect(page.getByRole('link', { name: 'Telegram Мастер Антон' })).toHaveAttribute('href', 'https://t.me/anton_help');
+  await expect(page.getByRole('link', { name: 'Telegram Контакт мастера' })).toHaveAttribute('href', 'https://t.me/contact_one_help');
 
   const search = page.getByRole('combobox', { name: 'Поиск по штабу' });
   await search.fill('КОКОС');
@@ -38,10 +38,10 @@ test('creates knowledge and contacts, then opens task, knowledge and contact fro
   await search.press('Enter');
   await expect(page.getByLabel('Название материала')).toHaveValue('Регламент витрины');
 
-  await search.fill('Мастер Антон');
-  await expect(page.getByRole('option', { name: 'Мастер Антон' })).toBeVisible();
+  await search.fill('Контакт мастера');
+  await expect(page.getByRole('option', { name: 'Контакт мастера' })).toBeVisible();
   await search.press('Enter');
-  await expect(page.getByLabel('Имя контакта')).toHaveValue('Мастер Антон');
+  await expect(page.getByLabel('Имя контакта')).toHaveValue('Контакт мастера');
 });
 
 test('knowledge detail and People form are keyboard-safe without overflow at exactly 360px', async ({ page }) => {

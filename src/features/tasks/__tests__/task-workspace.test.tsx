@@ -73,7 +73,7 @@ describe('TaskWorkspace', () => {
       seed: {
         ...demoSeed,
         tasks: ([
-          { ...base, id: 'recent', title: 'Недавняя', dueAt: null, priority: 4, assigneeId: 'member-alina', updatedAt: '2026-08-02T11:00:00.000Z' },
+          { ...base, id: 'recent', title: 'Недавняя', dueAt: null, priority: 4, assigneeId: 'member-two', updatedAt: '2026-08-02T11:00:00.000Z' },
           { ...base, id: 'urgent', title: 'Срочная без исполнителя', dueAt: null, priority: 1, assigneeId: null, updatedAt: '2026-08-01T08:00:00.000Z' },
           { ...base, id: 'today', title: 'На сегодня', dueAt: '2026-08-02T18:00:00.000Z', priority: 5, updatedAt: '2026-08-01T07:00:00.000Z' },
           { ...base, id: 'overdue', title: 'Просроченная', dueAt: '2026-08-01T18:00:00.000Z', priority: 5, updatedAt: '2026-07-31T07:00:00.000Z' },
@@ -122,14 +122,14 @@ describe('TaskWorkspace', () => {
       seed: {
         ...demoSeed,
         tasks: [
-          { ...base, id: 'mine', title: 'Моя задача', assigneeId: 'member-alina', dueAt: null },
+          { ...base, id: 'mine', title: 'Моя задача', assigneeId: 'member-two', dueAt: null },
           { ...base, id: 'other', title: 'Чужая задача', assigneeId: 'member-owner', dueAt: null },
           { ...base, id: 'unassigned', title: 'Без исполнителя', assigneeId: null, dueAt: null },
           { ...base, id: 'overdue-view', title: 'Просроченная для вида', assigneeId: null, dueAt: '2026-08-01T10:00:00.000Z' },
         ],
       },
     });
-    renderWorkspace(repository, { now: new Date('2026-08-02T12:00:00.000Z') }, 'member-alina');
+    renderWorkspace(repository, { now: new Date('2026-08-02T12:00:00.000Z') }, 'member-two');
 
     for (const name of ['Мои', 'Сегодня', 'Просрочено', 'Без исполнителя', 'Все']) {
       expect(screen.getByRole('button', { name })).toBeInTheDocument();
@@ -225,7 +225,7 @@ describe('TaskWorkspace', () => {
       priority: 2,
       statusId: 'status-in-progress',
       sectionId: 'section-service',
-      assigneeId: 'member-alina',
+      assigneeId: 'member-two',
       dueAt: '2026-08-06T10:00:00.000Z',
       version: 2,
     };
@@ -264,7 +264,7 @@ describe('TaskWorkspace', () => {
     expect(screen.getByLabelText('Описание')).toHaveValue('Ответ с сервера');
     expect(screen.getByLabelText('Приоритет')).toHaveValue('2');
     expect(screen.getByLabelText('Статус')).toHaveValue('status-in-progress');
-    expect(screen.getByLabelText('Исполнитель')).toHaveValue('member-alina');
+    expect(screen.getByLabelText('Исполнитель')).toHaveValue('member-two');
     expect(screen.getByLabelText('Раздел')).toHaveValue('section-service');
     expect(screen.getByLabelText('Срок')).toHaveValue('2026-08-06T13:00');
   });

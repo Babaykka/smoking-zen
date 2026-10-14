@@ -319,35 +319,35 @@ describe('Task 7 notification operations schema', () => {
       'select count(*)::int as count from public.audit_events',
     )).rows).toEqual([{ count: auditCount }]);
 
-    const alina = await addMember(database, owner.workspace_id, 2, 'alina_zen');
+    const user_two = await addMember(database, owner.workspace_id, 2, 'user_two_zen');
     const boris = await addMember(database, owner.workspace_id, 3, 'boris_zen');
     const task = await database.query<{ id: string }>(`
       insert into public.tasks (workspace_id, title, status_id, assignee_id)
       values ($1, 'Assignment transitions', $2, $3) returning id
-    `, [owner.workspace_id, status.rows[0]!.id, alina.membershipId]);
+    `, [owner.workspace_id, status.rows[0]!.id, user_two.membershipId]);
     await database.query('update public.tasks set title = $2 where id = $1', [task.rows[0]!.id, 'No new assignment']);
-    await database.query('update public.tasks set assignee_id = $2 where id = $1', [task.rows[0]!.id, alina.membershipId]);
+    await database.query('update public.tasks set assignee_id = $2 where id = $1', [task.rows[0]!.id, user_two.membershipId]);
     await database.query('update public.tasks set assignee_id = $2 where id = $1', [task.rows[0]!.id, boris.membershipId]);
-    await database.query('update public.workspace_members set active = false where id = $1', [alina.membershipId]);
-    await database.query('update public.tasks set assignee_id = $2 where id = $1', [task.rows[0]!.id, alina.membershipId]);
+    await database.query('update public.workspace_members set active = false where id = $1', [user_two.membershipId]);
+    await database.query('update public.tasks set assignee_id = $2 where id = $1', [task.rows[0]!.id, user_two.membershipId]);
     expect((await database.query<{ recipient_id: string }>(`
       select recipient_id::text from public.notification_outbox
       where kind = 'assignment' order by created_at
     `)).rows).toEqual([
-      { recipient_id: alina.membershipId },
+      { recipient_id: user_two.membershipId },
       { recipient_id: boris.membershipId },
     ]);
 
-    await database.query('update public.workspace_members set active = true where id = $1', [alina.membershipId]);
+    await database.query('update public.workspace_members set active = true where id = $1', [user_two.membershipId]);
     await database.query(`
       insert into public.comments (workspace_id, task_id, author_id, body)
-      values ($1, $2, $3, '@ALINA_ZEN @alina_zen @boris_zen @owner_zen')
+      values ($1, $2, $3, '@USER_TWO_ZEN @user_two_zen @boris_zen @owner_zen')
     `, [owner.workspace_id, task.rows[0]!.id, owner.membership_id]);
     expect((await database.query<{ recipient_id: string }>(`
       select recipient_id::text from public.notification_outbox
       where kind = 'mention' order by recipient_id
     `)).rows).toEqual([
-      { recipient_id: alina.membershipId },
+      { recipient_id: user_two.membershipId },
       { recipient_id: boris.membershipId },
     ]);
 

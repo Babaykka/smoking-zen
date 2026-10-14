@@ -24,7 +24,7 @@ export const demoSeed: WorkspaceSnapshot = {
   tasks: [
     {
       id: 'task-check-coals', workspaceId, title: 'Проверить запас кокосового угля', description: 'Сверить остаток перед вечерней сменой.', priority: 2,
-      statusId: 'status-new', sectionId: 'section-stock', assigneeId: 'member-alina', dueAt: '2026-08-02T15:00:00.000Z', attachments: [],
+      statusId: 'status-new', sectionId: 'section-stock', assigneeId: 'member-two', dueAt: '2026-08-02T15:00:00.000Z', attachments: [],
       version: 1, createdAt, updatedAt: createdAt, deletedAt: null,
     },
   ],
@@ -46,9 +46,9 @@ export const demoSeed: WorkspaceSnapshot = {
     },
   ],
   members: [
-    { id: 'member-owner', workspaceId, name: 'Алексей', role: 'owner', active: true, version: 1, createdAt, updatedAt: createdAt, deletedAt: null },
-    { id: 'member-alina', workspaceId, name: 'Алина', role: 'member', active: true, version: 1, createdAt, updatedAt: createdAt, deletedAt: null },
-    { id: 'member-ilya', workspaceId, name: 'Илья', role: 'member', active: false, version: 1, createdAt, updatedAt: createdAt, deletedAt: null },
+    { id: 'member-owner', workspaceId, name: 'Участник', role: 'owner', active: true, version: 1, createdAt, updatedAt: createdAt, deletedAt: null },
+    { id: 'member-two', workspaceId, name: 'Участник', role: 'member', active: true, version: 1, createdAt, updatedAt: createdAt, deletedAt: null },
+    { id: 'member-three', workspaceId, name: 'Участник', role: 'member', active: false, version: 1, createdAt, updatedAt: createdAt, deletedAt: null },
   ],
   secureItems: [
     {
